@@ -87,7 +87,7 @@ const HELP_TEXT = [
   '#鱼市 / #售鱼 1 / #售鱼 common / #售鱼 鱼缸3 / #售鱼 全部 / #鱼市购买 鱼饵1*5 / #鱼市购买 钓鱼券*3',
   '',
   '装备命令',
-  '#鱼竿 / #换竿 1 / #换竿 疾风短竿 / #鱼饵 / #换饵 1 / #换饵 沉流鱼饵',
+  '#鱼竿 / #换竿 0 / #换竿 鱼竿1 / #鱼饵 / #换饵 0 / #换饵 鱼饵1',
   '',
   '活动命令',
   '#限时鱼讯 / #钓鱼成就 / #打窝 文本 / #打窝 @某人',
@@ -141,15 +141,43 @@ function getVisibleRodList(userData) {
   return Object.values(ROD_CATALOG).filter(rod => !rod.sourceLegendary || owned.has(rod.id));
 }
 
+function getSwitchableRodList(userData) {
+  const owned = new Set(userData?.rodsOwned || []);
+  const buyable = getBuyableRodList();
+  const crafted = Object.values(ROD_CATALOG)
+    .filter(rod => rod.sourceLegendary && owned.has(rod.id));
+  return [...buyable, ...crafted];
+}
+
+function parseRodIndex(keyword = '') {
+  const compact = String(keyword || '').replace(/\s+/g, '');
+  if (/^(?:0|默认|默认鱼竿|新手|新手竿|新手杆|新手竹竿)$/.test(compact)) return 'default';
+  const match = compact.match(/^(?:鱼竿|鱼杆|竿|杆)?(\d{1,3})$/);
+  if (!match) return null;
+  const index = Number(match[1]) - 1;
+  return Number.isInteger(index) && index >= 0 ? index : null;
+}
+
 function getBuiltinBuyableBaitList() {
   return Object.values(BAIT_CATALOG).filter(item => !item.isDefault);
 }
 
-function getSwitchableBaitList(userData) {
-  const builtin = Object.values(BAIT_CATALOG);
-  const custom = Object.values(userData?.customBaits || {})
+function getCustomBaitList(userData) {
+  return Object.values(userData?.customBaits || {})
     .filter((bait, index, arr) => arr.findIndex(item => item.id === bait.id) === index);
-  return [...builtin, ...custom];
+}
+
+function getSwitchableBaitList(userData) {
+  return [...getBuiltinBuyableBaitList(), ...getCustomBaitList(userData)];
+}
+
+function parseBaitIndex(keyword = '') {
+  const compact = String(keyword || '').replace(/\s+/g, '');
+  if (/^(?:0|默认|默认鱼饵|清水|清水饵|清水团饵)$/.test(compact)) return 'default';
+  const match = compact.match(/^(?:鱼饵|饵料|饵)?(\d{1,3})$/);
+  if (!match) return null;
+  const index = Number(match[1]) - 1;
+  return Number.isInteger(index) && index >= 0 ? index : null;
 }
 
 function parseLegendaryCraftTarget(text = '') {
@@ -300,7 +328,7 @@ export class fishing extends plugin {
         { reg: '^#同步鱼缸$', fnc: 'syncAllFishTanks' },
         { reg: '^#修复鱼数据$', fnc: 'repairFishData' },
         { reg: '^#(鱼市|售鱼)(.*)$', fnc: 'handleMarketCommand' },
-        { reg: '^#(鱼竿|换竿)(.*)$', fnc: 'handleRodCommand' },
+        { reg: '^#(鱼竿|换竿|换杆)(.*)$', fnc: 'handleRodCommand' },
         { reg: '^#(鱼饵|换饵)(.*)$', fnc: 'handleBaitCommand' },
         { reg: '^#限时鱼讯$', fnc: 'showDailySignal' },
         { reg: '^#钓鱼成就$', fnc: 'showAchievements' },
@@ -1685,7 +1713,7 @@ export class fishing extends plugin {
   }
 
   async handleRodCommand(e) {
-    const tail = (e.msg.match(/^#(?:鱼竿|换竿)(.*)$/)?.[1] || '').trim();
+    const tail = (e.msg.match(/^#(?:鱼竿|换竿|换杆)(.*)$/)?.[1] || '').trim();
     if (!tail) {
       await this.showRods(e);
       return;
@@ -1700,7 +1728,7 @@ export class fishing extends plugin {
     const equipped = getEquippedRod(userData);
     const owned = new Set(userData.rodsOwned);
 
-    const rodList = getVisibleRodList(userData);
+    const rodList = getSwitchableRodList(userData);
     const lines = rodList.map((rod, index) => {
       const marks = [
         rod.id === equipped.id ? '已装备' : null,
@@ -1712,11 +1740,13 @@ export class fishing extends plugin {
 
     const sections = [
       `当前鱼竿：${equipped.name}`,
+      `默认鱼竿：${ROD_CATALOG.starter.name} - 可用 #换竿 0 / #换竿 默认`,
       ...lines
     ].filter(Boolean);
     const fallback = [
       '鱼竿',
       `当前鱼竿：${equipped.name}`,
+      `默认鱼竿：${ROD_CATALOG.starter.name} - 可用 #换竿 0 / #换竿 默认`,
       ...lines,
       '使用：#换竿 编号 或 #换竿 鱼竿名'
     ].filter(Boolean).join('\n');
@@ -1725,7 +1755,7 @@ export class fishing extends plugin {
       title: '鱼竿',
       subtitle: `当前使用：${equipped.name}`,
       sections,
-      footer: '使用：#换竿 1 / #换竿 疾风短竿 / #炼竿 1'
+      footer: '使用：#换竿 0 / #换竿 鱼竿1 / #换竿 疾风短竿 / #炼竿 1'
     }, fallback);
   }
 
@@ -1733,9 +1763,12 @@ export class fishing extends plugin {
     const data = this.loadData();
     const { userId, text: userDisplay } = getUserDisplay(e);
     const userData = this.getOrCreateUser(data, userId);
-    const compactKeyword = String(keyword || '').replace(/\s+/g, '');
-    const indexMatch = compactKeyword.match(/^\d{1,2}$/);
-    const rod = indexMatch ? getVisibleRodList(userData)[Number(indexMatch[0]) - 1] : this.getRodByKeyword(keyword);
+    const rodIndex = parseRodIndex(keyword);
+    const rod = rodIndex === 'default'
+      ? ROD_CATALOG.starter
+      : rodIndex !== null
+        ? getSwitchableRodList(userData)[rodIndex]
+        : this.getRodByKeyword(keyword);
     if (!rod) {
       await this.reply(`${userDisplay}\n没有找到这根鱼竿。`);
       return;
@@ -1764,24 +1797,23 @@ export class fishing extends plugin {
     const equipped = getEquippedBait(userData);
     const ownedBaitsSummary = getOwnedBaitsSummary(userData) || '暂无可消耗鱼饵';
     const ownedRodsSummary = getOwnedRodsSummary(userData) || '暂无已购鱼竿';
-    const switchableBaits = getSwitchableBaitList(userData);
-    const builtinCount = Object.values(BAIT_CATALOG).length;
-    const builtinLines = Object.values(BAIT_CATALOG).map((bait, index) => {
+    const builtinBaits = getBuiltinBuyableBaitList();
+    const builtinLines = builtinBaits.map((bait, index) => {
       const count = userData.baitInventory?.[bait.id] || 0;
-      const state = bait.id === equipped.id ? '当前使用' : count > 0 ? '可切换' : bait.isDefault ? '默认可用' : '未持有';
+      const state = bait.id === equipped.id ? '当前使用' : count > 0 ? '可切换' : '未持有';
       return `鱼饵${index + 1} | ${bait.name} - ${state} - ${bait.description}`;
     });
-    const customLines = Object.values(userData.customBaits || {})
-      .filter((bait, index, arr) => arr.findIndex(item => item.id === bait.id) === index)
+    const customLines = getCustomBaitList(userData)
       .map((bait, index) => {
         const count = userData.baitInventory?.[bait.id] || 0;
         const state = bait.id === equipped.id ? '当前使用' : count > 0 ? '可切换' : '已用完';
-        return `鱼饵${builtinCount + index + 1} | ${bait.name} - ${state} - ${bait.description}`;
+        return `鱼饵${builtinBaits.length + index + 1} | ${bait.name} - ${state} - ${bait.description}`;
       });
     const sections = [
       `当前鱼饵：${equipped.name}`,
       `持有鱼饵：${ownedBaitsSummary}`,
       `已购鱼竿：${ownedRodsSummary}`,
+      `默认鱼饵：${BAIT_CATALOG.plain.name} - 可用 #换饵 0 / #换饵 默认`,
       ...builtinLines,
       ...customLines
     ];
@@ -1790,6 +1822,7 @@ export class fishing extends plugin {
       `当前鱼饵：${equipped.name}`,
       `持有鱼饵：${ownedBaitsSummary}`,
       `已购鱼竿：${ownedRodsSummary}`,
+      `默认鱼饵：${BAIT_CATALOG.plain.name} - 可用 #换饵 0 / #换饵 默认`,
       ...builtinLines,
       ...customLines,
       '使用：#换饵 编号 或 #换饵 鱼饵名'
@@ -1807,9 +1840,12 @@ export class fishing extends plugin {
     const data = this.loadData();
     const { userId, text: userDisplay } = getUserDisplay(e);
     const userData = this.getOrCreateUser(data, userId);
-    const compactKeyword = String(keyword || '').replace(/\s+/g, '');
-    const indexMatch = compactKeyword.match(/^\d{1,2}$/);
-    const bait = indexMatch ? getSwitchableBaitList(userData)[Number(indexMatch[0]) - 1] : this.getBaitByKeyword(userData, keyword);
+    const baitIndex = parseBaitIndex(keyword);
+    const bait = baitIndex === 'default'
+      ? BAIT_CATALOG.plain
+      : baitIndex !== null
+        ? getSwitchableBaitList(userData)[baitIndex]
+        : this.getBaitByKeyword(userData, keyword);
     if (!bait) {
       await this.reply(`${userDisplay}\n没有找到这种鱼饵。`);
       return;
