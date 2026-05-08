@@ -1,0 +1,11 @@
+# Runtime/user data
+fishdata/*.json
+
+# Generated/local visual assets
+resources/generated/
+resources/backgrounds/
+
+# Local/editor noise
+.DS_Store
+Thumbs.db
+*.log
