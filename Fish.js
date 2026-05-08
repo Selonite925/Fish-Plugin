@@ -20,7 +20,7 @@ import {
   SHOP_ITEMS,
   TANK_UPGRADE_EXTRA_CASTS
 } from './lib/constants.js';
-import { defaultLegendaryMessage, defaultMysteryMessage, emptyHookMessages, epicMessages, legendaryMessages, mysteryMessages } from './lib/messages.js';
+import { defaultLegendaryMessage, defaultMysteryMessage, emptyHookMessages, epicMessages, failProtectionFakeFailMessages, legendaryMessages, mysteryMessages } from './lib/messages.js';
 import {
   ensureGeneratedDir,
   loadBaitData,
@@ -881,6 +881,9 @@ export class fishing extends plugin {
     const missedCatch = Math.random() >= catchRate;
     const failResult = missedCatch ? await this.getRandomFailResult(userId, e.group_id, e) : null;
     const rescuedCatch = failResult?.type === 'empty_hook' && Math.random() < failRescueChance;
+    const rescuedCatchFakeFailMessage = rescuedCatch
+      ? failProtectionFakeFailMessages[Math.floor(Math.random() * failProtectionFakeFailMessages.length)]
+      : '';
     if (missedCatch && !rescuedCatch) {
       recordEmptyCast(settleUser);
       const unlocked = scanAchievements(settleUser, this.fishTypes);
@@ -897,15 +900,15 @@ export class fishing extends plugin {
     resetEmptyCastStreak(settleUser);
     settleUser.stats.lastCatchRarity = fishWithTimestamp.rarity;
 
+    const resultIntroMsg = rescuedCatch
+      ? `${rescuedCatchFakeFailMessage}\n[护线补救] 失败保护触发：看似空钩的一口被稳住了，鱼钩重新咬牢，成功上鱼。\n`
+      : '';
     let signalMsg = '';
-    if (rescuedCatch) {
-      signalMsg += '\n[护线补救] 这次空钩被稳住了，鱼钩重新咬牢，成功上鱼。';
-    }
     if (signal.targets.some(item => item.name === fishWithTimestamp.name)) {
       const signalCoins = signal.bonusCoins + Number(getEquippedRod(settleUser)?.signalBonusCoins || 0);
       settleUser.coins += signalCoins;
       settleUser.stats.signalFishCaught += 1;
-      signalMsg = `\n[限时鱼讯] 命中今日目标鱼，额外获得 ${signalCoins} 鱼币。`;
+      signalMsg += `\n[限时鱼讯] 命中今日目标鱼，额外获得 ${signalCoins} 鱼币。`;
     }
     const rodCoinBonus = Number(getEquippedRod(settleUser)?.catchCoinBonus || 0);
     if (rodCoinBonus > 0) {
@@ -923,6 +926,7 @@ export class fishing extends plugin {
     await this.handleSpecialFishEvent(fish);
     await this.reply(
       `${userDisplay}\n` +
+      resultIntroMsg +
       `恭喜！你钓到了一条 ${fishWithTimestamp.rarity} 鱼：${fishWithTimestamp.name}\n` +
       `长度：${fishWithTimestamp.length}cm，重量：${fishWithTimestamp.weight}kg${tankUpdateMsg}\n` +
       `今日钓鱼次数：${getFishingLimitText(this.config, settleUser, getEquippedRod(settleUser))}${manualBait.message}${shopBait.message}${easterEggMsg}${signalMsg}${this.formatAchievementUnlocks(unlocked)}`
