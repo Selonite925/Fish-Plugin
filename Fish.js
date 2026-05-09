@@ -1,4 +1,6 @@
 import plugin from '../../lib/plugins/plugin.js';
+import fs from 'fs';
+import os from 'os';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import {
@@ -80,6 +82,12 @@ import { findCustomBaitBySource, generateCustomBaitFromText } from './lib/custom
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
+const FISH_PLUGIN_REPO = 'https://github.com/Selonite925/Fish-Plugin.git';
+const SELF_UPDATE_PRESERVE_PATHS = [
+  /^fishdata\/(?!fishpool\.js$).+/i,
+  /^resources\/backgrounds(?:\/|$)/i,
+  /^resources\/generated(?:\/|$)/i
+];
 
 const HELP_TEXT = [
   '基础命令',
@@ -459,24 +467,78 @@ export class fishing extends plugin {
     return Boolean(e.isMaster || e.member?.is_admin || e.member?.is_owner || e.sender?.role === 'admin' || e.sender?.role === 'owner');
   }
 
+  async getGitTrackedFiles(repoDir) {
+    const ret = await Bot.exec(['git', '-C', repoDir, 'ls-files'], { quiet: true });
+    if (ret.error) throw ret.error;
+    return ret.stdout
+      .split('\n')
+      .map(item => item.trim())
+      .filter(Boolean);
+  }
+
+  shouldPreserveSelfUpdatePath(file) {
+    const normalized = file.split(path.sep).join('/');
+    return SELF_UPDATE_PRESERVE_PATHS.some(reg => reg.test(normalized));
+  }
+
+  copyGitTrackedFiles(sourceDir, targetDir, files) {
+    for (const file of files) {
+      if (this.shouldPreserveSelfUpdatePath(file)) continue;
+      const sourcePath = path.join(sourceDir, file);
+      const targetPath = path.join(targetDir, file);
+      fs.mkdirSync(path.dirname(targetPath), { recursive: true });
+      fs.copyFileSync(sourcePath, targetPath);
+    }
+  }
+
+  async reinstallFishPluginFromGithub() {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'fish-plugin-'));
+    try {
+      const cloneRet = await Bot.exec(['git', 'clone', '--depth=1', FISH_PLUGIN_REPO, tempDir]);
+      if (cloneRet.error) return cloneRet;
+      const trackedFiles = await this.getGitTrackedFiles(tempDir);
+      fs.rmSync(path.join(__dirname, '.git'), { recursive: true, force: true });
+      fs.cpSync(path.join(tempDir, '.git'), path.join(__dirname, '.git'), { recursive: true, force: true });
+      this.copyGitTrackedFiles(tempDir, __dirname, trackedFiles);
+      return { stdout: `已从 ${FISH_PLUGIN_REPO} 重新安装 Fish-plugin 仓库。`, stderr: '' };
+    } finally {
+      fs.rmSync(tempDir, { recursive: true, force: true });
+    }
+  }
+
   async updateFishPlugin(e) {
     if (!e.isMaster) {
       await this.reply('只有主人才能更新钓鱼插件。');
       return false;
     }
 
-    await this.reply('开始更新 Fish-plugin，请稍候...');
-    const ret = await Bot.exec('git pull', { cwd: __dirname });
+    await this.reply('开始更新Fish-Plugin，请稍后');
+    const remoteRet = await Bot.exec(['git', '-C', __dirname, 'config', '--get', 'remote.origin.url'], { quiet: true });
+    const remoteUrl = remoteRet.stdout.trim();
+    if (remoteRet.error || !/Fish-Plugin(?:\.git)?$/i.test(remoteUrl.replace(/\/+$/, ''))) {
+      await this.reply('正在合并，请稍后');
+      const reinstallRet = await this.reinstallFishPluginFromGithub();
+      const reinstallOutput = [reinstallRet.stdout, reinstallRet.stderr].filter(Boolean).join('\n').trim();
+      if (reinstallRet.error) {
+        await this.reply(`Fish-plugin 重新安装失败：\n${reinstallRet.error.message}${reinstallOutput ? `\n${reinstallOutput}` : ''}`);
+        return false;
+      }
+
+      await this.reply('Fish-Plugin已经是最新版，现在开始重启以生效变动。');
+      const restartRet = await Bot.restart();
+      await this.reply(`重启错误：\n${Bot.String(restartRet)}`);
+      return true;
+    }
+
+    await this.reply('正在合并，请稍后');
+    const ret = await Bot.exec(['git', '-C', __dirname, 'pull']);
     const output = [ret.stdout, ret.stderr].filter(Boolean).join('\n').trim();
     if (ret.error) {
       await this.reply(`Fish-plugin 更新失败：\n${ret.error.message}${output ? `\n${output}` : ''}`);
       return false;
     }
 
-    const updateText = /Already up|已经是最新|Already up to date/i.test(output)
-      ? 'Fish-plugin 已是最新，准备重启云仔。'
-      : 'Fish-plugin 更新完成，准备重启云仔。';
-    await this.reply(`${updateText}${output ? `\n${output}` : ''}`);
+    await this.reply('Fish-Plugin已经是最新版，现在开始重启以生效变动。');
     const restartRet = await Bot.restart();
     await this.reply(`重启错误：\n${Bot.String(restartRet)}`);
     return true;
