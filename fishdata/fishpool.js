@@ -251,13 +251,13 @@ export const legacyFishAliases = {
 };
 
 // 这里是“钓到鱼之后”的稀有度分布，总和建议保持为 1。
-// legendary: 0.0175 = 1.75%，'？': 0.0075 = 0.75%。
+// legendary: 0.0125 = 1.25%，'？': 0.0075 = 0.75%。
 export const rarityWeights = {
   common: 0.53,
-  uncommon: 0.25,
+  uncommon: 0.255,
   rare: 0.125,
   epic: 0.07,
-  legendary: 0.0175,
+  legendary: 0.0125,
   '？': 0.0075
 };
 
