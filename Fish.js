@@ -1,5 +1,6 @@
 import plugin from '../../lib/plugins/plugin.js';
 import {
+  fishTemplateByName,
   fishTypes,
   rarityWeights,
   trashItems,
@@ -119,6 +120,15 @@ const MANAGEMENT_HELP_TEXT = [
 const EMPTY_HOOK_FAIL_RATE = 0.3;
 const DAILY_TICKET_PURCHASE_LIMIT = 5;
 
+const FISH_KING_SCORE_BANDS = {
+  common: { min: 10, max: 80 },
+  uncommon: { min: 90, max: 180 },
+  rare: { min: 190, max: 340 },
+  epic: { min: 360, max: 560 },
+  legendary: { min: 620, max: 860 },
+  [EASTER_EGG_RARITY]: { min: 900, max: 1000 }
+};
+
 function formatFishLine(fish, index = null) {
   const prefix = index == null ? '•' : `[${index + 1}]`;
   return `${prefix} ${fish.name}(${fish.rarity}) ${fish.length}cm/${fish.weight}kg`;
@@ -218,11 +228,13 @@ function mergeRarityBias(...biasList) {
 
 function clampFishBodyValue(value, min, max, decimals) {
   const number = Math.max(min, Math.min(max, Number(value)));
-  return Number(number.toFixed(decimals));
+  const rounded = Number(number.toFixed(decimals));
+  return decimals === 2 && max > 0 ? Math.max(0.01, rounded) : rounded;
 }
 
 function getRandomBodyValue(min, max, decimals) {
-  return Number((Math.random() * (max - min) + min).toFixed(decimals));
+  const rounded = Number((Math.random() * (max - min) + min).toFixed(decimals));
+  return decimals === 2 && max > 0 ? Math.max(0.01, rounded) : rounded;
 }
 
 function createFishFromTemplate(template, rarity) {
@@ -557,6 +569,25 @@ export class fishing extends plugin {
       if (random <= 0) return item;
     }
     return items[items.length - 1];
+  }
+
+  getFishKingScore(fish) {
+    const band = FISH_KING_SCORE_BANDS[fish?.rarity];
+    if (!band) return 0;
+
+    const template = fishTemplateByName[fish.name];
+    const normalizeValue = (value, range) => {
+      const min = Number(range?.min);
+      const max = Number(range?.max);
+      if (!Number.isFinite(min) || !Number.isFinite(max) || max <= min) return 0.5;
+      return Math.max(0, Math.min(1, (Number(value || 0) - min) / (max - min)));
+    };
+
+    const lengthQuality = normalizeValue(fish.length, template?.size);
+    const weightQuality = normalizeValue(fish.weight, template?.weight);
+    const quality = lengthQuality * 0.35 + weightQuality * 0.65;
+    const score = band.min + (band.max - band.min) * quality;
+    return Math.max(band.min, Math.min(band.max, Number(score.toFixed(2))));
   }
 
   catchFish(userData = null, extraBias = {}, bodyModifiers = {}) {
@@ -1263,24 +1294,12 @@ export class fishing extends plugin {
   async checkFishKingRank() {
     const data = this.loadData();
 
-    const scoreFish = fish => {
-      const rarityScoreMap = {
-        common: 10,
-        uncommon: 25,
-        rare: 60,
-        epic: 140,
-        legendary: 320,
-        [EASTER_EGG_RARITY]: 600
-      };
-      return (rarityScoreMap[fish.rarity] || 0) + Number(fish.weight || 0);
-    };
-
     const rankList = Object.entries(data)
       .map(([userId, userData]) => {
         normalizeUserData(userData);
         const sortedTank = getSortedTankWithIndex(userData.fishTank).map(item => item.fish).slice(0, 5);
         const weights = [1.0, 0.7, 0.5, 0.35, 0.25];
-        const score = sortedTank.reduce((sum, fish, index) => sum + scoreFish(fish) * (weights[index] || 0.2), 0);
+        const score = sortedTank.reduce((sum, fish, index) => sum + this.getFishKingScore(fish) * (weights[index] || 0.2), 0);
         return {
           userId,
           score: Number(score.toFixed(2)),

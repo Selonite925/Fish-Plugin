@@ -12,7 +12,7 @@ export const commonFish = [
   { name: '鲢鱼', size: { min: 35, max: 110 }, weight: { min: 1, max: 18 } },
   { name: '鳙鱼', size: { min: 45, max: 130 }, weight: { min: 2, max: 30 } },
   { name: '白条', size: { min: 8, max: 22 }, weight: { min: 0.01, max: 0.15 } },
-  { name: '麦穗鱼', size: { min: 4, max: 12 }, weight: { min: 0.005, max: 0.04 } },
+  { name: '麦穗鱼', size: { min: 4, max: 12 }, weight: { min: 0.01, max: 0.04 } },
   { name: '泥鳅', size: { min: 8, max: 25 }, weight: { min: 0.01, max: 0.2 } },
   { name: '黄颡鱼', size: { min: 12, max: 35 }, weight: { min: 0.05, max: 0.8 } },
   { name: '罗非鱼', size: { min: 15, max: 50 }, weight: { min: 0.15, max: 4 } },
@@ -23,33 +23,33 @@ export const commonFish = [
   { name: '秋刀鱼', size: { min: 20, max: 35 }, weight: { min: 0.08, max: 0.3 } },
   { name: '沙丁鱼', size: { min: 10, max: 25 }, weight: { min: 0.02, max: 0.18 } },
   { name: '鲱鱼', size: { min: 18, max: 40 }, weight: { min: 0.08, max: 0.8 } },
-  { name: '凤尾鱼', size: { min: 8, max: 18 }, weight: { min: 0.005, max: 0.06 } },
+  { name: '凤尾鱼', size: { min: 8, max: 18 }, weight: { min: 0.01, max: 0.06 } },
   { name: '鲻鱼', size: { min: 25, max: 80 }, weight: { min: 0.4, max: 7 } },
   { name: '鲐鱼', size: { min: 25, max: 55 }, weight: { min: 0.25, max: 2 } },
   { name: '蓝鳃太阳鱼', size: { min: 8, max: 25 }, weight: { min: 0.03, max: 0.6 } },
-  { name: '白鲦', size: { min: 7, max: 18 }, weight: { min: 0.005, max: 0.08 } },
+  { name: '白鲦', size: { min: 7, max: 18 }, weight: { min: 0.01, max: 0.08 } },
   { name: '棘鳅', size: { min: 10, max: 30 }, weight: { min: 0.02, max: 0.25 } },
   { name: '银鲴', size: { min: 15, max: 40 }, weight: { min: 0.1, max: 1.2 } },
-  { name: '鳑鲏', size: { min: 4, max: 10 }, weight: { min: 0.002, max: 0.02 } },
-  { name: '棒花鱼', size: { min: 6, max: 18 }, weight: { min: 0.005, max: 0.06 } },
-  { name: '青鳉', size: { min: 2, max: 5 }, weight: { min: 0.001, max: 0.005 } },
+  { name: '鳑鲏', size: { min: 4, max: 10 }, weight: { min: 0.01, max: 0.02 } },
+  { name: '棒花鱼', size: { min: 6, max: 18 }, weight: { min: 0.01, max: 0.06 } },
+  { name: '青鳉', size: { min: 2, max: 5 }, weight: { min: 0.01, max: 0.02 } },
   { name: '马口鱼', size: { min: 10, max: 25 }, weight: { min: 0.02, max: 0.2 } },
-  { name: '子陵吻虾虎', size: { min: 4, max: 12 }, weight: { min: 0.003, max: 0.03 } },
+  { name: '子陵吻虾虎', size: { min: 4, max: 12 }, weight: { min: 0.01, max: 0.03 } },
   { name: '大西洋鲭', size: { min: 25, max: 60 }, weight: { min: 0.3, max: 2.5 } },
   { name: '赤眼鳟', size: { min: 20, max: 60 }, weight: { min: 0.2, max: 3 } },
   { name: '花骨鱼', size: { min: 12, max: 35 }, weight: { min: 0.05, max: 0.8 } },
   { name: '蛇鮈', size: { min: 8, max: 20 }, weight: { min: 0.01, max: 0.12 } },
-  { name: '银鮈', size: { min: 6, max: 18 }, weight: { min: 0.005, max: 0.08 } },
+  { name: '银鮈', size: { min: 6, max: 18 }, weight: { min: 0.01, max: 0.08 } },
   { name: '似鳊', size: { min: 15, max: 35 }, weight: { min: 0.1, max: 0.8 } },
   { name: '圆吻鲴', size: { min: 15, max: 40 }, weight: { min: 0.15, max: 1.5 } },
-  { name: '中华鳑鲏', size: { min: 4, max: 9 }, weight: { min: 0.002, max: 0.02 } },
-  { name: '中华花鳅', size: { min: 6, max: 15 }, weight: { min: 0.005, max: 0.04 } },
-  { name: '中华斗鱼', size: { min: 4, max: 8 }, weight: { min: 0.002, max: 0.015 } },
-  { name: '食蚊鱼', size: { min: 2, max: 7 }, weight: { min: 0.001, max: 0.01 } },
-  { name: '孔雀鱼', size: { min: 2, max: 6 }, weight: { min: 0.001, max: 0.008 } },
-  { name: '斑马鱼', size: { min: 3, max: 5 }, weight: { min: 0.001, max: 0.005 } },
-  { name: '高体鳑鲏', size: { min: 5, max: 10 }, weight: { min: 0.003, max: 0.025 } },
-  { name: '棒花鮈', size: { min: 6, max: 16 }, weight: { min: 0.005, max: 0.05 } },
+  { name: '中华鳑鲏', size: { min: 4, max: 9 }, weight: { min: 0.01, max: 0.02 } },
+  { name: '中华花鳅', size: { min: 6, max: 15 }, weight: { min: 0.01, max: 0.04 } },
+  { name: '中华斗鱼', size: { min: 4, max: 8 }, weight: { min: 0.01, max: 0.02 } },
+  { name: '食蚊鱼', size: { min: 2, max: 7 }, weight: { min: 0.01, max: 0.01 } },
+  { name: '孔雀鱼', size: { min: 2, max: 6 }, weight: { min: 0.01, max: 0.02 } },
+  { name: '斑马鱼', size: { min: 3, max: 5 }, weight: { min: 0.01, max: 0.02 } },
+  { name: '高体鳑鲏', size: { min: 5, max: 10 }, weight: { min: 0.01, max: 0.025 } },
+  { name: '棒花鮈', size: { min: 6, max: 16 }, weight: { min: 0.01, max: 0.05 } },
   { name: '黄鲫', size: { min: 8, max: 20 }, weight: { min: 0.02, max: 0.15 } },
   { name: '梅童鱼', size: { min: 10, max: 25 }, weight: { min: 0.03, max: 0.3 } },
   { name: '龙头鱼', size: { min: 15, max: 40 }, weight: { min: 0.05, max: 0.5 } },
@@ -64,8 +64,8 @@ export const commonFish = [
   { name: '鲬鱼', size: { min: 15, max: 40 }, weight: { min: 0.08, max: 0.7 } },
   { name: '黄鳍鲷', size: { min: 15, max: 45 }, weight: { min: 0.15, max: 2 } },
   { name: '斑马石鲷', size: { min: 15, max: 35 }, weight: { min: 0.1, max: 1 } },
-  { name: '日本鳀', size: { min: 8, max: 15 }, weight: { min: 0.005, max: 0.03 } },
-  { name: '鳀鱼', size: { min: 8, max: 20 }, weight: { min: 0.005, max: 0.05 } }
+  { name: '日本鳀', size: { min: 8, max: 15 }, weight: { min: 0.01, max: 0.03 } },
+  { name: '鳀鱼', size: { min: 8, max: 20 }, weight: { min: 0.01, max: 0.05 } }
 ];
 
 export const uncommonFish = [
@@ -206,7 +206,7 @@ export const mysteryFish = [
   { name: '时间沙漏鱼', size: { min: 30, max: 60 }, weight: { min: 0.8, max: 3.6 } },
   { name: '反方向的鱼', size: { min: 18, max: 50 }, weight: { min: 0.3, max: 2.4 } },
   { name: '不存在的鱼', size: { min: 1, max: 999 }, weight: { min: 0.01, max: 99.99 } },
-  { name: '空指针鲤', size: { min: 0, max: 1 }, weight: { min: 0, max: 0.01 } }
+  { name: '空指针鲤', size: { min: 0, max: 1 }, weight: { min: 0.01, max: 0.01 } }
 ];
 
 export const fishTypes = {
@@ -251,14 +251,14 @@ export const legacyFishAliases = {
 };
 
 // 这里是“钓到鱼之后”的稀有度分布，总和建议保持为 1。
-// legendary: 0.006 = 0.6%，'？': 0.001 = 0.1%。
+// legendary: 0.0175 = 1.75%，'？': 0.0075 = 0.75%。
 export const rarityWeights = {
-  common: 0.604,
+  common: 0.53,
   uncommon: 0.25,
-  rare: 0.1,
-  epic: 0.039,
-  legendary: 0.006,
-  '？': 0.001
+  rare: 0.125,
+  epic: 0.07,
+  legendary: 0.0175,
+  '？': 0.0075
 };
 
 export const trashItems = [
@@ -314,5 +314,6 @@ export function generateFish(rarity) {
 
 function getRandomNumber(min, max, decimals = 0) {
   const number = Math.random() * (max - min) + min;
-  return Number(number.toFixed(decimals));
+  const rounded = Number(number.toFixed(decimals));
+  return decimals === 2 && max > 0 ? Math.max(0.01, rounded) : rounded;
 }
