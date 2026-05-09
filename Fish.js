@@ -347,6 +347,7 @@ export class fishing extends plugin {
         { reg: '^#鱼币补偿\\s*.*$', fnc: 'compensateFishCoins' },
         { reg: '^#补鱼.*$', fnc: 'compensateFish' },
         { reg: '^#强制刷新钓鱼日$', fnc: 'forceRefreshFishingDay' },
+        { reg: '^#钓鱼更新$', fnc: 'updateFishPlugin' },
         { reg: '^#封竿$', fnc: 'sealFishingGroup' }
       ]
     });
@@ -451,6 +452,29 @@ export class fishing extends plugin {
 
   hasManagePermission(e) {
     return Boolean(e.isMaster || e.member?.is_admin || e.member?.is_owner || e.sender?.role === 'admin' || e.sender?.role === 'owner');
+  }
+
+  async updateFishPlugin(e) {
+    if (!e.isMaster) {
+      await this.reply('只有主人才能更新钓鱼插件。');
+      return false;
+    }
+
+    await this.reply('开始更新 Fish-plugin，请稍候...');
+    const ret = await Bot.exec('git pull', { cwd: 'plugins/Fish-plugin' });
+    const output = [ret.stdout, ret.stderr].filter(Boolean).join('\n').trim();
+    if (ret.error) {
+      await this.reply(`Fish-plugin 更新失败：\n${ret.error.message}${output ? `\n${output}` : ''}`);
+      return false;
+    }
+
+    const updateText = /Already up|已经是最新|Already up to date/i.test(output)
+      ? 'Fish-plugin 已是最新，准备重启云仔。'
+      : 'Fish-plugin 更新完成，准备重启云仔。';
+    await this.reply(`${updateText}${output ? `\n${output}` : ''}`);
+    const restartRet = await Bot.restart();
+    await this.reply(`重启错误：\n${Bot.String(restartRet)}`);
+    return true;
   }
 
   isFishCommand(msg = '') {
@@ -915,6 +939,9 @@ export class fishing extends plugin {
     const rescuedCatchFakeFailMessage = rescuedCatch
       ? failProtectionFakeFailMessages[Math.floor(Math.random() * failProtectionFakeFailMessages.length)]
       : '';
+    if (rescuedCatch) {
+      await this.reply(`${userDisplay}\n${rescuedCatchFakeFailMessage}`);
+    }
     if (missedCatch && !rescuedCatch) {
       recordEmptyCast(settleUser);
       const unlocked = scanAchievements(settleUser, this.fishTypes);
@@ -932,7 +959,7 @@ export class fishing extends plugin {
     settleUser.stats.lastCatchRarity = fishWithTimestamp.rarity;
 
     const resultIntroMsg = rescuedCatch
-      ? `${rescuedCatchFakeFailMessage}\n[护线补救] 失败保护触发：看似空钩的一口被稳住了，鱼钩重新咬牢，成功上鱼。\n`
+      ? '但你猛的一提，看似空钩的一口被稳住了，鱼钩重新咬牢，成功上鱼。\n'
       : '';
     let signalMsg = '';
     if (signal.targets.some(item => item.name === fishWithTimestamp.name)) {
