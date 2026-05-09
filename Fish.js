@@ -1,4 +1,6 @@
 import plugin from '../../lib/plugins/plugin.js';
+import path from 'path';
+import { fileURLToPath } from 'url';
 import {
   fishTemplateByName,
   fishTypes,
@@ -75,6 +77,9 @@ import { formatAchievementList, getAchievementCatchRateBonus, getAchievementDail
 import { ensureDailySignal, getTodayKey } from './lib/signals.js';
 import { ensureResourceDirs, replyWithPanel } from './lib/panel.js';
 import { findCustomBaitBySource, generateCustomBaitFromText } from './lib/custom-bait.js';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 const HELP_TEXT = [
   '基础命令',
@@ -461,7 +466,7 @@ export class fishing extends plugin {
     }
 
     await this.reply('开始更新 Fish-plugin，请稍候...');
-    const ret = await Bot.exec('git pull', { cwd: 'plugins/Fish-plugin' });
+    const ret = await Bot.exec('git pull', { cwd: __dirname });
     const output = [ret.stdout, ret.stderr].filter(Boolean).join('\n').trim();
     if (ret.error) {
       await this.reply(`Fish-plugin 更新失败：\n${ret.error.message}${output ? `\n${output}` : ''}`);
