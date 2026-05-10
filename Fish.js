@@ -187,6 +187,7 @@ function getBuiltinBuyableBaitList() {
 
 function getCustomBaitList(userData) {
   return Object.values(userData?.customBaits || {})
+    .filter(bait => Number(userData?.baitInventory?.[bait.id] || 0) > 0)
     .filter((bait, index, arr) => arr.findIndex(item => item.id === bait.id) === index);
 }
 
@@ -220,13 +221,24 @@ function parseLegendaryCraftTarget(text = '') {
 function parseMarketPurchaseKeyword(keyword = '') {
   const text = String(keyword || '').trim();
   const compact = text.replace(/\s+/g, '');
-  const match = compact.match(/^(.*)\*(\d{1,3})$/);
+  const match =
+    text.match(/^(.*?)\s+(\d{1,3})(?:包|份|个)?$/) ||
+    compact.match(/^(.*?)[*xX×](\d{1,3})(?:包|份|个)?$/) ||
+    compact.match(/^(.*?)(?:包|份|个)(\d{1,3})$/) ||
+    compact.match(/^(.*?)(?:包|份|个)$/);
   if (!match) return { keyword: text, compactKeyword: compact, quantity: 1 };
-  const quantity = Number(match[2]);
+  const quantity = Number(match[2] || 1);
   if (!Number.isInteger(quantity) || quantity < 1) return null;
   const itemCompactKeyword = match[1];
   if (!itemCompactKeyword) return null;
   return { keyword: itemCompactKeyword, compactKeyword: itemCompactKeyword, quantity };
+}
+
+function getBaitPackText(bait) {
+  const packSize = Math.max(1, Number(bait?.packSize || 1));
+  const unitPrice = Number(bait?.price || 0);
+  const costPerUse = unitPrice / packSize;
+  return `${unitPrice}鱼币/包，1包${packSize}份，约${costPerUse.toFixed(1)}鱼币/次`;
 }
 
 function mergeRarityBias(...biasList) {
@@ -683,10 +695,11 @@ export class fishing extends plugin {
 
   catchFish(userData = null, extraBias = {}, bodyModifiers = {}) {
     let rarities = Object.keys(this.fishTypes);
-    if (userData?.everCaughtEasterEgg) {
+    const weights = this.applyRarityBias(rarityWeights, extraBias);
+    if (userData?.hasEasterEgg || userData?.fishTank?.some(fish => fish.rarity === EASTER_EGG_RARITY)) {
+      weights.legendary = (weights.legendary || 0) + (weights[EASTER_EGG_RARITY] || 0);
       rarities = rarities.filter(rarity => rarity !== EASTER_EGG_RARITY);
     }
-    const weights = this.applyRarityBias(rarityWeights, extraBias);
     const rarity = this.getWeightedRandom(rarities, weights);
     return applyFishBodyBuffs(generateFish(rarity), bodyModifiers);
   }
@@ -1520,7 +1533,7 @@ export class fishing extends plugin {
       `示例预估：卖出 ${commonPreview.length} 条 common 可得约 ${previewCoins} 鱼币`,
       '',
       '鱼饵区：',
-      ...baitList.map((bait, index) => `鱼饵${index + 1} | ${bait.name} - ${bait.price}鱼币 - ${bait.description}`),
+      ...baitList.map((bait, index) => `鱼饵${index + 1} | ${bait.name} - ${getBaitPackText(bait)} - ${bait.description}`),
       '',
       '鱼竿区：',
       ...rodList.map((rod, index) => `鱼竿${index + 1} | ${rod.name} - ${rod.price}鱼币 - ${rod.description}`),
@@ -1536,7 +1549,7 @@ export class fishing extends plugin {
       `当前鱼饵：${getEquippedBait(userData).name}`,
       '',
       '鱼饵区：',
-      ...baitList.map((bait, index) => `鱼饵${index + 1} | ${bait.name} - ${bait.price}鱼币 - ${bait.description}`),
+      ...baitList.map((bait, index) => `鱼饵${index + 1} | ${bait.name} - ${getBaitPackText(bait)} - ${bait.description}`),
       '',
       '鱼竿区：',
       ...rodList.map((rod, index) => `鱼竿${index + 1} | ${rod.name} - ${rod.price}鱼币 - ${rod.description}`),
@@ -1550,7 +1563,7 @@ export class fishing extends plugin {
       title: '鱼市',
       subtitle: '卖多余鱼换鱼币，再购入鱼饵、额外钓鱼券和鱼竿。',
       sections,
-      footer: '购买格式：#鱼市购买 鱼饵1 / #鱼市购买 鱼竿1 / #鱼市购买 自定义鱼饵 桂花酒糟'
+      footer: '购买格式：#鱼市购买 鱼饵1 / #鱼市购买 鱼饵1*5 / #鱼市购买 鱼竿1 / #鱼市购买 自定义鱼饵 桂花酒糟'
     }, fallback);
   }
 
@@ -1724,18 +1737,9 @@ export class fishing extends plugin {
     const data = this.loadData();
     const { userId, text: userDisplay } = getUserDisplay(e);
     const userData = this.getOrCreateUser(data, userId);
-    const parsedPurchase = parseMarketPurchaseKeyword(keyword);
-    if (!parsedPurchase) {
-      await this.reply(`${userDisplay}\n购买数量格式不正确。批量购买请写在商品后面，例如：#鱼市购买鱼饵1*5`);
-      return;
-    }
-    const { keyword: itemKeyword, compactKeyword, quantity } = parsedPurchase;
-    const customMatch = String(keyword || '').trim().match(/^自定义鱼饵\s+(.+)$/);
+    const rawKeyword = String(keyword || '').trim();
+    const customMatch = rawKeyword.match(/^自定义鱼饵\s+(.+)$/);
     if (customMatch) {
-      if (quantity !== 1) {
-        await this.reply(`${userDisplay}\n自定义鱼饵暂不支持批量定制，请一次输入一份内容。`);
-        return;
-      }
       const sourceText = customMatch[1].trim();
       const customPrice = SHOP_ITEMS.custom_bait.price;
       if (userData.coins < customPrice) {
@@ -1743,14 +1747,23 @@ export class fishing extends plugin {
         return;
       }
       const bait = findCustomBaitBySource(userData.customBaits, sourceText) || generateCustomBaitFromText(sourceText);
+      bait.price = customPrice;
+      bait.packSize = 3;
       userData.coins -= customPrice;
       userData.customBaits[bait.id] = bait;
       if (!userData.baitInventory[bait.id]) userData.baitInventory[bait.id] = 0;
       userData.baitInventory[bait.id] += bait.packSize;
       saveFishData(data);
-      await this.reply(`${userDisplay}\n已定制 ${bait.name}，库存 +${bait.packSize}。\n特点：${bait.description}\n可用 #换饵 ${bait.name} 切换。当前鱼币：${userData.coins}`);
+      await this.reply(`${userDisplay}\n已定制 ${bait.name}，花费 ${customPrice} 鱼币，库存 +${bait.packSize} 次。\n特点：${bait.description}\n可用 #换饵 ${bait.name} 切换。当前鱼币：${userData.coins}`);
       return;
     }
+
+    const parsedPurchase = parseMarketPurchaseKeyword(keyword);
+    if (!parsedPurchase) {
+      await this.reply(`${userDisplay}\n购买数量格式不正确。批量购买请写在商品后面，例如：#鱼市购买鱼饵1*5`);
+      return;
+    }
+    const { keyword: itemKeyword, compactKeyword, quantity } = parsedPurchase;
 
     let item = null;
     const baitNo = compactKeyword.match(/^鱼饵(\d{1,2})$/);
@@ -1808,7 +1821,7 @@ export class fishing extends plugin {
       const addedCount = item.packSize * quantity;
       userData.baitInventory[item.id] += addedCount;
       saveFishData(data);
-      await this.reply(`${userDisplay}\n已购买 ${item.name} x${quantity}，库存 +${addedCount}。可用 #换饵 ${item.name} 切换。当前鱼币：${userData.coins}`);
+      await this.reply(`${userDisplay}\n已购买 ${item.name} ${quantity} 包，共 ${totalPrice} 鱼币；每包 ${item.packSize} 份，库存 +${addedCount} 次。可用 #换饵 ${item.name} 切换。当前鱼币：${userData.coins}`);
       return;
     }
 
