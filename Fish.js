@@ -961,11 +961,11 @@ export class fishing extends plugin {
 
     if (fishWithTimestamp.rarity === EASTER_EGG_RARITY) {
       userData.everCaughtEasterEgg = true;
-      userData.hasEasterEgg = userData.fishTank.some(item => isSameFish(item, fishWithTimestamp));
-      if (userData.hasEasterEgg) tankUpdateMsg += `\n彩蛋鱼效果已生效：${describeEasterEggEffects(userData)}。`;
-    } else {
-      userData.hasEasterEgg = userData.fishTank.some(item => item.rarity === EASTER_EGG_RARITY);
+      if (tankResult.changed) {
+        tankUpdateMsg += `\n彩蛋鱼效果已生效：${describeEasterEggEffects(userData)}。`;
+      }
     }
+    userData.hasEasterEgg = userData.fishTank.some(item => item.rarity === EASTER_EGG_RARITY);
 
     return { fishWithTimestamp, tankUpdateMsg };
   }
@@ -1619,8 +1619,8 @@ export class fishing extends plugin {
     }
 
     const target = parseSellTarget(commandText);
-    if (target.rarity === 'legendary') {
-      await this.reply(`${userDisplay}\nlegendary 鱼不能售卖。`);
+    if (target.rarity === 'legendary' || target.rarity === EASTER_EGG_RARITY) {
+      await this.reply(`${userDisplay}\nlegendary 鱼和彩蛋鱼不能售卖。`);
       return;
     }
 
