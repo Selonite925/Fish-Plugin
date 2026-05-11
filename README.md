@@ -153,6 +153,10 @@ Remove-Item -Recurse -Force .\plugins\Fish-plugin
 
 每种 `legendary` 鱼对应一根特殊鱼竿。已经拥有对应鱼竿时，不会重复炼成。
 
+### 鱼缸升级
+
+鱼缸每升 1 级增加 5 格容量，并让玩家本人每日基础钓数永久 +2。升级消耗会随等级递增：升到第 N 级需要 N 条 `legendary` 鱼，或 3N 条 `epic` 鱼。
+
 ### 管理命令
 
 | 命令 | 说明 |

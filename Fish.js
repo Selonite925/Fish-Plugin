@@ -1100,12 +1100,17 @@ export class fishing extends plugin {
     }
     normalizeUserData(userData);
 
+    const currentLevel = Number(userData.tankLevel || 0);
     const costType = e.msg.match(/#升级鱼缸\s+(legendary|epic)/)?.[1];
-    const costRule = getUpgradeCost(costType);
+    const costRule = getUpgradeCost(costType, currentLevel);
+    if (!costRule) {
+      await this.reply(`${userDisplay}\n升级消耗类型不正确，请使用 legendary 或 epic。`);
+      return;
+    }
     const displayIndexes = parseTankIndexes(e.msg, costRule.count);
     const uniqueDisplayIndexes = [...new Set(displayIndexes)];
     if (uniqueDisplayIndexes.length !== costRule.count) {
-      await this.reply(`${userDisplay}\n需要选择${costRule.count}条 ${costRule.rarity} 鱼。`);
+      await this.reply(`${userDisplay}\n升级到 ${currentLevel + 1} 级鱼缸需要选择 ${costRule.count} 条 ${costRule.rarity} 鱼。`);
       return;
     }
 
@@ -1124,10 +1129,14 @@ export class fishing extends plugin {
     selected.map(item => item.originalIndex).sort((a, b) => b - a).forEach(index => userData.fishTank.splice(index, 1));
     applyTankUpgrade(userData);
     userData.hasEasterEgg = userData.fishTank.some(fish => fish.rarity === EASTER_EGG_RARITY);
-    const unlocked = this.refreshAchievements(data, userId);
+    const unlocked = scanAchievements(userData, this.fishTypes);
+    userData.achievementCatchRateBonus = getAchievementCatchRateBonus(userData);
+    userData.achievementDailyCastBonus = getAchievementDailyCastBonus(userData);
+    saveFishData(data);
 
     await this.reply(
       `${userDisplay}\n鱼缸升级成功。\n` +
+      `等级：${currentLevel} -> ${userData.tankLevel}\n` +
       `容量：${userData.fishTank.length}/${userData.tankCapacity}\n` +
       `每日钓鱼次数：${getDailyLimit(this.config, userData, getEquippedRod(userData))}次（本次升级+${TANK_UPGRADE_EXTRA_CASTS}竿）${this.formatAchievementUnlocks(unlocked)}`
     );
