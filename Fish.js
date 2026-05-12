@@ -138,12 +138,46 @@ const FAST_FISHING_CATCH_RATE_PENALTY = 0.08;
 const FISHING_BUSY_MESSAGE = '你正在钓鱼，钓鱼就要戒骄戒躁，请稍后。';
 const activeFishingUsers = new Set();
 const activeFishingBusyNotified = new Set();
+const FIRST_EASTER_EGG_FAVOR_SHARES = {
+  legendary: 0.4,
+  [EASTER_EGG_RARITY]: 0.6
+};
 const FAIL_RESULT_LABELS = {
   empty_hook: '空钩',
   lost_item: '捞回失物',
   trash: '杂物',
   lost_event: '掉落事件',
   random_event: '空军事件'
+};
+const COLLECTION_RARITY_THEMES = {
+  common: {
+    accent: '#16a34a',
+    accentSoft: 'rgba(22, 163, 74, 0.14)',
+    textColor: '#166534',
+    chipBg: 'rgba(220, 252, 231, 0.92)',
+    chipBorder: 'rgba(34, 197, 94, 0.38)'
+  },
+  uncommon: {
+    accent: '#0891b2',
+    accentSoft: 'rgba(8, 145, 178, 0.14)',
+    textColor: '#0f766e',
+    chipBg: 'rgba(207, 250, 254, 0.92)',
+    chipBorder: 'rgba(6, 182, 212, 0.38)'
+  },
+  rare: {
+    accent: '#d97706',
+    accentSoft: 'rgba(217, 119, 6, 0.14)',
+    textColor: '#b45309',
+    chipBg: 'rgba(254, 243, 199, 0.94)',
+    chipBorder: 'rgba(245, 158, 11, 0.4)'
+  },
+  epic: {
+    accent: '#9333ea',
+    accentSoft: 'rgba(147, 51, 234, 0.14)',
+    textColor: '#7e22ce',
+    chipBg: 'rgba(243, 232, 255, 0.94)',
+    chipBorder: 'rgba(168, 85, 247, 0.4)'
+  }
 };
 
 const FISH_KING_SCORE_BANDS = {
@@ -273,6 +307,14 @@ function clampFishBodyValue(value, min, max, decimals) {
 function getRandomBodyValue(min, max, decimals) {
   const rounded = Number((Math.random() * (max - min) + min).toFixed(decimals));
   return decimals === 2 && max > 0 ? Math.max(0.01, rounded) : rounded;
+}
+
+function escapePanelHtml(text = '') {
+  return String(text)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
 }
 
 function createFishFromTemplate(template, rarity) {
@@ -725,12 +767,27 @@ export class fishing extends plugin {
     return Math.max(band.min, Math.min(band.max, Number(score.toFixed(2))));
   }
 
+  shouldFavorFirstEasterEgg(userData) {
+    if (!userData || userData.hasEasterEgg || userData.everCaughtEasterEgg) return false;
+    const fishTank = Array.isArray(userData.fishTank) ? userData.fishTank : [];
+    if (fishTank.some(fish => fish?.rarity === EASTER_EGG_RARITY)) return false;
+
+    const fishHistory = Array.isArray(userData.allTimeFish) ? userData.allTimeFish : [];
+    return fishHistory.some(fish => fish?.rarity === 'legendary');
+  }
+
   catchFish(userData = null, extraBias = {}, bodyModifiers = {}) {
     let rarities = Object.keys(this.fishTypes);
     const weights = this.applyRarityBias(rarityWeights, extraBias);
     if (userData?.hasEasterEgg || userData?.fishTank?.some(fish => fish.rarity === EASTER_EGG_RARITY)) {
       weights.legendary = (weights.legendary || 0) + (weights[EASTER_EGG_RARITY] || 0);
       rarities = rarities.filter(rarity => rarity !== EASTER_EGG_RARITY);
+    } else if (this.shouldFavorFirstEasterEgg(userData)) {
+      const specialPoolWeight = Math.max(0, Number(weights.legendary || 0)) + Math.max(0, Number(weights[EASTER_EGG_RARITY] || 0));
+      if (specialPoolWeight > 0) {
+        weights.legendary = specialPoolWeight * FIRST_EASTER_EGG_FAVOR_SHARES.legendary;
+        weights[EASTER_EGG_RARITY] = specialPoolWeight * FIRST_EASTER_EGG_FAVOR_SHARES[EASTER_EGG_RARITY];
+      }
     }
     const rarity = this.getWeightedRandom(rarities, weights);
     return applyFishBodyBuffs(generateFish(rarity), bodyModifiers);
@@ -1056,6 +1113,79 @@ export class fishing extends plugin {
     if (fish.rarity === 'epic' || fish.rarity === 'legendary' || fish.rarity === EASTER_EGG_RARITY) {
       summary.notableFish.push(fish);
     }
+  }
+
+  buildCollectionPanel(userData) {
+    const visibleRarities = getVisibleCollectionRarities();
+    const visibleRaritySet = new Set(visibleRarities);
+    const collectedNames = new Set((userData.allTimeFish || [])
+      .filter(fish => visibleRaritySet.has(fish.rarity))
+      .map(fish => fish.name));
+    const totalSpecies = visibleRarities.reduce((sum, rarity) => sum + (this.fishTypes[rarity] || []).length, 0);
+    const collectedCount = collectedNames.size;
+    const progress = totalSpecies === 0 ? 0 : ((collectedCount / totalSpecies) * 100).toFixed(1);
+    const stats = getCollectionStats(userData, this.fishTypes, visibleRarities);
+    const sections = [];
+
+    for (const rarity of visibleRarities) {
+      const theme = COLLECTION_RARITY_THEMES[rarity] || COLLECTION_RARITY_THEMES.common;
+      const species = this.fishTypes[rarity] || [];
+      const chips = species.map(fish => {
+        const owned = collectedNames.has(fish.name);
+        const className = owned ? 'collection-chip owned' : 'collection-chip';
+        const style = owned
+          ? `--chip-bg:${theme.chipBg};--chip-border:${theme.chipBorder};--chip-color:${theme.textColor};--chip-shadow:${theme.accentSoft};`
+          : '';
+        return `<span class="${className}" style="${style}">${escapePanelHtml(fish.name)}</span>`;
+      }).join('');
+
+      sections.push({
+        type: 'collection',
+        title: `${rarityLabel(rarity)} ${stats[rarity].owned}/${stats[rarity].total}`,
+        titleStyle: `--collection-accent:${theme.accent};--collection-accent-soft:${theme.accentSoft};--collection-text:${theme.textColor};`,
+        html: `<div class="collection-group">${chips}</div>`
+      });
+    }
+
+    const missingPreview = [];
+    for (const rarity of [...visibleRarities].reverse()) {
+      for (const fish of this.fishTypes[rarity] || []) {
+        if (!collectedNames.has(fish.name)) {
+          missingPreview.push(`${fish.name}(${rarityLabel(rarity)})`);
+        }
+      }
+    }
+
+    const footer = missingPreview.length > 0
+      ? `还缺 ${missingPreview.length} 种 | 优先补位：${missingPreview.slice(0, 6).join('、')}`
+      : '你已经集齐当前所有可展示鱼种。';
+
+    const fallbackLines = [
+      '钓鱼图鉴',
+      `已收集：${collectedCount}/${totalSpecies} 种（${progress}%）`
+    ];
+    for (const rarity of visibleRarities) {
+      fallbackLines.push(`${rarityLabel(rarity)}：${stats[rarity].owned}/${stats[rarity].total}`);
+      const owned = [];
+      const missing = [];
+      for (const fish of this.fishTypes[rarity] || []) {
+        (collectedNames.has(fish.name) ? owned : missing).push(fish.name);
+      }
+      fallbackLines.push(`已收集：${owned.join('、') || '暂无'}`);
+      fallbackLines.push(`未收集：${missing.join('、') || '已集齐'}`);
+      fallbackLines.push('');
+    }
+
+    return {
+      panel: {
+        key: `collection-${Date.now()}`,
+        title: '钓鱼图鉴',
+        subtitle: `已收集 ${collectedCount}/${totalSpecies} 种 | 完成度 ${progress}%`,
+        sections,
+        footer
+      },
+      fallback: fallbackLines.join('\n').trim()
+    };
   }
 
   buildFastFishingResultPanel(userDisplay, summary, userData, rod) {
@@ -1396,7 +1526,8 @@ export class fishing extends plugin {
       return;
     }
 
-    selected.map(item => item.originalIndex).sort((a, b) => b - a).forEach(index => userData.fishTank.splice(index, 1));
+    const consumedFish = selected.map(item => item.fish);
+    removeOwnedFish(userData, consumedFish, { today: true, tank: true });
     applyTankUpgrade(userData);
     userData.hasEasterEgg = userData.fishTank.some(fish => fish.rarity === EASTER_EGG_RARITY);
     const unlocked = scanAchievements(userData, this.fishTypes);
@@ -1614,40 +1745,8 @@ export class fishing extends plugin {
       return;
     }
     normalizeUserData(userData);
-
-    const visibleRarities = getVisibleCollectionRarities();
-    const visibleRaritySet = new Set(visibleRarities);
-    const collectedNames = new Set(userData.allTimeFish
-      .filter(fish => visibleRaritySet.has(fish.rarity))
-      .map(fish => fish.name));
-    const totalSpecies = visibleRarities.reduce((sum, rarity) => sum + (this.fishTypes[rarity] || []).length, 0);
-    const collectedCount = collectedNames.size;
-    const progress = totalSpecies === 0 ? 0 : ((collectedCount / totalSpecies) * 100).toFixed(1);
-    const stats = getCollectionStats(userData, this.fishTypes, visibleRarities);
-
-    let replyMsg = `钓鱼图鉴\n\n已收集：${collectedCount}/${totalSpecies} 种（${progress}%）\n`;
-    for (const rarity of visibleRarities) {
-      replyMsg += `${rarityLabel(rarity)}：${stats[rarity].owned}/${stats[rarity].total}\n`;
-    }
-
-    const missingPreview = [];
-    for (const rarity of [...visibleRarities].reverse()) {
-      for (const fish of this.fishTypes[rarity] || []) {
-        if (!collectedNames.has(fish.name)) {
-          missingPreview.push(`${fish.name}(${rarityLabel(rarity)})`);
-        }
-      }
-    }
-    if (missingPreview.length > 0) {
-      replyMsg += `\n还没收集到：\n${missingPreview.slice(0, 10).join('、')}`;
-      if (missingPreview.length > 10) {
-        replyMsg += `\n还有 ${missingPreview.length - 10} 种未展示`;
-      }
-    } else {
-      replyMsg += '\n你已经集齐全部鱼种。';
-    }
-
-    await this.reply(replyMsg);
+    const result = this.buildCollectionPanel(userData);
+    await replyWithPanel(this, result.panel, result.fallback);
   }
 
   async checkFishingRank() {
