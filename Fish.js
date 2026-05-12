@@ -47,6 +47,7 @@ import {
   getCatchRate,
   getDailyLimit,
   getDailyLimitBreakdown,
+  getTodayNormalCastUsed,
   describeEasterEggEffects,
   getEasterEggEffects,
   getEquippedBait,
@@ -92,6 +93,7 @@ const SELF_UPDATE_PRESERVE_PATHS = [
 const HELP_TEXT = [
   '基础命令',
   '#钓鱼 / #今日鱼获 / #查看鱼获 @某人 / #钓鱼图鉴 / #钓鱼排行 / #鱼王榜 / #空军榜',
+  '#钓鱼极速版：一次钓完当前所有可用次数，并以图片汇总结果',
   '',
   '鱼缸命令',
   '#查看鱼缸 / #升级鱼缸 legendary 1 / #升级鱼缸 epic 1 2 3 / #放生鱼 1 / #赠渔 @某人 1 / #炼竿 1 / #炼竿 神龙2',
@@ -132,6 +134,17 @@ const MANAGEMENT_HELP_TEXT = [
 
 const EMPTY_HOOK_FAIL_RATE = 0.3;
 const DAILY_TICKET_PURCHASE_LIMIT = 5;
+const FAST_FISHING_CATCH_RATE_PENALTY = 0.08;
+const FISHING_BUSY_MESSAGE = '你正在钓鱼，钓鱼就要戒骄戒躁，请稍后。';
+const activeFishingUsers = new Set();
+const activeFishingBusyNotified = new Set();
+const FAIL_RESULT_LABELS = {
+  empty_hook: '空钩',
+  lost_item: '捞回失物',
+  trash: '杂物',
+  lost_event: '掉落事件',
+  random_event: '空军事件'
+};
 
 const FISH_KING_SCORE_BANDS = {
   common: { min: 10, max: 80 },
@@ -345,6 +358,7 @@ export class fishing extends plugin {
       priority: 5000,
       rule: [
         { reg: '^#钓鱼$', fnc: 'startFishing' },
+        { reg: '^#钓鱼极速版$', fnc: 'startFastFishing' },
         { reg: '^#钓鱼帮助$', fnc: 'showHelp' },
         { reg: '^#钓鱼管理$', fnc: 'showManagementHelp' },
         { reg: '^#今日鱼获$', fnc: 'checkTodayFishRecord' },
@@ -477,6 +491,24 @@ export class fishing extends plugin {
 
   hasManagePermission(e) {
     return Boolean(e.isMaster || e.member?.is_admin || e.member?.is_owner || e.sender?.role === 'admin' || e.sender?.role === 'owner');
+  }
+
+  async acquireFishingLock(userId, userDisplay) {
+    if (activeFishingUsers.has(userId)) {
+      if (!activeFishingBusyNotified.has(userId)) {
+        activeFishingBusyNotified.add(userId);
+        await this.reply(`${userDisplay}\n${FISHING_BUSY_MESSAGE}`);
+      }
+      return false;
+    }
+    activeFishingUsers.add(userId);
+    activeFishingBusyNotified.delete(userId);
+    return true;
+  }
+
+  releaseFishingLock(userId) {
+    activeFishingUsers.delete(userId);
+    activeFishingBusyNotified.delete(userId);
   }
 
   async getGitTrackedFiles(repoDir) {
@@ -788,10 +820,13 @@ export class fishing extends plugin {
     const userData = this.getOrCreateUser(data, String(e.user_id));
     const rod = getEquippedRod(userData);
     const limit = getDailyLimitBreakdown(this.config, userData, rod);
+    const normalUsed = getTodayNormalCastUsed(userData);
+    const ticketUsed = Math.min(Number(userData.todayExtraUsed || 0), Number(userData.today?.count || 0));
     await this.reply(
       `你的每日基础钓鱼次数：${limit.total}次\n` +
+      `今日已用：基础${normalUsed}/${limit.total}，钓鱼券${ticketUsed}张，剩余钓鱼券${Number(userData.tickets || 0)}张\n` +
       `来源：全局基础${limit.base} + 鱼缸${limit.tankBonus} + 成就${limit.achievementBonus} + 鱼竿${limit.rodBonus}\n` +
-      `说明：鱼缸每升1级，玩家本人永久额外+${TANK_UPGRADE_EXTRA_CASTS}竿；钓鱼券只在超过基础上限后临时消耗。`
+      `说明：鱼缸每升1级，玩家本人永久额外+${TANK_UPGRADE_EXTRA_CASTS}竿；钓鱼券只记录为额外竿，不会占用鱼缸升级后新增的基础次数。`
     );
   }
 
@@ -967,108 +1002,343 @@ export class fishing extends plugin {
     }
     userData.hasEasterEgg = userData.fishTank.some(item => item.rarity === EASTER_EGG_RARITY);
 
-    return { fishWithTimestamp, tankUpdateMsg };
+    return { fishWithTimestamp, tankUpdateMsg, tankResult };
+  }
+
+  createFastFishingSummary(rod) {
+    return {
+      rodName: rod.name,
+      casts: 0,
+      catches: 0,
+      misses: 0,
+      rescued: 0,
+      ticketCasts: 0,
+      coinGain: 0,
+      signalHits: 0,
+      tankAdded: 0,
+      tankReplaced: 0,
+      autoSellCoins: 0,
+      manualBaitCasts: 0,
+      baitUses: {},
+      rarityCounts: {},
+      failTypes: {},
+      fishByName: new Map(),
+      notableFish: [],
+      achievements: new Set()
+    };
+  }
+
+  recordFastAchievementUnlocks(summary, unlocked) {
+    for (const item of unlocked || []) {
+      if (item.newlyUnlocked) summary.achievements.add(`解锁 ${item.name}`);
+      if (item.rewardDelivered) summary.achievements.add(`奖励 ${item.rewardText}`);
+    }
+  }
+
+  recordFastFish(summary, fish) {
+    summary.rarityCounts[fish.rarity] = (summary.rarityCounts[fish.rarity] || 0) + 1;
+    const key = `${fish.rarity}:${fish.name}`;
+    const current = summary.fishByName.get(key) || {
+      name: fish.name,
+      rarity: fish.rarity,
+      count: 0,
+      bestFish: fish,
+      bestScore: this.getFishKingScore(fish)
+    };
+    current.count += 1;
+    const score = this.getFishKingScore(fish);
+    if (score > current.bestScore) {
+      current.bestFish = fish;
+      current.bestScore = score;
+    }
+    summary.fishByName.set(key, current);
+
+    if (fish.rarity === 'epic' || fish.rarity === 'legendary' || fish.rarity === EASTER_EGG_RARITY) {
+      summary.notableFish.push(fish);
+    }
+  }
+
+  buildFastFishingResultPanel(userDisplay, summary, userData, rod) {
+    const rarityLines = RARITY_ORDER
+      .filter(rarity => summary.rarityCounts[rarity] > 0)
+      .map(rarity => `${rarityLabel(rarity)}：${summary.rarityCounts[rarity]}条`);
+
+    const fishLines = [...summary.fishByName.values()]
+      .sort((a, b) => {
+        const countDiff = b.count - a.count;
+        if (countDiff !== 0) return countDiff;
+        return (RARITY_ORDER.indexOf(b.rarity) - RARITY_ORDER.indexOf(a.rarity)) || a.name.localeCompare(b.name, 'zh-Hans-CN');
+      })
+      .slice(0, 10)
+      .map(item => {
+        const valueText = canSellFish(item.bestFish) ? `，参考售价${getFishSellValue(item.bestFish)}鱼币` : '';
+        return `${rarityLabel(item.rarity)} ${item.name} x${item.count}，最大${item.bestFish.length}cm/${item.bestFish.weight}kg${valueText}`;
+      });
+
+    const notableLines = summary.notableFish
+      .slice(0, 8)
+      .map(fish => `${rarityLabel(fish.rarity)} ${fish.name} ${fish.length}cm/${fish.weight}kg`);
+
+    const failLines = Object.entries(summary.failTypes)
+      .sort((a, b) => b[1] - a[1])
+      .map(([type, count]) => `${FAIL_RESULT_LABELS[type] || type}：${count}次`);
+
+    const baitLines = Object.entries(summary.baitUses)
+      .sort((a, b) => b[1] - a[1])
+      .map(([name, count]) => `${name}：生效${count}竿`);
+    if (summary.manualBaitCasts > 0) baitLines.push(`打窝效果：生效${summary.manualBaitCasts}竿`);
+
+    const extraLines = [
+      summary.ticketCasts > 0 ? `本次消耗钓鱼券：${summary.ticketCasts}张` : null,
+      summary.rescued > 0 ? `失败保护补救：${summary.rescued}次` : null,
+      summary.signalHits > 0 ? `命中限时鱼讯：${summary.signalHits}条` : null,
+      summary.tankAdded > 0 || summary.tankReplaced > 0 ? `鱼缸更新：新增${summary.tankAdded}条，替换${summary.tankReplaced}条` : null,
+      summary.autoSellCoins > 0 ? `鱼缸替换自动售出：+${summary.autoSellCoins}鱼币` : null
+    ].filter(Boolean);
+
+    const sections = [
+      userDisplay,
+      `鱼竿：${rod.name}`,
+      `总抛竿：${summary.casts}竿，上鱼${summary.catches}条，空军${summary.misses}竿`,
+      `今日次数：${getFishingLimitText(this.config, userData, getEquippedRod(userData))}`,
+      `鱼币变化：${summary.coinGain >= 0 ? '+' : ''}${summary.coinGain}，当前${userData.coins}`,
+      ...extraLines,
+      '',
+      '稀有度统计',
+      ...(rarityLines.length ? rarityLines : ['本次没有上鱼']),
+      '',
+      '主要鱼获',
+      ...(fishLines.length ? fishLines : ['本次没有鱼获']),
+      ...(notableLines.length ? ['', '高稀有鱼获', ...notableLines] : []),
+      ...(failLines.length ? ['', '空军统计', ...failLines] : []),
+      ...(baitLines.length ? ['', '鱼饵消耗', ...baitLines] : []),
+      ...(summary.achievements.size ? ['', '成就变化', ...[...summary.achievements].slice(0, 8)] : [])
+    ];
+
+    const fallback = [
+      '钓鱼极速版结果',
+      ...sections
+    ].join('\n');
+
+    return {
+      panel: {
+        key: `fast-fishing-${Date.now()}`,
+        title: '钓鱼极速版结果',
+        subtitle: `一次结算 ${summary.casts} 竿 | 上鱼 ${summary.catches} 条`,
+        sections,
+        footer: `当前鱼币：${userData.coins} | 当前鱼缸：${userData.fishTank.length}/${userData.tankCapacity}`
+      },
+      fallback
+    };
+  }
+
+  async startFastFishing(e) {
+    const { userId, text: userDisplay } = getUserDisplay(e);
+    if (!await this.acquireFishingLock(userId, userDisplay)) return;
+
+    try {
+      const data = this.loadData();
+      const userData = this.getOrCreateUser(data, userId);
+      let rod = getEquippedRod(userData);
+
+      if (!canFishToday(this.config, userData, rod)) {
+        await this.reply(`${userDisplay}\n${getFishingLimitExhaustedText(this.config, userData, rod)}`);
+        return;
+      }
+
+      const summary = this.createFastFishingSummary(rod);
+      const signal = this.getDailySignal();
+
+      while (canFishToday(this.config, userData, rod)) {
+        const coinsBeforeCast = Number(userData.coins || 0);
+        userData.total += 1;
+        const usage = registerCastUsage(this.config, userData, rod);
+        if (!usage.registered) break;
+
+        summary.casts += 1;
+        if (usage.usedTicket) summary.ticketCasts += 1;
+
+        const currentCount = userData.today.count;
+        const bait = getEquippedBait(userData);
+        const shopBait = this.consumeShopBait(userData, bait);
+        const shopBaitActive = bait.id !== 'plain' && (shopBait.bonus !== 0 || Object.keys(shopBait.rarityBias || {}).length > 0 || Object.keys(shopBait.bodyModifiers || {}).length > 0);
+        if (shopBaitActive) summary.baitUses[bait.name] = (summary.baitUses[bait.name] || 0) + 1;
+
+        const baitData = loadBaitData();
+        const manualBait = this.consumeManualBait(userId, baitData);
+        if (manualBait.message) summary.manualBaitCasts += 1;
+
+        const easterEggEffect = getEasterEggEffects(userData);
+        let hiddenPityBonus = 0;
+        if (currentCount === 10 && Number(userData.today.catches || 0) === 0) {
+          hiddenPityBonus = HIDDEN_PITY_CATCH_BONUS;
+        }
+
+        const mergedBias = mergeRarityBias(rod.rarityBias, shopBait.rarityBias, easterEggEffect.rarityBias);
+        const bodyModifiers = mergeFishBodyModifiers(rod, shopBait.bodyModifiers);
+        const catchRate = Math.max(0.05, getCatchRate(userData, manualBait.bonus + shopBait.bonus + hiddenPityBonus, rod.catchRateBonus || 0) - FAST_FISHING_CATCH_RATE_PENALTY);
+        const failRescueChance = Math.max(0, Math.min(0.45, Number(rod.failProtection || 0) + easterEggEffect.failProtection));
+        const missedCatch = Math.random() >= catchRate;
+        const failResult = missedCatch ? await this.getRandomFailResult(userId, e.group_id, e) : null;
+        const rescuedCatch = failResult?.type === 'empty_hook' && Math.random() < failRescueChance;
+
+        if (rescuedCatch) summary.rescued += 1;
+
+        if (missedCatch && !rescuedCatch) {
+          summary.misses += 1;
+          summary.failTypes[failResult.type] = (summary.failTypes[failResult.type] || 0) + 1;
+          recordEmptyCast(userData);
+          const unlocked = scanAchievements(userData, this.fishTypes);
+          this.recordFastAchievementUnlocks(summary, unlocked);
+          userData.achievementCatchRateBonus = getAchievementCatchRateBonus(userData);
+          userData.achievementDailyCastBonus = getAchievementDailyCastBonus(userData);
+          summary.coinGain += Number(userData.coins || 0) - coinsBeforeCast;
+          saveFishData(data);
+          rod = getEquippedRod(userData);
+          continue;
+        }
+
+        summary.catches += 1;
+        const fish = this.catchFish(userData, mergedBias, bodyModifiers);
+        const { fishWithTimestamp, tankResult } = this.addCaughtFishToUser(userData, fish);
+        this.recordFastFish(summary, fishWithTimestamp);
+        resetEmptyCastStreak(userData);
+        userData.stats.lastCatchRarity = fishWithTimestamp.rarity;
+        if (tankResult?.added) summary.tankAdded += 1;
+        if (tankResult?.replaced) summary.tankReplaced += 1;
+        if (tankResult?.soldCoins > 0) summary.autoSellCoins += tankResult.soldCoins;
+
+        if (signal.targets.some(item => item.name === fishWithTimestamp.name)) {
+          const signalCoins = signal.bonusCoins + Number(getEquippedRod(userData)?.signalBonusCoins || 0);
+          userData.coins += signalCoins;
+          userData.stats.signalFishCaught += 1;
+          summary.signalHits += 1;
+        }
+        const rodCoinBonus = Number(getEquippedRod(userData)?.catchCoinBonus || 0);
+        if (rodCoinBonus > 0) userData.coins += rodCoinBonus;
+        if (easterEggEffect.catchCoinBonus > 0) userData.coins += easterEggEffect.catchCoinBonus;
+
+        const unlocked = scanAchievements(userData, this.fishTypes);
+        this.recordFastAchievementUnlocks(summary, unlocked);
+        userData.achievementCatchRateBonus = getAchievementCatchRateBonus(userData);
+        userData.achievementDailyCastBonus = getAchievementDailyCastBonus(userData);
+        summary.coinGain += Number(userData.coins || 0) - coinsBeforeCast;
+        saveFishData(data);
+        rod = getEquippedRod(userData);
+      }
+
+      const result = this.buildFastFishingResultPanel(userDisplay, summary, userData, rod);
+      await replyWithPanel(this, result.panel, result.fallback);
+    } finally {
+      this.releaseFishingLock(userId);
+    }
   }
 
   async startFishing(e) {
-    const data = this.loadData();
     const { userId, text: userDisplay } = getUserDisplay(e);
-    const userData = this.getOrCreateUser(data, userId);
-    const rod = getEquippedRod(userData);
+    if (!await this.acquireFishingLock(userId, userDisplay)) return;
 
-    if (!canFishToday(this.config, userData, rod)) {
-      await this.reply(`${userDisplay}\n${getFishingLimitExhaustedText(this.config, userData, rod)}`);
-      return;
-    }
+    try {
+      const data = this.loadData();
+      const userData = this.getOrCreateUser(data, userId);
+      const rod = getEquippedRod(userData);
 
-    userData.total += 1;
-    registerCastUsage(this.config, userData, rod);
-    const currentCount = userData.today.count;
-    const bait = getEquippedBait(userData);
-    const shopBait = this.consumeShopBait(userData, bait);
-    saveFishData(data);
+      if (!canFishToday(this.config, userData, rod)) {
+        await this.reply(`${userDisplay}\n${getFishingLimitExhaustedText(this.config, userData, rod)}`);
+        return;
+      }
 
-    const easterEggEffect = getEasterEggEffects(userData);
-    await this.reply(`${userDisplay}\n已抛竿，当前鱼竿：${rod.name}\n当前鱼饵：${bait.name}\n请稍等片刻...`);
+      userData.total += 1;
+      registerCastUsage(this.config, userData, rod);
+      const currentCount = userData.today.count;
+      const bait = getEquippedBait(userData);
+      const shopBait = this.consumeShopBait(userData, bait);
+      saveFishData(data);
 
-    const minDelay = 1000;
-    const maxDelay = 15000;
-    const waitMultiplier = Math.max(0.35, (rod.waitMultiplier || 1) * easterEggEffect.waitMultiplier);
-    const scaledDelay = Math.max(minDelay, Math.floor((Math.random() * (maxDelay - minDelay) + minDelay) * waitMultiplier));
-    await new Promise(resolve => setTimeout(resolve, scaledDelay));
+      const easterEggEffect = getEasterEggEffects(userData);
+      await this.reply(`${userDisplay}\n已抛竿，当前鱼竿：${rod.name}\n当前鱼饵：${bait.name}\n请稍等片刻...`);
 
-    const settleData = this.loadData();
-    const settleUser = this.getOrCreateUser(settleData, userId);
-    const baitData = loadBaitData();
-    const manualBait = this.consumeManualBait(userId, baitData);
+      const minDelay = 1000;
+      const maxDelay = 15000;
+      const waitMultiplier = Math.max(0.35, (rod.waitMultiplier || 1) * easterEggEffect.waitMultiplier);
+      const scaledDelay = Math.max(minDelay, Math.floor((Math.random() * (maxDelay - minDelay) + minDelay) * waitMultiplier));
+      await new Promise(resolve => setTimeout(resolve, scaledDelay));
 
-    let hiddenPityBonus = 0;
-    if (currentCount === 10 && Number(settleUser.today.catches || 0) === 0) {
-      hiddenPityBonus = HIDDEN_PITY_CATCH_BONUS;
-    }
+      const settleData = this.loadData();
+      const settleUser = this.getOrCreateUser(settleData, userId);
+      const baitData = loadBaitData();
+      const manualBait = this.consumeManualBait(userId, baitData);
 
-    const mergedBias = mergeRarityBias(rod.rarityBias, shopBait.rarityBias, easterEggEffect.rarityBias);
-    const bodyModifiers = mergeFishBodyModifiers(rod, shopBait.bodyModifiers);
+      let hiddenPityBonus = 0;
+      if (currentCount === 10 && Number(settleUser.today.catches || 0) === 0) {
+        hiddenPityBonus = HIDDEN_PITY_CATCH_BONUS;
+      }
 
-    const catchRate = getCatchRate(settleUser, manualBait.bonus + shopBait.bonus + hiddenPityBonus, rod.catchRateBonus || 0);
-    const easterEggMsg = easterEggEffect.descriptions.length ? `\n[彩蛋加成] ${easterEggEffect.descriptions.join('；')}` : '';
-    const failRescueChance = Math.max(0, Math.min(0.45, Number(rod.failProtection || 0) + easterEggEffect.failProtection));
-    const missedCatch = Math.random() >= catchRate;
-    const failResult = missedCatch ? await this.getRandomFailResult(userId, e.group_id, e) : null;
-    const rescuedCatch = failResult?.type === 'empty_hook' && Math.random() < failRescueChance;
-    const rescuedCatchFakeFailMessage = rescuedCatch
-      ? failProtectionFakeFailMessages[Math.floor(Math.random() * failProtectionFakeFailMessages.length)]
-      : '';
-    if (rescuedCatch) {
-      await this.reply(`${userDisplay}\n${rescuedCatchFakeFailMessage}`);
-    }
-    if (missedCatch && !rescuedCatch) {
-      recordEmptyCast(settleUser);
+      const mergedBias = mergeRarityBias(rod.rarityBias, shopBait.rarityBias, easterEggEffect.rarityBias);
+      const bodyModifiers = mergeFishBodyModifiers(rod, shopBait.bodyModifiers);
+
+      const catchRate = getCatchRate(settleUser, manualBait.bonus + shopBait.bonus + hiddenPityBonus, rod.catchRateBonus || 0);
+      const easterEggMsg = easterEggEffect.descriptions.length ? `\n[彩蛋加成] ${easterEggEffect.descriptions.join('；')}` : '';
+      const failRescueChance = Math.max(0, Math.min(0.45, Number(rod.failProtection || 0) + easterEggEffect.failProtection));
+      const missedCatch = Math.random() >= catchRate;
+      const failResult = missedCatch ? await this.getRandomFailResult(userId, e.group_id, e) : null;
+      const rescuedCatch = failResult?.type === 'empty_hook' && Math.random() < failRescueChance;
+      const rescuedCatchFakeFailMessage = rescuedCatch
+        ? failProtectionFakeFailMessages[Math.floor(Math.random() * failProtectionFakeFailMessages.length)]
+        : '';
+      if (rescuedCatch) {
+        await this.reply(`${userDisplay}\n${rescuedCatchFakeFailMessage}`);
+      }
+      if (missedCatch && !rescuedCatch) {
+        recordEmptyCast(settleUser);
+        const unlocked = scanAchievements(settleUser, this.fishTypes);
+        settleUser.achievementCatchRateBonus = getAchievementCatchRateBonus(settleUser);
+        settleUser.achievementDailyCastBonus = getAchievementDailyCastBonus(settleUser);
+        saveFishData(settleData);
+        await this.reply(`${userDisplay}\n${failResult.message}\n今日钓鱼次数：${getFishingLimitText(this.config, settleUser, getEquippedRod(settleUser))}${manualBait.message}${shopBait.message}${easterEggMsg}${this.formatAchievementUnlocks(unlocked)}`);
+        return;
+      }
+
+      const signal = this.getDailySignal();
+      const fish = this.catchFish(settleUser, mergedBias, bodyModifiers);
+      const { fishWithTimestamp, tankUpdateMsg } = this.addCaughtFishToUser(settleUser, fish);
+      resetEmptyCastStreak(settleUser);
+      settleUser.stats.lastCatchRarity = fishWithTimestamp.rarity;
+
+      const resultIntroMsg = rescuedCatch
+        ? '但你猛的一提，看似空钩的一口被稳住了，鱼钩重新咬牢，成功上鱼。\n'
+        : '';
+      let signalMsg = '';
+      if (signal.targets.some(item => item.name === fishWithTimestamp.name)) {
+        const signalCoins = signal.bonusCoins + Number(getEquippedRod(settleUser)?.signalBonusCoins || 0);
+        settleUser.coins += signalCoins;
+        settleUser.stats.signalFishCaught += 1;
+        signalMsg += `\n[限时鱼讯] 命中今日目标鱼，额外获得 ${signalCoins} 鱼币。`;
+      }
+      const rodCoinBonus = Number(getEquippedRod(settleUser)?.catchCoinBonus || 0);
+      if (rodCoinBonus > 0) {
+        settleUser.coins += rodCoinBonus;
+        signalMsg += `\n[鱼竿效果] 本次额外收获 ${rodCoinBonus} 鱼币。`;
+      }
+      if (easterEggEffect.catchCoinBonus > 0) {
+        settleUser.coins += easterEggEffect.catchCoinBonus;
+        signalMsg += `\n[彩蛋加成] 本次额外收获 ${easterEggEffect.catchCoinBonus} 鱼币。`;
+      }
       const unlocked = scanAchievements(settleUser, this.fishTypes);
       settleUser.achievementCatchRateBonus = getAchievementCatchRateBonus(settleUser);
       settleUser.achievementDailyCastBonus = getAchievementDailyCastBonus(settleUser);
       saveFishData(settleData);
-      await this.reply(`${userDisplay}\n${failResult.message}\n今日钓鱼次数：${getFishingLimitText(this.config, settleUser, getEquippedRod(settleUser))}${manualBait.message}${shopBait.message}${easterEggMsg}${this.formatAchievementUnlocks(unlocked)}`);
-      return;
+      await this.handleSpecialFishEvent(fish);
+      await this.reply(
+        `${userDisplay}\n` +
+        resultIntroMsg +
+        `恭喜！你钓到了一条 ${fishWithTimestamp.rarity} 鱼：${fishWithTimestamp.name}\n` +
+        `长度：${fishWithTimestamp.length}cm，重量：${fishWithTimestamp.weight}kg${tankUpdateMsg}\n` +
+        `今日钓鱼次数：${getFishingLimitText(this.config, settleUser, getEquippedRod(settleUser))}${manualBait.message}${shopBait.message}${easterEggMsg}${signalMsg}${this.formatAchievementUnlocks(unlocked)}`
+      );
+    } finally {
+      this.releaseFishingLock(userId);
     }
-
-    const signal = this.getDailySignal();
-    const fish = this.catchFish(settleUser, mergedBias, bodyModifiers);
-    const { fishWithTimestamp, tankUpdateMsg } = this.addCaughtFishToUser(settleUser, fish);
-    resetEmptyCastStreak(settleUser);
-    settleUser.stats.lastCatchRarity = fishWithTimestamp.rarity;
-
-    const resultIntroMsg = rescuedCatch
-      ? '但你猛的一提，看似空钩的一口被稳住了，鱼钩重新咬牢，成功上鱼。\n'
-      : '';
-    let signalMsg = '';
-    if (signal.targets.some(item => item.name === fishWithTimestamp.name)) {
-      const signalCoins = signal.bonusCoins + Number(getEquippedRod(settleUser)?.signalBonusCoins || 0);
-      settleUser.coins += signalCoins;
-      settleUser.stats.signalFishCaught += 1;
-      signalMsg += `\n[限时鱼讯] 命中今日目标鱼，额外获得 ${signalCoins} 鱼币。`;
-    }
-    const rodCoinBonus = Number(getEquippedRod(settleUser)?.catchCoinBonus || 0);
-    if (rodCoinBonus > 0) {
-      settleUser.coins += rodCoinBonus;
-      signalMsg += `\n[鱼竿效果] 本次额外收获 ${rodCoinBonus} 鱼币。`;
-    }
-    if (easterEggEffect.catchCoinBonus > 0) {
-      settleUser.coins += easterEggEffect.catchCoinBonus;
-      signalMsg += `\n[彩蛋加成] 本次额外收获 ${easterEggEffect.catchCoinBonus} 鱼币。`;
-    }
-    const unlocked = scanAchievements(settleUser, this.fishTypes);
-    settleUser.achievementCatchRateBonus = getAchievementCatchRateBonus(settleUser);
-    settleUser.achievementDailyCastBonus = getAchievementDailyCastBonus(settleUser);
-    saveFishData(settleData);
-    await this.handleSpecialFishEvent(fish);
-    await this.reply(
-      `${userDisplay}\n` +
-      resultIntroMsg +
-      `恭喜！你钓到了一条 ${fishWithTimestamp.rarity} 鱼：${fishWithTimestamp.name}\n` +
-      `长度：${fishWithTimestamp.length}cm，重量：${fishWithTimestamp.weight}kg${tankUpdateMsg}\n` +
-      `今日钓鱼次数：${getFishingLimitText(this.config, settleUser, getEquippedRod(settleUser))}${manualBait.message}${shopBait.message}${easterEggMsg}${signalMsg}${this.formatAchievementUnlocks(unlocked)}`
-    );
   }
 
   refreshAchievements(data, userId) {
