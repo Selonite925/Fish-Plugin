@@ -55,6 +55,7 @@ import {
   getFishingLimitExhaustedText,
   getFishingLimitText,
   getTargetUserId,
+  getDisplayNameForUser,
   getUserDisplay,
   getOwnedBaitsSummary,
   getOwnedRodsSummary,
@@ -914,11 +915,12 @@ export class fishing extends plugin {
     }
 
     const userData = this.getOrCreateUser(data, targetUserId);
+    const targetDisplay = getDisplayNameForUser(e, targetUserId);
     const oldCount = userData.today.count;
     userData.today.count = 0;
     userData.todayExtraUsed = 0;
     saveFishData(data);
-    await this.reply(`已重置 QQ:${targetUserId} 今天的钓鱼次数：${oldCount} -> 0\n说明：只重置今日已用次数，不清空今日鱼获。`);
+    await this.reply(`已重置 ${targetDisplay} 今天的钓鱼次数：${oldCount} -> 0\n说明：只重置今日已用次数，不清空今日鱼获。`);
   }
 
   async addBait(e) {
@@ -1624,11 +1626,12 @@ export class fishing extends plugin {
     userData.hasEasterEgg = userData.fishTank.some(fish => fish.rarity === EASTER_EGG_RARITY);
     targetData.hasEasterEgg = targetData.fishTank.some(fish => fish.rarity === EASTER_EGG_RARITY);
     saveFishData(data);
+    const targetDisplay = getDisplayNameForUser(e, targetUserId);
 
     const effectMsg = giftedFish.rarity === EASTER_EGG_RARITY
       ? `\n彩蛋鱼效果已转移给对方。你的当前彩蛋效果：${describeEasterEggEffects(userData)}；对方彩蛋效果：${describeEasterEggEffects(targetData)}。`
       : '';
-    await this.reply(`${userDisplay}\n已将 ${giftedFish.name}（${giftedFish.rarity}）赠送给 QQ:${targetUserId}。${effectMsg}`);
+    await this.reply(`${userDisplay}\n已将 ${giftedFish.name}（${giftedFish.rarity}）赠送给 ${targetDisplay}。${effectMsg}`);
   }
 
   async syncAllFishTanks(e) {
@@ -1721,15 +1724,16 @@ export class fishing extends plugin {
 
     const data = this.loadData();
     const userFish = data[targetUserId];
+    const targetDisplay = getDisplayNameForUser(e, targetUserId);
     const todayCatchCount = Number(userFish?.today?.catches || 0);
     if (!userFish || todayCatchCount === 0) {
       await this.reply(userFish && userFish.today.count > 0
-        ? `该用户(${targetUserId})今天钓了${userFish.today.count}次，但一条鱼都没钓到，空军了。`
-        : `该用户(${targetUserId})今天还没有钓过鱼。`);
+        ? `${targetDisplay}今天钓了${userFish.today.count}次，但一条鱼都没钓到，空军了。`
+        : `${targetDisplay}今天还没有钓过鱼。`);
       return;
     }
 
-    let replyMsg = `用户 ${targetUserId} 的鱼获记录：\n\n今日钓鱼次数：${getFishingLimitText(this.config, userFish, getEquippedRod(userFish))}\n今日钓到鱼：${todayCatchCount}条\n当前剩余鱼获：${userFish.today.fish.length}条\n总共钓鱼次数：${userFish.total}\n\n今日鱼获：\n`;
+    let replyMsg = `${targetDisplay}的鱼获记录：\n\n今日钓鱼次数：${getFishingLimitText(this.config, userFish, getEquippedRod(userFish))}\n今日钓到鱼：${todayCatchCount}条\n当前剩余鱼获：${userFish.today.fish.length}条\n总共钓鱼次数：${userFish.total}\n\n今日鱼获：\n`;
     for (const fish of userFish.today.fish) {
       replyMsg += `${fish.name}(${fish.rarity}) 长度：${fish.length}cm，重量：${fish.weight}kg\n`;
     }
@@ -1749,7 +1753,7 @@ export class fishing extends plugin {
     await replyWithPanel(this, result.panel, result.fallback);
   }
 
-  async checkFishingRank() {
+  async checkFishingRank(e) {
     const data = this.loadData();
     const rankList = Object.entries(data)
       .map(([userId, userData]) => {
@@ -1771,12 +1775,13 @@ export class fishing extends plugin {
 
     let replyMsg = '钓鱼排行（总钓鱼次数）\n\n';
     rankList.forEach((item, index) => {
-      replyMsg += `${index + 1}. QQ:${item.userId} - ${item.total}次，鱼缸${item.tankSize}条\n`;
+      const displayName = getDisplayNameForUser(e, item.userId);
+      replyMsg += `${index + 1}. ${displayName} - ${item.total}次，鱼缸${item.tankSize}条\n`;
     });
     await this.reply(replyMsg.trim());
   }
 
-  async checkFishKingRank() {
+  async checkFishKingRank(e) {
     const data = this.loadData();
 
     const rankList = Object.entries(data)
@@ -1803,7 +1808,8 @@ export class fishing extends plugin {
     let replyMsg = '鱼王榜（按鱼缸综合质量）\n\n';
     rankList.forEach((item, index) => {
       const topFishMsg = item.topFish ? `，镇缸鱼：${item.topFish.name}(${item.topFish.rarity})` : '';
-      replyMsg += `${index + 1}. QQ:${item.userId} - ${item.score}分${topFishMsg}\n`;
+      const displayName = getDisplayNameForUser(e, item.userId);
+      replyMsg += `${index + 1}. ${displayName} - ${item.score}分${topFishMsg}\n`;
     });
     await this.reply(replyMsg.trim());
   }
@@ -1855,7 +1861,7 @@ export class fishing extends plugin {
     }, fallbackText);
   }
 
-  async checkEmptyHandsList() {
+  async checkEmptyHandsList(e) {
     const data = this.loadData();
     const emptyHandsList = [];
     for (const userId in data) {
@@ -1872,7 +1878,8 @@ export class fishing extends plugin {
     let replyMsg = '今日空军榜（钓了鱼但一条鱼都没钓到）：\n\n';
     for (let i = 0; i < emptyHandsList.length; i++) {
       const user = emptyHandsList[i];
-      replyMsg += `${i + 1}. QQ:${user.userId} - 钓了${user.count}次，全军覆没\n`;
+      const displayName = getDisplayNameForUser(e, user.userId);
+      replyMsg += `${i + 1}. ${displayName} - 钓了${user.count}次，全军覆没\n`;
     }
     await this.reply(replyMsg.trim());
   }
@@ -2435,8 +2442,9 @@ export class fishing extends plugin {
     const userData = this.getOrCreateUser(data, targetUserId);
     userData.coins += amount;
     saveFishData(data);
+    const targetDisplay = getDisplayNameForUser(e, targetUserId);
 
-    await this.reply(`已为 QQ:${targetUserId} 补偿 ${amount} 鱼币，当前鱼币：${userData.coins}`);
+    await this.reply(`已为 ${targetDisplay} 补偿 ${amount} 鱼币，当前鱼币：${userData.coins}`);
   }
 
   async compensateFish(e) {
@@ -2458,9 +2466,10 @@ export class fishing extends plugin {
     userData.achievementCatchRateBonus = getAchievementCatchRateBonus(userData);
     userData.achievementDailyCastBonus = getAchievementDailyCastBonus(userData);
     saveFishData(data);
+    const targetDisplay = getDisplayNameForUser(e, parsed.targetUserId);
 
     await this.reply(
-      `已为 QQ:${parsed.targetUserId} 补入 ${fishWithTimestamp.rarity} 鱼：${fishWithTimestamp.name}\n` +
+      `已为 ${targetDisplay} 补入 ${fishWithTimestamp.rarity} 鱼：${fishWithTimestamp.name}\n` +
       `长度：${fishWithTimestamp.length}cm，重量：${fishWithTimestamp.weight}kg${tankUpdateMsg}` +
       `${this.formatAchievementUnlocks(unlocked)}`
     );
