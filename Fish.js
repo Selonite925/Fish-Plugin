@@ -195,6 +195,15 @@ function formatFishLine(fish, index = null) {
   return `${prefix} ${fish.name}(${fish.rarity}) ${fish.length}cm/${fish.weight}kg`;
 }
 
+function getSignalRodBonusCoins(rod, fish) {
+  if (!rod) return 0;
+  if (rod.id === 'legend_poseidon') {
+    if (fish?.rarity === 'legendary' || fish?.rarity === EASTER_EGG_RARITY) return 500;
+    return Math.round(getFishSellValue(fish) / 3);
+  }
+  return Number(rod.signalBonusCoins || 0);
+}
+
 function rarityLabel(rarity) {
   return RARITY_LABELS[rarity] || rarity;
 }
@@ -1345,7 +1354,8 @@ export class fishing extends plugin {
         if (tankResult?.soldCoins > 0) summary.autoSellCoins += tankResult.soldCoins;
 
         if (signal.targets.some(item => item.name === fishWithTimestamp.name)) {
-          const signalCoins = signal.bonusCoins + Number(getEquippedRod(userData)?.signalBonusCoins || 0);
+          const equippedRod = getEquippedRod(userData);
+          const signalCoins = signal.bonusCoins + getSignalRodBonusCoins(equippedRod, fishWithTimestamp);
           userData.coins += signalCoins;
           userData.stats.signalFishCaught += 1;
           summary.signalHits += 1;
@@ -1453,7 +1463,8 @@ export class fishing extends plugin {
         : '';
       let signalMsg = '';
       if (signal.targets.some(item => item.name === fishWithTimestamp.name)) {
-        const signalCoins = signal.bonusCoins + Number(getEquippedRod(settleUser)?.signalBonusCoins || 0);
+        const equippedRod = getEquippedRod(settleUser);
+        const signalCoins = signal.bonusCoins + getSignalRodBonusCoins(equippedRod, fishWithTimestamp);
         settleUser.coins += signalCoins;
         settleUser.stats.signalFishCaught += 1;
         signalMsg += `\n[限时鱼讯] 命中今日目标鱼，额外获得 ${signalCoins} 鱼币。`;
