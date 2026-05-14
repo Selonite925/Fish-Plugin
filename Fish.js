@@ -794,7 +794,7 @@ export class fishing extends plugin {
     return applyFishBodyBuffs(generateFish(rarity), bodyModifiers);
   }
 
-  consumeManualBait(userId, baitData) {
+  consumeManualBait(userId, baitData, options = {}) {
     if (!baitData[userId] || baitData[userId].remainingCasts <= 0) {
       return { bonus: 0, message: '', rarityBias: {} };
     }
@@ -986,7 +986,12 @@ export class fishing extends plugin {
     }
   }
 
-  async getRandomFailResult(userId, groupId, e, rod = null) {
+  async getRandomFailResult(userId, groupId, e, rod = null, options = {}) {
+    const lostItems = options.lostItemsData || loadLostItems();
+    const persistLostItems = () => {
+      if (options.autoSaveLostItems !== false) saveLostItems(lostItems);
+    };
+
     if (Math.random() < EMPTY_HOOK_FAIL_RATE) {
       return {
         type: 'empty_hook',
@@ -994,13 +999,12 @@ export class fishing extends plugin {
       };
     }
 
-    const lostItems = loadLostItems();
     if (Math.random() < 0.2 && lostItems[groupId] && lostItems[groupId].length > 0) {
       const randomIndex = Math.floor(Math.random() * lostItems[groupId].length);
       const foundItem = lostItems[groupId][randomIndex];
       lostItems[groupId].splice(randomIndex, 1);
       if (lostItems[groupId].length === 0) delete lostItems[groupId];
-      saveLostItems(lostItems);
+      persistLostItems();
       return {
         type: 'lost_item',
         message: `你捞到了一个 ${foundItem.itemName}。\n这好像是 ${foundItem.ownerName}(${foundItem.ownerId}) 之前掉进水里的。`
@@ -1023,7 +1027,7 @@ export class fishing extends plugin {
         itemName: lostEvent.itemName,
         timestamp: Date.now()
       });
-      saveLostItems(lostItems);
+      persistLostItems();
       return {
         type: 'lost_event',
         message: lostEvent.message
@@ -1270,6 +1274,8 @@ export class fishing extends plugin {
 
     try {
       const data = this.loadData();
+      const baitData = loadBaitData();
+      const lostItems = loadLostItems();
       const userData = this.getOrCreateUser(data, userId);
       let rod = getEquippedRod(userData);
 
@@ -1296,8 +1302,7 @@ export class fishing extends plugin {
         const shopBaitActive = bait.id !== 'plain' && (shopBait.bonus !== 0 || Object.keys(shopBait.rarityBias || {}).length > 0 || Object.keys(shopBait.bodyModifiers || {}).length > 0);
         if (shopBaitActive) summary.baitUses[bait.name] = (summary.baitUses[bait.name] || 0) + 1;
 
-        const baitData = loadBaitData();
-        const manualBait = this.consumeManualBait(userId, baitData);
+        const manualBait = this.consumeManualBait(userId, baitData, { persist: false });
         if (manualBait.message) summary.manualBaitCasts += 1;
 
         const easterEggEffect = getEasterEggEffects(userData);
@@ -1311,7 +1316,7 @@ export class fishing extends plugin {
         const catchRate = Math.max(0.05, getCatchRate(userData, manualBait.bonus + shopBait.bonus + hiddenPityBonus, rod.catchRateBonus || 0) - FAST_FISHING_CATCH_RATE_PENALTY);
         const failRescueChance = Math.max(0, Math.min(0.45, Number(rod.failProtection || 0) + easterEggEffect.failProtection));
         const missedCatch = Math.random() >= catchRate;
-        const failResult = missedCatch ? await this.getRandomFailResult(userId, e.group_id, e) : null;
+        const failResult = missedCatch ? await this.getRandomFailResult(userId, e.group_id, e, null, { lostItemsData: lostItems, autoSaveLostItems: false }) : null;
         const rescuedCatch = failResult?.type === 'empty_hook' && Math.random() < failRescueChance;
 
         if (rescuedCatch) summary.rescued += 1;
@@ -1325,7 +1330,6 @@ export class fishing extends plugin {
           userData.achievementCatchRateBonus = getAchievementCatchRateBonus(userData);
           userData.achievementDailyCastBonus = getAchievementDailyCastBonus(userData);
           summary.coinGain += Number(userData.coins || 0) - coinsBeforeCast;
-          saveFishData(data);
           rod = getEquippedRod(userData);
           continue;
         }
@@ -1355,12 +1359,19 @@ export class fishing extends plugin {
         userData.achievementCatchRateBonus = getAchievementCatchRateBonus(userData);
         userData.achievementDailyCastBonus = getAchievementDailyCastBonus(userData);
         summary.coinGain += Number(userData.coins || 0) - coinsBeforeCast;
-        saveFishData(data);
         rod = getEquippedRod(userData);
       }
 
       const result = this.buildFastFishingResultPanel(userDisplay, summary, userData, rod);
-      await replyWithPanel(this, result.panel, result.fallback);
+      const replyResult = await replyWithPanel(this, result.panel, result.fallback);
+      if (!replyResult?.ok) {
+        await this.reply(`${userDisplay}\n极速钓鱼结果发送失败，本次未扣除次数，也未结算鱼获。请稍后重试。`);
+        return;
+      }
+
+      saveFishData(data);
+      saveBaitData(baitData);
+      saveLostItems(lostItems);
     } finally {
       this.releaseFishingLock(userId);
     }
