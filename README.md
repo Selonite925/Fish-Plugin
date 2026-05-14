@@ -217,7 +217,8 @@ common -> uncommon -> rare -> epic -> legendary -> ？
 plugins/Fish-plugin/resources/backgrounds
 ```
 
-把 `.jpg`、`.jpeg`、`.png`、`.webp` 放进去后，图片面板会自动随机使用。
+仓库默认会附带 `background1.png`，下载后即可直接使用。
+继续往里面放 `.jpg`、`.jpeg`、`.png`、`.webp` 文件时，图片面板会自动随机使用。
 
 ## 数据文件
 
@@ -231,6 +232,7 @@ plugins/Fish-plugin/resources/backgrounds
 | `fishdata/lostItems.json` | 失败事件掉落物 |
 | `fishdata/worldState.json` | 每日鱼讯状态 |
 
+这些运行时数据文件会在首次使用时自动生成，不跟随仓库发布，避免把现有玩家数据一起提交到 GitHub。
 更新插件前建议备份 `fishdata/*.json`。
 
 ## 自定义和二次修改

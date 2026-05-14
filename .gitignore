@@ -4,6 +4,8 @@ fishdata/*.json
 # Generated/local visual assets
 resources/generated/
 resources/backgrounds/
+!resources/backgrounds/
+!resources/backgrounds/background1.png
 
 # Local/editor noise
 .DS_Store
