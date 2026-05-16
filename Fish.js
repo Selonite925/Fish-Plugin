@@ -71,9 +71,10 @@ import {
 import {
   addFishToTank,
   applyTankUpgrade,
+  getFishUpgradePoints,
   getOriginalIndexByDisplayIndex,
   getSortedTankWithIndex,
-  getUpgradeCost,
+  getTankUpgradeRequiredPoints,
   parseTankIndexes
 } from './lib/tank.js';
 import { buildSellPreview, canSellFish, findShopItem, getFishSellValue, parseSellTarget } from './lib/economy.js';
@@ -98,6 +99,7 @@ const HELP_TEXT = [
   '',
   '鱼缸命令',
   '#查看鱼缸 / #升级鱼缸 legendary 1 / #升级鱼缸 epic 1 2 3 / #放生鱼 1 / #赠渔 @某人 1 / #炼竿 1 / #炼竿 神龙2',
+  '升级鱼缸支持传说/史诗混交与分次提交：legendary计3点，epic计1点。',
   '放生彩蛋鱼需要二次确认：#放生鱼 1 确认放生彩蛋鱼鱼名',
   '',
   '鱼市命令',
@@ -1544,56 +1546,99 @@ export class fishing extends plugin {
     }).join('；')}`;
   }
 
+  getTankUpgradeProgressText(userData) {
+    const currentLevel = Number(userData?.tankLevel || 0);
+    const progress = userData?.tankUpgradeProgress;
+    const { targetLevel, requiredPoints } = getTankUpgradeRequiredPoints(currentLevel);
+    const activeTargetLevel = Number(progress?.targetLevel || targetLevel);
+    const activeRequiredPoints = Number(progress?.requiredPoints || requiredPoints);
+    const submittedPoints = Math.max(0, Math.min(activeRequiredPoints, Number(progress?.submittedPoints || 0)));
+    return `${currentLevel} -> ${activeTargetLevel}级，${submittedPoints}/${activeRequiredPoints}点（legendary=3，epic=1）`;
+  }
+
   async upgradeFishTank(e) {
     const data = this.loadData();
     const { userId, text: userDisplay } = getUserDisplay(e);
     const userData = data[userId];
-    if (!userData || !userData.fishTank || userData.fishTank.length === 0) {
-      await this.reply(`${userDisplay}\n你的鱼缸是空的，不能升级。`);
+    if (!userData) {
+      await this.reply(`${userDisplay}\n你还没有鱼缸数据，先去钓鱼吧。`);
       return;
     }
     normalizeUserData(userData);
+    if (!userData.fishTank || userData.fishTank.length === 0) {
+      await this.reply(`${userDisplay}\n你的鱼缸是空的，不能提交升级材料。`);
+      return;
+    }
 
     const currentLevel = Number(userData.tankLevel || 0);
     const costType = e.msg.match(/#升级鱼缸\s+(legendary|epic)/)?.[1];
-    const costRule = getUpgradeCost(costType, currentLevel);
-    if (!costRule) {
+    if (!costType) {
       await this.reply(`${userDisplay}\n升级消耗类型不正确，请使用 legendary 或 epic。`);
       return;
     }
-    const displayIndexes = parseTankIndexes(e.msg, costRule.count);
+    const { targetLevel, requiredPoints } = getTankUpgradeRequiredPoints(currentLevel);
+    if (!userData.tankUpgradeProgress || Number(userData.tankUpgradeProgress.targetLevel) !== targetLevel) {
+      userData.tankUpgradeProgress = {
+        targetLevel,
+        requiredPoints,
+        submittedPoints: 0
+      };
+    }
+
+    const displayIndexes = parseTankIndexes(e.msg);
     const uniqueDisplayIndexes = [...new Set(displayIndexes)];
-    if (uniqueDisplayIndexes.length !== costRule.count) {
-      await this.reply(`${userDisplay}\n升级到 ${currentLevel + 1} 级鱼缸需要选择 ${costRule.count} 条 ${costRule.rarity} 鱼。`);
+    if (uniqueDisplayIndexes.length === 0) {
+      await this.reply(`${userDisplay}\n请带上鱼缸序号提交升级材料，例如：#升级鱼缸 epic 1 2 3`);
       return;
     }
 
     const sortedTank = getSortedTankWithIndex(userData.fishTank);
     const selected = uniqueDisplayIndexes.map(index => sortedTank[index]).filter(Boolean);
-    if (selected.length !== costRule.count) {
+    if (selected.length !== uniqueDisplayIndexes.length) {
       await this.reply(`${userDisplay}\n鱼缸序号不存在，请先用 #查看鱼缸 确认序号。`);
       return;
     }
-    const invalidFish = selected.find(item => item.fish.rarity !== costRule.rarity);
+    const consumedFish = selected.map(item => item.fish);
+    const invalidFish = consumedFish.find(fish => getFishUpgradePoints(fish) <= 0);
     if (invalidFish) {
-      await this.reply(`${userDisplay}\n选择的鱼里有不是 ${costRule.rarity} 的鱼，不能用于本次升级。`);
+      await this.reply(`${userDisplay}\n只能提交 epic 或 legendary 鱼作为升级材料。`);
       return;
     }
 
-    const consumedFish = selected.map(item => item.fish);
-    removeOwnedFish(userData, consumedFish, { today: true, tank: true });
-    applyTankUpgrade(userData);
-    userData.hasEasterEgg = userData.fishTank.some(fish => fish.rarity === EASTER_EGG_RARITY);
-    const unlocked = scanAchievements(userData, this.fishTypes);
-    userData.achievementCatchRateBonus = getAchievementCatchRateBonus(userData);
-    userData.achievementDailyCastBonus = getAchievementDailyCastBonus(userData);
-    saveFishData(data);
+    const submittedPoints = consumedFish.reduce((sum, fish) => sum + getFishUpgradePoints(fish), 0);
+    const progress = userData.tankUpgradeProgress;
+    const remainingPoints = Math.max(0, Number(progress.requiredPoints || 0) - Number(progress.submittedPoints || 0));
+    if (submittedPoints > remainingPoints) {
+      await this.reply(`${userDisplay}\n当前只差 ${remainingPoints} 点升级，所选鱼会超额提交，请换一组材料。`);
+      return;
+    }
 
+    removeOwnedFish(userData, consumedFish, { today: true, tank: true });
+    progress.submittedPoints = Math.min(progress.requiredPoints, Number(progress.submittedPoints || 0) + submittedPoints);
+    userData.hasEasterEgg = userData.fishTank.some(fish => fish.rarity === EASTER_EGG_RARITY);
+    const fishSummary = consumedFish.map(fish => `${fish.name}(${fish.rarity})`).join('、');
+
+    if (progress.submittedPoints >= progress.requiredPoints) {
+      applyTankUpgrade(userData);
+      const unlocked = scanAchievements(userData, this.fishTypes);
+      userData.achievementCatchRateBonus = getAchievementCatchRateBonus(userData);
+      userData.achievementDailyCastBonus = getAchievementDailyCastBonus(userData);
+      saveFishData(data);
+
+      await this.reply(
+        `${userDisplay}\n已提交升级材料：${fishSummary}\n` +
+        `升级进度已完成，鱼缸升级成功。\n` +
+        `等级：${currentLevel} -> ${userData.tankLevel}\n` +
+        `容量：${userData.fishTank.length}/${userData.tankCapacity}\n` +
+        `每日钓鱼次数：${getDailyLimit(this.config, userData, getEquippedRod(userData))}次（本次升级+${TANK_UPGRADE_EXTRA_CASTS}竿）${this.formatAchievementUnlocks(unlocked)}`
+      );
+      return;
+    }
+
+    saveFishData(data);
     await this.reply(
-      `${userDisplay}\n鱼缸升级成功。\n` +
-      `等级：${currentLevel} -> ${userData.tankLevel}\n` +
-      `容量：${userData.fishTank.length}/${userData.tankCapacity}\n` +
-      `每日钓鱼次数：${getDailyLimit(this.config, userData, getEquippedRod(userData))}次（本次升级+${TANK_UPGRADE_EXTRA_CASTS}竿）${this.formatAchievementUnlocks(unlocked)}`
+      `${userDisplay}\n已提交升级材料：${fishSummary}\n` +
+      `本次提交 ${submittedPoints} 点，当前升级进度：${this.getTankUpgradeProgressText(userData)}`
     );
   }
 
@@ -1868,18 +1913,16 @@ export class fishing extends plugin {
 
   async checkFishTank(e) {
     const data = this.loadData();
-    const userData = data[String(e.user_id)];
-    if (!userData || !userData.fishTank || userData.fishTank.length === 0) {
-      await this.reply('你的鱼缸是空的，快去钓鱼吧。');
-      return;
-    }
+    const userData = this.getOrCreateUser(data, String(e.user_id));
     normalizeUserData(userData);
     const sortedFish = getSortedTankWithIndex(userData.fishTank).map(item => item.fish);
     const rod = getEquippedRod(userData);
+    const progressText = this.getTankUpgradeProgressText(userData);
 
     const sections = [
       `鱼缸容量：${userData.fishTank.length}/${userData.tankCapacity}`,
       `鱼缸等级：${userData.tankLevel || 0}`,
+      `升级进度：${progressText}`,
       `今日钓鱼次数：${getFishingLimitText(this.config, userData, rod)}`,
       `当前鱼竿：${rod.name}`,
       `当前鱼饵：${getEquippedBait(userData).name}`,
@@ -1898,6 +1941,7 @@ export class fishing extends plugin {
       ...sortedFish.map((fish, index) => formatFishLine(fish, index)),
       `鱼缸容量：${userData.fishTank.length}/${userData.tankCapacity}`,
       `鱼缸等级：${userData.tankLevel || 0}`,
+      `升级进度：${progressText}`,
       `今日钓鱼次数：${getFishingLimitText(this.config, userData, rod)}`,
       `鱼竿库存：${getOwnedRodsSummary(userData) || '无'}`,
       `彩蛋加成：${describeEasterEggEffects(userData)}`,
