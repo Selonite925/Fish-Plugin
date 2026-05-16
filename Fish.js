@@ -101,7 +101,7 @@ const HELP_TEXT = [
   '放生彩蛋鱼需要二次确认：#放生鱼 1 确认放生彩蛋鱼鱼名',
   '',
   '鱼市命令',
-  '#鱼市 / #售鱼 1 / #售鱼 common / #售鱼 鱼缸3 / #售鱼 全部 / #鱼市购买 鱼饵1*5 / #鱼市购买 钓鱼券*3',
+  '#鱼市 / #售鱼 1 / #售鱼 common / #售鱼 鱼缸3 / #售鱼 鱼缸 2 3 4 5 / #售鱼 全部 / #鱼市购买 鱼饵1*5 / #鱼市购买 钓鱼券*3',
   '',
   '装备命令',
   '#鱼竿 / #换竿 0 / #换竿 鱼竿1 / #鱼饵 / #换饵 0 / #换饵 鱼饵1',
@@ -119,7 +119,7 @@ const MANAGEMENT_HELP_TEXT = [
   '#鱼币补偿 @某人 *100',
   '#补鱼 @某人 rare 鳗鱼 80 3.5 / #补鱼 @某人 鳗鱼 rare',
   '#强制刷新钓鱼日',
-  '#封竿',
+  '#封竿 / #解封竿',
   '',
   '维护命令',
   '#同步鱼缸',
@@ -459,7 +459,8 @@ export class fishing extends plugin {
         { reg: '^#补鱼.*$', fnc: 'compensateFish' },
         { reg: '^#强制刷新钓鱼日$', fnc: 'forceRefreshFishingDay' },
         { reg: '^#钓鱼更新$', fnc: 'updateFishPlugin' },
-        { reg: '^#封竿$', fnc: 'sealFishingGroup' }
+        { reg: '^#封竿$', fnc: 'sealFishingGroup' },
+        { reg: '^#解封竿$', fnc: 'unsealFishingGroup' }
       ]
     });
 
@@ -488,6 +489,7 @@ export class fishing extends plugin {
 
   accept(e) {
     if (!this.isFishCommand(e?.msg)) return false;
+    if (e?.isMaster && /^#解封竿$/.test(String(e?.msg || '').trim())) return false;
     if (!this.isGroupSealed(e?.group_id)) return false;
     return 'return';
   }
@@ -1964,7 +1966,7 @@ export class fishing extends plugin {
       `当前鱼竿：${getEquippedRod(userData).name}`,
       `当前鱼饵：${getEquippedBait(userData).name}`,
       '',
-      '出售示例：#售鱼 1 / #售鱼 common / #售鱼 common3 / #售鱼 鱼缸3 / #售鱼 全部',
+      '出售示例：#售鱼 1 / #售鱼 common / #售鱼 common3 / #售鱼 鱼缸3 / #售鱼 鱼缸 2 3 4 5 / #售鱼 全部',
       `示例预估：卖出 ${commonPreview.length} 条 common 可得约 ${previewCoins} 鱼币`,
       '',
       '鱼饵区：',
@@ -2546,6 +2548,29 @@ export class fishing extends plugin {
     this.config.sealedGroups = [...sealedGroups];
     saveConfig(this.config);
     await this.reply('已封竿，本群将不再响应 Fish-plugin 指令。');
+  }
+
+  async unsealFishingGroup(e) {
+    if (!e.isMaster) {
+      await this.reply('只有主人才能解封竿。');
+      return;
+    }
+    if (!e.group_id) {
+      await this.reply('解封竿只能在群聊中使用。');
+      return;
+    }
+
+    const groupId = String(e.group_id);
+    const sealedGroups = new Set(this.getSealedGroups());
+    if (!sealedGroups.has(groupId)) {
+      await this.reply('本群当前没有封竿。');
+      return;
+    }
+
+    sealedGroups.delete(groupId);
+    this.config.sealedGroups = [...sealedGroups];
+    saveConfig(this.config);
+    await this.reply('已解封竿，本群恢复响应 Fish-plugin 指令。');
   }
 
   async forceRefreshFishingDay(e) {
