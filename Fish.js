@@ -155,6 +155,7 @@ const COLLECTION_RARITY_THEMES = {
     accent: '#16a34a',
     accentSoft: 'rgba(22, 163, 74, 0.14)',
     textColor: '#166534',
+    ownedTextColor: '#14532d',
     chipBg: 'rgba(220, 252, 231, 0.92)',
     chipBorder: 'rgba(34, 197, 94, 0.38)'
   },
@@ -162,6 +163,7 @@ const COLLECTION_RARITY_THEMES = {
     accent: '#0891b2',
     accentSoft: 'rgba(8, 145, 178, 0.14)',
     textColor: '#0f766e',
+    ownedTextColor: '#155e75',
     chipBg: 'rgba(207, 250, 254, 0.92)',
     chipBorder: 'rgba(6, 182, 212, 0.38)'
   },
@@ -169,6 +171,7 @@ const COLLECTION_RARITY_THEMES = {
     accent: '#d97706',
     accentSoft: 'rgba(217, 119, 6, 0.14)',
     textColor: '#b45309',
+    ownedTextColor: '#92400e',
     chipBg: 'rgba(254, 243, 199, 0.94)',
     chipBorder: 'rgba(245, 158, 11, 0.4)'
   },
@@ -176,8 +179,25 @@ const COLLECTION_RARITY_THEMES = {
     accent: '#9333ea',
     accentSoft: 'rgba(147, 51, 234, 0.14)',
     textColor: '#7e22ce',
+    ownedTextColor: '#6b21a8',
     chipBg: 'rgba(243, 232, 255, 0.94)',
     chipBorder: 'rgba(168, 85, 247, 0.4)'
+  },
+  legendary: {
+    accent: '#dc2626',
+    accentSoft: 'rgba(220, 38, 38, 0.16)',
+    textColor: '#b91c1c',
+    ownedTextColor: '#991b1b',
+    chipBg: 'rgba(254, 226, 226, 0.95)',
+    chipBorder: 'rgba(248, 113, 113, 0.42)'
+  },
+  [EASTER_EGG_RARITY]: {
+    accent: '#db2777',
+    accentSoft: 'rgba(219, 39, 119, 0.16)',
+    textColor: '#be185d',
+    ownedTextColor: '#9d174d',
+    chipBg: 'rgba(252, 231, 243, 0.96)',
+    chipBorder: 'rgba(244, 114, 182, 0.46)'
   }
 };
 
@@ -213,7 +233,7 @@ function getBuyableRodList() {
 }
 
 function getVisibleCollectionRarities() {
-  return RARITY_ORDER.filter(rarity => rarity !== 'legendary' && rarity !== EASTER_EGG_RARITY);
+  return [...RARITY_ORDER];
 }
 
 function getVisibleRodList(userData) {
@@ -1148,10 +1168,14 @@ export class fishing extends plugin {
       const chips = species.map(fish => {
         const owned = collectedNames.has(fish.name);
         const className = owned ? 'collection-chip owned' : 'collection-chip';
+        const hiddenSpecial = !owned && (rarity === 'legendary' || rarity === EASTER_EGG_RARITY);
+        const chipText = hiddenSpecial
+          ? (rarity === 'legendary' ? '未现身的传说' : '未揭晓的彩蛋')
+          : fish.name;
         const style = owned
-          ? `--chip-bg:${theme.chipBg};--chip-border:${theme.chipBorder};--chip-color:${theme.textColor};--chip-shadow:${theme.accentSoft};`
+          ? `--chip-bg:${theme.chipBg};--chip-border:${theme.chipBorder};--chip-color:${theme.ownedTextColor || theme.textColor};--chip-shadow:${theme.accentSoft};`
           : '';
-        return `<span class="${className}" style="${style}">${escapePanelHtml(fish.name)}</span>`;
+        return `<span class="${className}" style="${style}">${escapePanelHtml(chipText)}</span>`;
       }).join('');
 
       sections.push({
@@ -1187,7 +1211,11 @@ export class fishing extends plugin {
         (collectedNames.has(fish.name) ? owned : missing).push(fish.name);
       }
       fallbackLines.push(`已收集：${owned.join('、') || '暂无'}`);
-      fallbackLines.push(`未收集：${missing.join('、') || '已集齐'}`);
+      if (rarity === 'legendary' || rarity === EASTER_EGG_RARITY) {
+        fallbackLines.push(`未收集：${missing.length > 0 ? `还有 ${missing.length} 条未揭晓` : '已集齐'}`);
+      } else {
+        fallbackLines.push(`未收集：${missing.join('、') || '已集齐'}`);
+      }
       fallbackLines.push('');
     }
 
