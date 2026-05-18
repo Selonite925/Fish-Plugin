@@ -122,6 +122,7 @@ const HELP_GROUPS = [
       { title: '#鱼市 / #售鱼 1 / #售鱼 common / #售鱼 全部', desc: '卖鱼、看鱼市，也可以按稀有度或批量处理。' },
       { title: '#售鱼 鱼缸3 / #售鱼 鱼缸 2 3 4 5', desc: '支持卖鱼缸单条或多条，不会和第23条这种写法冲突。' },
       { title: '#鱼市购买 鱼饵1*5 / #鱼市购买 钓鱼券*3', desc: '批量购买鱼饵和钓鱼券。' },
+      { title: '#鱼市回收 鱼竿 / #鱼市回收 鱼竿1', desc: '查看并回收已拥有的鱼竿；普通竿半价，legendary 竿回收价 750。' },
       { title: '#鱼竿 / #换竿 0 / #鱼饵 / #换饵 0', desc: '查看并切换当前鱼竿、鱼饵。' }
     ]
   },
@@ -129,7 +130,7 @@ const HELP_GROUPS = [
     group: '活动与进阶',
     list: [
       { title: '#限时鱼讯', desc: '查看当天高活跃鱼讯与命中奖励。' },
-      { title: '#彩蛋收藏 / #切换彩蛋 愿望锦鲤', desc: '查看已收集彩蛋、当前生效项，并安排次日切换。' },
+      { title: '#彩蛋收藏 / #切换彩蛋 愿望锦鲤', desc: '查看已收集彩蛋、当前生效项和待切换项，并安排次日切换。' },
       { title: '#钓鱼成就', desc: '查看成就进度和永久加成。' },
       { title: '#打窝 文本 / #打窝 @某人', desc: '生成自定义鱼饵，按文本倾向组合正负效果。' },
       { title: '#钓鱼管理', desc: '查看主人和群管理维护命令。' }
@@ -1473,6 +1474,9 @@ export class fishing extends plugin {
         const rodCoinBonus = Number(getEquippedRod(userData)?.catchCoinBonus || 0);
         if (rodCoinBonus > 0) userData.coins += rodCoinBonus;
         if (easterEggEffect.catchCoinBonus > 0) userData.coins += easterEggEffect.catchCoinBonus;
+        if (easterEggEffect.catchCoinBonusRate > 0) {
+          userData.coins += Math.floor(getFishSellValue(fishWithTimestamp) * easterEggEffect.catchCoinBonusRate);
+        }
 
         const unlocked = scanAchievements(userData, this.fishTypes);
         this.recordFastAchievementUnlocks(summary, unlocked);
@@ -1586,6 +1590,10 @@ export class fishing extends plugin {
       }
       if (easterEggEffect.catchCoinBonus > 0) {
         settleUser.coins += easterEggEffect.catchCoinBonus;
+        signalMsg += '\n[彩蛋加成] 本次收获被悄悄抬高了一截。';
+      }
+      if (easterEggEffect.catchCoinBonusRate > 0) {
+        settleUser.coins += Math.floor(getFishSellValue(fishWithTimestamp) * easterEggEffect.catchCoinBonusRate);
         signalMsg += '\n[彩蛋加成] 本次收获被悄悄抬高了一截。';
       }
       const unlocked = scanAchievements(settleUser, this.fishTypes);
