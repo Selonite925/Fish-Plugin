@@ -41,12 +41,14 @@ import {
 } from './lib/storage.js';
 import {
   addFishHistory,
+  applyPendingEasterEggSwitch,
   canFishToday,
   createDefaultUserData,
   ensureFishId,
   getCatchRate,
   getDailyLimit,
   getDailyLimitBreakdown,
+  getEasterEggStatusSummary,
   getTodayNormalCastUsed,
   describeEasterEggEffects,
   getEasterEggEffects,
@@ -58,6 +60,7 @@ import {
   getDisplayNameForUser,
   getUserDisplay,
   getOwnedBaitsSummary,
+  getOwnedEasterEggCollection,
   getOwnedRodsSummary,
   isSameFish,
   normalizeAllUsers,
@@ -66,7 +69,9 @@ import {
   recordEmptyCast,
   removeOwnedFish,
   resetEmptyCastStreak,
-  registerCastUsage
+  registerCastUsage,
+  scheduleEasterEggSwitch,
+  unlockEasterEgg
 } from './lib/user.js';
 import {
   addFishToTank,
@@ -92,48 +97,84 @@ const SELF_UPDATE_PRESERVE_PATHS = [
   /^resources\/generated(?:\/|$)/i
 ];
 
-const HELP_TEXT = [
-  '基础命令',
-  '#钓鱼 / #今日鱼获 / #查看鱼获 @某人 / #钓鱼图鉴 / #钓鱼排行 / #鱼王榜 / #空军榜',
-  '#钓鱼极速版：一次钓完当前所有可用次数，并以图片汇总结果',
-  '',
-  '鱼缸命令',
-  '#查看鱼缸 / #升级鱼缸 legendary 1 / #升级鱼缸 epic 1 2 3 / #放生鱼 1 / #赠渔 @某人 1 / #炼竿 1 / #炼竿 神龙2',
-  '升级鱼缸支持传说/史诗混交与分次提交：legendary计3点，epic计1点。',
-  '放生彩蛋鱼需要二次确认：#放生鱼 1 确认放生彩蛋鱼鱼名',
-  '',
-  '鱼市命令',
-  '#鱼市 / #售鱼 1 / #售鱼 common / #售鱼 鱼缸3 / #售鱼 鱼缸 2 3 4 5 / #售鱼 全部 / #鱼市购买 鱼饵1*5 / #鱼市购买 钓鱼券*3',
-  '',
-  '装备命令',
-  '#鱼竿 / #换竿 0 / #换竿 鱼竿1 / #鱼饵 / #换饵 0 / #换饵 鱼饵1',
-  '',
-  '活动命令',
-  '#限时鱼讯 / #钓鱼成就 / #打窝 文本 / #打窝 @某人',
-  '',
-  '管理入口',
-  '#钓鱼管理'
-].join('\n');
+const HELP_GROUPS = [
+  {
+    group: '基础玩法',
+    list: [
+      { title: '#钓鱼', desc: '正常抛竿一次，结算当前鱼竿、鱼饵、彩蛋和鱼讯效果。' },
+      { title: '#钓鱼极速版', desc: '一口气钓完当前能用次数，优先发图汇总结果。' },
+      { title: '#今日鱼获 / #查看鱼获 @某人', desc: '查看自己或别人的当日鱼获记录。' },
+      { title: '#钓鱼图鉴 / #钓鱼排行 / #鱼王榜 / #空军榜', desc: '看收藏、排行、鱼王分数和今日空军情况。' }
+    ]
+  },
+  {
+    group: '鱼缸与鱼获',
+    list: [
+      { title: '#查看鱼缸', desc: '查看鱼缸容量、升级进度、库存和当前收藏。' },
+      { title: '#升级鱼缸 legendary 1 / #升级鱼缸 epic 1 2 3', desc: '支持 epic 与 legendary 混交、分次提交；传说计3点，史诗计1点。' },
+      { title: '#放生鱼 1', desc: '从鱼缸放生指定鱼。彩蛋鱼属于收藏，不在鱼缸里。' },
+      { title: '#赠渔 @某人 1 / #炼竿 1 / #炼竿 神龙2', desc: '把鱼送人，或消耗 legendary 炼成对应特殊鱼竿。' }
+    ]
+  },
+  {
+    group: '鱼市与装备',
+    list: [
+      { title: '#鱼市 / #售鱼 1 / #售鱼 common / #售鱼 全部', desc: '卖鱼、看鱼市，也可以按稀有度或批量处理。' },
+      { title: '#售鱼 鱼缸3 / #售鱼 鱼缸 2 3 4 5', desc: '支持卖鱼缸单条或多条，不会和第23条这种写法冲突。' },
+      { title: '#鱼市购买 鱼饵1*5 / #鱼市购买 钓鱼券*3', desc: '批量购买鱼饵和钓鱼券。' },
+      { title: '#鱼竿 / #换竿 0 / #鱼饵 / #换饵 0', desc: '查看并切换当前鱼竿、鱼饵。' }
+    ]
+  },
+  {
+    group: '活动与进阶',
+    list: [
+      { title: '#限时鱼讯', desc: '查看当天高活跃鱼讯与命中奖励。' },
+      { title: '#彩蛋收藏 / #切换彩蛋 愿望锦鲤', desc: '查看已收集彩蛋、当前生效项，并安排次日切换。' },
+      { title: '#钓鱼成就', desc: '查看成就进度和永久加成。' },
+      { title: '#打窝 文本 / #打窝 @某人', desc: '生成自定义鱼饵，按文本倾向组合正负效果。' },
+      { title: '#钓鱼管理', desc: '查看主人和群管理维护命令。' }
+    ]
+  }
+];
 
-const MANAGEMENT_HELP_TEXT = [
-  '主人命令',
-  '#设置钓鱼次数10',
-  '#鱼币补偿 @某人 *100',
-  '#补鱼 @某人 rare 鳗鱼 80 3.5 / #补鱼 @某人 鳗鱼 rare',
-  '#强制刷新钓鱼日',
-  '#封竿 / #解封竿',
-  '',
-  '维护命令',
-  '#同步鱼缸',
-  '#修复鱼数据',
-  '',
-  '群管理命令',
-  '#重置钓鱼次数 @某人',
-  '#重置钓鱼次数 全体',
-  '',
-  '查询命令',
-  '#钓鱼次数'
-].join('\n');
+const MANAGEMENT_HELP_GROUPS = [
+  {
+    group: '主人命令',
+    list: [
+      { title: '#设置钓鱼次数10', desc: '调整全局基础每日钓鱼次数。' },
+      { title: '#鱼币补偿 @某人 *100', desc: '按人或全体补发鱼币。' },
+      { title: '#补鱼 @某人 rare 鳗鱼 80 3.5', desc: '直接补发指定鱼，长度和重量可省略。' },
+      { title: '#强制刷新钓鱼日 / #封竿 / #解封竿', desc: '重置当日状态，或关闭/恢复当前群的钓鱼响应。' }
+    ]
+  },
+  {
+    group: '维护命令',
+    list: [
+      { title: '#同步鱼缸', desc: '同步和整理鱼缸数据。' },
+      { title: '#修复鱼数据', desc: '修复缺失 fishId、重复鱼和异常记录。' }
+    ]
+  },
+  {
+    group: '群管理命令',
+    list: [
+      { title: '#重置钓鱼次数 @某人', desc: '重置单人的当日抛竿次数。' },
+      { title: '#重置钓鱼次数 全体', desc: '重置当前已有数据玩家的当日抛竿次数。' },
+      { title: '#钓鱼次数', desc: '查看当前每日上限与已用次数。' }
+    ]
+  }
+];
+
+const HELP_TEXT = HELP_GROUPS.flatMap(group => [
+  group.group,
+  ...group.list.map(item => `${item.title}：${item.desc}`),
+  ''
+]).slice(0, -1).join('\n');
+
+const MANAGEMENT_HELP_TEXT = MANAGEMENT_HELP_GROUPS.flatMap(group => [
+  group.group,
+  ...group.list.map(item => `${item.title}：${item.desc}`),
+  ''
+]).slice(0, -1).join('\n');
 
 const EMPTY_HOOK_FAIL_RATE = 0.3;
 const DAILY_TICKET_PURCHASE_LIMIT = 5;
@@ -141,10 +182,6 @@ const FAST_FISHING_CATCH_RATE_PENALTY = 0.08;
 const FISHING_BUSY_MESSAGE = '你正在钓鱼，钓鱼就要戒骄戒躁，请稍后。';
 const activeFishingUsers = new Set();
 const activeFishingBusyNotified = new Set();
-const FIRST_EASTER_EGG_FAVOR_SHARES = {
-  legendary: 0.4,
-  [EASTER_EGG_RARITY]: 0.6
-};
 const FAIL_RESULT_LABELS = {
   empty_hook: '空钩',
   lost_item: '捞回失物',
@@ -234,6 +271,12 @@ function getBuyableRodList() {
   return Object.values(ROD_CATALOG).filter(item => item.price > 0 && !item.sourceLegendary);
 }
 
+function getRodRecycleValue(rod) {
+  if (!rod || rod.id === DEFAULT_ROD_ID) return 0;
+  if (rod.sourceLegendary) return 750;
+  return Math.max(0, Math.floor(Number(rod.price || 0) / 2));
+}
+
 function getVisibleCollectionRarities() {
   return [...RARITY_ORDER];
 }
@@ -249,6 +292,17 @@ function getSwitchableRodList(userData) {
   const crafted = Object.values(ROD_CATALOG)
     .filter(rod => rod.sourceLegendary && owned.has(rod.id));
   return [...buyable, ...crafted];
+}
+
+function getRecyclableRodList(userData) {
+  const owned = new Set(userData?.rodsOwned || []);
+  return Object.values(ROD_CATALOG)
+    .filter(rod => rod.id !== DEFAULT_ROD_ID && owned.has(rod.id))
+    .sort((a, b) => {
+      const craftedDiff = Number(Boolean(b.sourceLegendary)) - Number(Boolean(a.sourceLegendary));
+      if (craftedDiff !== 0) return craftedDiff;
+      return getRodRecycleValue(b) - getRodRecycleValue(a);
+    });
 }
 
 function parseRodIndex(keyword = '') {
@@ -349,6 +403,32 @@ function escapePanelHtml(text = '') {
     .replace(/"/g, '&quot;');
 }
 
+function buildHelpGridSections(groups = []) {
+  return groups.map(group => {
+    const html = [
+      '<div class="help-grid">',
+      ...group.list.map(item => {
+        const title = escapePanelHtml(item.title || '');
+        const desc = escapePanelHtml(item.desc || '');
+        const noteClass = item.fullWidth ? ' help-grid-item-note' : '';
+        return (
+          `<div class="help-grid-item${noteClass}">` +
+          `<div class="help-grid-item-title">${title}</div>` +
+          `<div class="help-grid-item-desc">${desc}</div>` +
+          '</div>'
+        );
+      }),
+      '</div>'
+    ].join('');
+
+    return {
+      type: 'help-grid',
+      title: group.group,
+      html
+    };
+  });
+}
+
 function createFishFromTemplate(template, rarity) {
   return {
     name: template.name,
@@ -419,10 +499,6 @@ function mergeFishBodyModifiers(...items) {
   });
 }
 
-function getReleaseConfirmText(fish) {
-  return `确认放生彩蛋鱼${fish.name}`;
-}
-
 export class fishing extends plugin {
   constructor() {
     super({
@@ -445,6 +521,8 @@ export class fishing extends plugin {
         { reg: '^#重置钓鱼次数\\s*(全体|全部|@?.*)?$', fnc: 'resetFishingCount' },
         { reg: '^#钓鱼次数$', fnc: 'checkFishingLimit' },
         { reg: '^#查看鱼缸$', fnc: 'checkFishTank' },
+        { reg: '^#彩蛋收藏$', fnc: 'checkEasterEggCollection' },
+        { reg: '^#切换彩蛋\\s+.+$', fnc: 'scheduleActiveEasterEgg' },
         { reg: '^#升级鱼缸\\s+(legendary|epic)\\s+.+', fnc: 'upgradeFishTank' },
         { reg: '^#放生鱼\\s+\\d+(?:\\s+.*)?$', fnc: 'releaseFish' },
         { reg: '^#赠渔\\s*.*\\d+$', fnc: 'giftFish' },
@@ -529,6 +607,7 @@ export class fishing extends plugin {
         settlementCoins += getFishSellValue(fish);
       }
       if (settlementCoins > 0) userData.coins += settlementCoins;
+      applyPendingEasterEggSwitch(userData);
       userData.today = { count: 0, catches: 0, fish: [] };
       userData.todayExtraUsed = 0;
       userData.todayTicketsBought = 0;
@@ -801,29 +880,20 @@ export class fishing extends plugin {
     return Math.max(band.min, Math.min(band.max, Number(score.toFixed(2))));
   }
 
-  shouldFavorFirstEasterEgg(userData) {
-    if (!userData || userData.hasEasterEgg || userData.everCaughtEasterEgg) return false;
-    const fishTank = Array.isArray(userData.fishTank) ? userData.fishTank : [];
-    if (fishTank.some(fish => fish?.rarity === EASTER_EGG_RARITY)) return false;
-
-    const fishHistory = Array.isArray(userData.allTimeFish) ? userData.allTimeFish : [];
-    return fishHistory.some(fish => fish?.rarity === 'legendary');
-  }
-
   catchFish(userData = null, extraBias = {}, bodyModifiers = {}) {
     let rarities = Object.keys(this.fishTypes);
     const weights = this.applyRarityBias(rarityWeights, extraBias);
-    if (userData?.hasEasterEgg || userData?.fishTank?.some(fish => fish.rarity === EASTER_EGG_RARITY)) {
+    const ownedEggs = new Set(getOwnedEasterEggCollection(userData));
+    const availableMysteryFish = (this.fishTypes[EASTER_EGG_RARITY] || []).filter(fish => !ownedEggs.has(fish.name));
+    if (availableMysteryFish.length === 0) {
       weights.legendary = (weights.legendary || 0) + (weights[EASTER_EGG_RARITY] || 0);
       rarities = rarities.filter(rarity => rarity !== EASTER_EGG_RARITY);
-    } else if (this.shouldFavorFirstEasterEgg(userData)) {
-      const specialPoolWeight = Math.max(0, Number(weights.legendary || 0)) + Math.max(0, Number(weights[EASTER_EGG_RARITY] || 0));
-      if (specialPoolWeight > 0) {
-        weights.legendary = specialPoolWeight * FIRST_EASTER_EGG_FAVOR_SHARES.legendary;
-        weights[EASTER_EGG_RARITY] = specialPoolWeight * FIRST_EASTER_EGG_FAVOR_SHARES[EASTER_EGG_RARITY];
-      }
     }
     const rarity = this.getWeightedRandom(rarities, weights);
+    if (rarity === EASTER_EGG_RARITY && availableMysteryFish.length > 0) {
+      const template = availableMysteryFish[Math.floor(Math.random() * availableMysteryFish.length)];
+      return applyFishBodyBuffs(createFishFromTemplate(template, rarity), bodyModifiers);
+    }
     return applyFishBodyBuffs(generateFish(rarity), bodyModifiers);
   }
 
@@ -880,8 +950,8 @@ export class fishing extends plugin {
       key: 'help-panel',
       title: '钓鱼帮助',
       subtitle: `今日鱼讯：${signal.targets.map(fish => `${fish.name}(${fish.rarity})`).join('、')}`,
-      sections: HELP_TEXT.split('\n'),
-      footer: '把本地背景图片放到 resources/backgrounds 后，帮助/鱼市/鱼缸会自动套用。'
+      sections: buildHelpGridSections(HELP_GROUPS),
+      footer: '钓鱼、鱼缸、鱼市和装备都在这里；帮助面板会自动套用 resources/backgrounds 里的背景。'
     }, HELP_TEXT);
   }
 
@@ -890,8 +960,8 @@ export class fishing extends plugin {
       key: 'management-help-panel',
       title: '钓鱼管理',
       subtitle: '主人和群管理维护指令',
-      sections: MANAGEMENT_HELP_TEXT.split('\n'),
-      footer: '#封竿 会禁用当前群的 Fish-plugin 响应。'
+      sections: buildHelpGridSections(MANAGEMENT_HELP_GROUPS),
+      footer: '#封竿 会禁用当前群的 Fish-plugin 响应，#解封竿 用于恢复。'
     }, MANAGEMENT_HELP_TEXT);
   }
 
@@ -913,10 +983,11 @@ export class fishing extends plugin {
     const limit = getDailyLimitBreakdown(this.config, userData, rod);
     const normalUsed = getTodayNormalCastUsed(userData);
     const ticketUsed = Math.min(Number(userData.todayExtraUsed || 0), Number(userData.today?.count || 0));
+    const easterEggSourceText = limit.easterEggBonus > 0 ? ' + 彩蛋效果（已计入）' : '';
     await this.reply(
       `你的每日基础钓鱼次数：${limit.total}次\n` +
       `今日已用：基础${normalUsed}/${limit.total}，钓鱼券${ticketUsed}张，剩余钓鱼券${Number(userData.tickets || 0)}张\n` +
-      `来源：全局基础${limit.base} + 鱼缸${limit.tankBonus} + 成就${limit.achievementBonus} + 鱼竿${limit.rodBonus}\n` +
+      `来源：全局基础${limit.base} + 鱼缸${limit.tankBonus} + 成就${limit.achievementBonus} + 鱼竿${limit.rodBonus}${easterEggSourceText}\n` +
       `说明：鱼缸每升1级，玩家本人永久额外+${TANK_UPGRADE_EXTRA_CASTS}竿；钓鱼券只记录为额外竿，不会占用鱼缸升级后新增的基础次数。`
     );
   }
@@ -1087,16 +1158,20 @@ export class fishing extends plugin {
     userData.today.fish.push(fishWithTimestamp);
     userData.today.catches = Number(userData.today.catches || 0) + 1;
     addFishHistory(userData, fishWithTimestamp);
-    const tankResult = addFishToTank(userData, fishWithTimestamp, { autoSellReplacedFish: true });
+    let tankResult = addFishToTank(userData, fishWithTimestamp, { autoSellReplacedFish: true });
     let tankUpdateMsg = tankResult.message;
 
     if (fishWithTimestamp.rarity === EASTER_EGG_RARITY) {
       userData.everCaughtEasterEgg = true;
-      if (tankResult.changed) {
-        tankUpdateMsg += `\n彩蛋鱼效果已生效：${describeEasterEggEffects(userData)}。`;
+      const unlockResult = unlockEasterEgg(userData, fishWithTimestamp.name);
+      tankResult = { ...tankResult, unlockResult };
+      if (unlockResult.added) {
+        tankUpdateMsg += unlockResult.activeAssigned
+          ? `\n这是你收集到的第一条彩蛋鱼，当前生效：${describeEasterEggEffects(userData)}。`
+          : `\n已收录到彩蛋收藏。当前生效：${describeEasterEggEffects(userData)}。如需切换，请使用 #切换彩蛋 ${fishWithTimestamp.name}`;
       }
     }
-    userData.hasEasterEgg = userData.fishTank.some(item => item.rarity === EASTER_EGG_RARITY);
+    userData.hasEasterEgg = getOwnedEasterEggCollection(userData).length > 0;
 
     return { fishWithTimestamp, tankUpdateMsg, tankResult };
   }
@@ -1160,6 +1235,9 @@ export class fishing extends plugin {
     const collectedNames = new Set((userData.allTimeFish || [])
       .filter(fish => visibleRaritySet.has(fish.rarity))
       .map(fish => fish.name));
+    for (const name of getOwnedEasterEggCollection(userData)) {
+      collectedNames.add(name);
+    }
     const totalSpecies = visibleRarities.reduce((sum, rarity) => sum + (this.fishTypes[rarity] || []).length, 0);
     const collectedCount = collectedNames.size;
     const progress = totalSpecies === 0 ? 0 : ((collectedCount / totalSpecies) * 100).toFixed(1);
@@ -1508,7 +1586,7 @@ export class fishing extends plugin {
       }
       if (easterEggEffect.catchCoinBonus > 0) {
         settleUser.coins += easterEggEffect.catchCoinBonus;
-        signalMsg += `\n[彩蛋加成] 本次额外收获 ${easterEggEffect.catchCoinBonus} 鱼币。`;
+        signalMsg += '\n[彩蛋加成] 本次收获被悄悄抬高了一截。';
       }
       const unlocked = scanAchievements(settleUser, this.fishTypes);
       settleUser.achievementCatchRateBonus = getAchievementCatchRateBonus(settleUser);
@@ -1615,7 +1693,6 @@ export class fishing extends plugin {
 
     removeOwnedFish(userData, consumedFish, { today: true, tank: true });
     progress.submittedPoints = Math.min(progress.requiredPoints, Number(progress.submittedPoints || 0) + submittedPoints);
-    userData.hasEasterEgg = userData.fishTank.some(fish => fish.rarity === EASTER_EGG_RARITY);
     const fishSummary = consumedFish.map(fish => `${fish.name}(${fish.rarity})`).join('、');
 
     if (progress.submittedPoints >= progress.requiredPoints) {
@@ -1660,20 +1737,10 @@ export class fishing extends plugin {
     }
 
     const releasedFish = userData.fishTank[originalIndex];
-    if (releasedFish?.rarity === EASTER_EGG_RARITY) {
-      const confirmText = getReleaseConfirmText(releasedFish);
-      if (!String(e.msg || '').includes(confirmText)) {
-        await this.reply(`${userDisplay}\n你正在放生彩蛋鱼 ${releasedFish.name}，这会移除对应彩蛋效果。\n如确实要放生，请回复：#放生鱼 ${displayIndex + 1} ${confirmText}\n其他写法都会取消。`);
-        return;
-      }
-    }
-
     userData.fishTank.splice(originalIndex, 1);
     removeOwnedFish(userData, releasedFish, { today: true, tank: false });
-    userData.hasEasterEgg = userData.fishTank.some(fish => fish.rarity === EASTER_EGG_RARITY);
     saveFishData(data);
-    const effectMsg = releasedFish.rarity === EASTER_EGG_RARITY ? `\n你放生了彩蛋鱼，当前彩蛋效果：${describeEasterEggEffects(userData)}。` : '';
-    await this.reply(`${userDisplay}\n已放生 ${releasedFish.name}（${releasedFish.rarity}）。${effectMsg}`);
+    await this.reply(`${userDisplay}\n已放生 ${releasedFish.name}（${releasedFish.rarity}）。`);
   }
 
   async giftFish(e) {
@@ -1709,26 +1776,15 @@ export class fishing extends plugin {
     }
 
     const giftedFish = userData.fishTank[originalIndex];
-    if (giftedFish?.rarity === EASTER_EGG_RARITY && targetData.fishTank.some(fish => fish.rarity === EASTER_EGG_RARITY)) {
-      await this.reply(`${userDisplay}\n对方已经拥有彩蛋鱼，无法再接收任何彩蛋鱼。`);
-      return;
-    }
-
     userData.fishTank.splice(originalIndex, 1);
     giftedFish.giftedFrom = userId;
     giftedFish.giftedAt = Date.now();
     removeOwnedFish(userData, giftedFish, { today: true, tank: false });
     targetData.fishTank.push(giftedFish);
     addFishHistory(targetData, giftedFish);
-    userData.hasEasterEgg = userData.fishTank.some(fish => fish.rarity === EASTER_EGG_RARITY);
-    targetData.hasEasterEgg = targetData.fishTank.some(fish => fish.rarity === EASTER_EGG_RARITY);
     saveFishData(data);
     const targetDisplay = getDisplayNameForUser(e, targetUserId);
-
-    const effectMsg = giftedFish.rarity === EASTER_EGG_RARITY
-      ? `\n彩蛋鱼效果已转移给对方。你的当前彩蛋效果：${describeEasterEggEffects(userData)}；对方彩蛋效果：${describeEasterEggEffects(targetData)}。`
-      : '';
-    await this.reply(`${userDisplay}\n已将 ${giftedFish.name}（${giftedFish.rarity}）赠送给 ${targetDisplay}。${effectMsg}`);
+    await this.reply(`${userDisplay}\n已将 ${giftedFish.name}（${giftedFish.rarity}）赠送给 ${targetDisplay}。`);
   }
 
   async syncAllFishTanks(e) {
@@ -1749,6 +1805,7 @@ export class fishing extends plugin {
       let changed = false;
       for (const fish of userData.today.fish) {
         ensureFishId(fish);
+        if (fish?.rarity === EASTER_EGG_RARITY) continue;
         const exists = userData.fishTank.some(item => isSameFish(item, fish));
         if (exists) continue;
 
@@ -1760,7 +1817,6 @@ export class fishing extends plugin {
         }
       }
       if (changed) syncCount++;
-      userData.hasEasterEgg = userData.fishTank.some(fish => fish.rarity === EASTER_EGG_RARITY);
     }
     saveFishData(data);
 
@@ -1911,6 +1967,63 @@ export class fishing extends plugin {
     await this.reply(replyMsg.trim());
   }
 
+  async checkEasterEggCollection(e) {
+    const data = this.loadData();
+    const userData = this.getOrCreateUser(data, String(e.user_id));
+    normalizeUserData(userData);
+    const status = getEasterEggStatusSummary(userData);
+    const ownedText = status.owned.length ? status.owned.join('、') : '暂无';
+    const pendingText = status.pendingName ? `${status.pendingName}（明日生效）` : '无';
+    await this.reply(
+      `彩蛋收藏\n` +
+      `已收集：${status.owned.length} 条\n` +
+      `当前生效：${status.activeDescription}\n` +
+      `待切换：${pendingText}\n` +
+      `收藏列表：${ownedText}\n` +
+      `切换方式：#切换彩蛋 彩蛋名`
+    );
+  }
+
+  async scheduleActiveEasterEgg(e) {
+    const data = this.loadData();
+    const { userId, text: userDisplay } = getUserDisplay(e);
+    const userData = this.getOrCreateUser(data, userId);
+    normalizeUserData(userData);
+
+    const targetName = String(e.msg || '').replace(/^#切换彩蛋\s+/, '').trim();
+    if (!targetName) {
+      await this.reply(`${userDisplay}\n请填写要切换的彩蛋鱼名称，例如：#切换彩蛋 愿望锦鲤`);
+      return;
+    }
+
+    const result = scheduleEasterEggSwitch(userData, targetName, getTodayKey());
+    if (!result.ok) {
+      if (result.reason === 'not_owned') {
+        await this.reply(`${userDisplay}\n你还没有收集到 ${targetName}。可先用 #彩蛋收藏 查看已收集列表。`);
+        return;
+      }
+      if (result.reason === 'already_active') {
+        await this.reply(`${userDisplay}\n${targetName} 当前已经在生效。`);
+        return;
+      }
+      if (result.reason === 'already_pending') {
+        await this.reply(`${userDisplay}\n${targetName} 已经安排为明日生效。`);
+        return;
+      }
+      if (result.reason === 'already_scheduled_today') {
+        await this.reply(`${userDisplay}\n你今天已经安排过一次彩蛋切换了，请明天再改。`);
+        return;
+      }
+      await this.reply(`${userDisplay}\n彩蛋切换安排失败。`);
+      return;
+    }
+
+    saveFishData(data);
+    const currentText = describeEasterEggEffects(userData);
+    const nextText = getEasterEggStatusSummary(userData).pendingDescription;
+    await this.reply(`${userDisplay}\n已安排明天切换为 ${targetName}。\n当前生效：${currentText}\n明日生效后将改为：${nextText}`);
+  }
+
   async checkFishTank(e) {
     const data = this.loadData();
     const userData = this.getOrCreateUser(data, String(e.user_id));
@@ -1918,6 +2031,9 @@ export class fishing extends plugin {
     const sortedFish = getSortedTankWithIndex(userData.fishTank).map(item => item.fish);
     const rod = getEquippedRod(userData);
     const progressText = this.getTankUpgradeProgressText(userData);
+    const easterEggStatus = getEasterEggStatusSummary(userData);
+    const easterEggOwnedText = easterEggStatus.owned.length ? easterEggStatus.owned.join('、') : '暂无';
+    const easterEggPendingText = easterEggStatus.pendingName ? `${easterEggStatus.pendingName}（明日生效）` : '无';
 
     const sections = [
       `鱼缸容量：${userData.fishTank.length}/${userData.tankCapacity}`,
@@ -1928,7 +2044,10 @@ export class fishing extends plugin {
       `当前鱼饵：${getEquippedBait(userData).name}`,
       `鱼币：${userData.coins}，钓鱼券：${userData.tickets}`,
       `鱼竿库存：${getOwnedRodsSummary(userData) || '无'}`,
-      `鱼饵库存：${Object.entries(userData.baitInventory || {}).filter(([, count]) => count > 0).map(([id, count]) => `${userData.customBaits?.[id]?.name || BAIT_CATALOG[id]?.name || id}x${count}`).join('、') || '无'}`
+      `鱼饵库存：${Object.entries(userData.baitInventory || {}).filter(([, count]) => count > 0).map(([id, count]) => `${userData.customBaits?.[id]?.name || BAIT_CATALOG[id]?.name || id}x${count}`).join('、') || '无'}`,
+      `彩蛋收藏：${easterEggStatus.owned.length} 条`,
+      `当前彩蛋：${easterEggStatus.activeDescription}`,
+      `待切换：${easterEggPendingText}`
     ];
     sections.push(...sortedFish.slice(0, 16).map((fish, index) => formatFishLine(fish, index)));
     if (sortedFish.length > 16) {
@@ -1945,6 +2064,8 @@ export class fishing extends plugin {
       `今日钓鱼次数：${getFishingLimitText(this.config, userData, rod)}`,
       `鱼竿库存：${getOwnedRodsSummary(userData) || '无'}`,
       `彩蛋加成：${describeEasterEggEffects(userData)}`,
+      `彩蛋收藏：${easterEggOwnedText}`,
+      `待切换：${easterEggPendingText}`,
       `总共钓鱼次数：${userData.total || 0}`
     ].join('\n');
 
@@ -1992,6 +2113,11 @@ export class fishing extends plugin {
       return;
     }
 
+    if (/^回收/.test(tail)) {
+      await this.recycleMarketItem(e, tail.replace(/^回收/, '').trim());
+      return;
+    }
+
     await this.sellFish(e, tail);
   }
 
@@ -2011,6 +2137,7 @@ export class fishing extends plugin {
       `当前鱼饵：${getEquippedBait(userData).name}`,
       '',
       '出售示例：#售鱼 1 / #售鱼 common / #售鱼 common3 / #售鱼 鱼缸3 / #售鱼 鱼缸 2 3 4 5 / #售鱼 全部',
+      '回收示例：#鱼市回收 鱼竿 / #鱼市回收 鱼竿1 / #鱼市回收 疾风短竿',
       `示例预估：卖出 ${commonPreview.length} 条 common 可得约 ${previewCoins} 鱼币`,
       '',
       '鱼饵区：',
@@ -2044,7 +2171,7 @@ export class fishing extends plugin {
       title: '鱼市',
       subtitle: '卖多余鱼换鱼币，再购入鱼饵、额外钓鱼券和鱼竿。',
       sections,
-      footer: '购买格式：#鱼市购买 鱼饵1 / #鱼市购买 鱼饵1*5 / #鱼市购买 鱼竿1 / #鱼市购买 自定义鱼饵 桂花酒糟'
+      footer: '购买格式：#鱼市购买 鱼饵1 / #鱼市购买 鱼饵1*5 / #鱼市购买 鱼竿1 / #鱼市购买 自定义鱼饵 桂花酒糟；回收格式：#鱼市回收 鱼竿1'
     }, fallback);
   }
 
@@ -2124,7 +2251,6 @@ export class fishing extends plugin {
     }
     userData.coins += preview.totalCoins;
     userData.marketTrades += 1;
-    userData.hasEasterEgg = userData.fishTank.some(fish => fish.rarity === EASTER_EGG_RARITY);
 
     const unlocked = this.refreshAchievements(data, userId);
 
@@ -2134,6 +2260,62 @@ export class fishing extends plugin {
       `${preview.lines.length > 8 ? `\n...另有 ${preview.lines.length - 8} 条未展开` : ''}` +
       `\n当前鱼币：${userData.coins}${this.formatAchievementUnlocks(unlocked)}`
     );
+  }
+
+  async recycleMarketItem(e, keyword) {
+    const data = this.loadData();
+    const { userId, text: userDisplay } = getUserDisplay(e);
+    const userData = this.getOrCreateUser(data, userId);
+    const equippedRod = getEquippedRod(userData);
+    const recyclableRods = getRecyclableRodList(userData);
+    const normalizedKeyword = String(keyword || '').trim();
+
+    if (!normalizedKeyword || /^(?:鱼竿|鱼杆|竿|杆)$/.test(normalizedKeyword.replace(/\s+/g, ''))) {
+      if (!recyclableRods.length) {
+        await this.reply(`${userDisplay}\n你目前没有可回收的鱼竿。`);
+        return;
+      }
+      const lines = recyclableRods.map((rod, index) => {
+        const extra = rod.sourceLegendary ? ` | 炼成来源:${rod.sourceLegendary}` : '';
+        const equipMark = rod.id === equippedRod.id ? ' | 当前装备' : '';
+        return `鱼竿${index + 1} | ${rod.name} - 回收价 ${getRodRecycleValue(rod)} 鱼币${extra}${equipMark}`;
+      });
+      await this.reply(
+        `${userDisplay}\n可回收鱼竿列表\n` +
+        `${lines.join('\n')}\n` +
+        `使用：#鱼市回收 鱼竿1 或 #鱼市回收 ${recyclableRods[0].name}`
+      );
+      return;
+    }
+
+    const compact = normalizedKeyword.replace(/\s+/g, '');
+    let rod = null;
+    const rodNo = compact.match(/^鱼?[竿杆](\d{1,3})$/);
+    if (rodNo) {
+      rod = recyclableRods[Number(rodNo[1]) - 1] || null;
+    } else {
+      rod = recyclableRods.find(item => item.name === normalizedKeyword || item.id === normalizedKeyword || item.aliases?.includes(normalizedKeyword)) || null;
+    }
+
+    if (!rod) {
+      await this.reply(`${userDisplay}\n没有找到可回收的鱼竿。可先用 #鱼市回收 鱼竿 查看列表。`);
+      return;
+    }
+    if (rod.id === equippedRod.id) {
+      await this.reply(`${userDisplay}\n当前装备中的鱼竿不能直接回收，请先换竿。`);
+      return;
+    }
+
+    const recycleValue = getRodRecycleValue(rod);
+    if (recycleValue <= 0) {
+      await this.reply(`${userDisplay}\n${rod.name} 不能回收。`);
+      return;
+    }
+
+    userData.rodsOwned = (userData.rodsOwned || []).filter(id => id !== rod.id);
+    userData.coins += recycleValue;
+    saveFishData(data);
+    await this.reply(`${userDisplay}\n已回收鱼竿 ${rod.name}，获得 ${recycleValue} 鱼币。当前鱼币：${userData.coins}`);
   }
 
   async craftLegendaryRod(e) {
@@ -2205,7 +2387,6 @@ export class fishing extends plugin {
       sourceFishId: fish.fishId || null,
       craftedAt: Date.now()
     };
-    userData.hasEasterEgg = userData.fishTank.some(item => item.rarity === EASTER_EGG_RARITY);
 
     const unlocked = this.refreshAchievements(data, userId);
     await this.reply(
@@ -2344,6 +2525,7 @@ export class fishing extends plugin {
       const marks = [
         rod.id === equipped.id ? '已装备' : null,
         owned.has(rod.id) ? '已拥有' : `${rod.price}鱼币`,
+        owned.has(rod.id) && rod.id !== DEFAULT_ROD_ID ? `回收价:${getRodRecycleValue(rod)}鱼币` : null,
         rod.sourceLegendary ? `炼成来源:${rod.sourceLegendary}` : null
       ].filter(Boolean).join(' | ');
       return `鱼竿${index + 1} | ${rod.name} - ${marks} - ${rod.description}`;
@@ -2366,7 +2548,7 @@ export class fishing extends plugin {
       title: '鱼竿',
       subtitle: `当前使用：${equipped.name}`,
       sections,
-      footer: '使用：#换竿 0 / #换竿 鱼竿1 / #换竿 疾风短竿 / #炼竿 1'
+      footer: '使用：#换竿 0 / #换竿 鱼竿1 / #换竿 疾风短竿 / #炼竿 1 / #鱼市回收 鱼竿1'
     }, fallback);
   }
 

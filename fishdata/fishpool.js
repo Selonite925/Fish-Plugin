@@ -197,8 +197,8 @@ export const legendaryFish = [
   { name: '锟斤拷烫烫鱼', size: { min: 256, max: 1024 }, weight: { min: 404, max: 4096 } }
 ];
 
-// 彩蛋鱼类 - 稀有度文本为 “？”，高于 legendary。每人最多亲自钓到一次。
-// 增删彩蛋鱼只改这个数组，整体出现率仍由 rarityWeights['？'] 控制。
+// 彩蛋鱼类 - 稀有度文本为 “？”，高于 legendary。
+// 增删彩蛋鱼只改这个数组，整体出现率仍由 rarityWeights['？'] 控制；已收集的彩蛋鱼不会重复获得。
 export const mysteryFish = [
   { name: '愿望锦鲤', size: { min: 88, max: 188 }, weight: { min: 8.88, max: 18.88 } },
   { name: '月光玻璃鱼', size: { min: 12, max: 28 }, weight: { min: 0.02, max: 0.18 } },
