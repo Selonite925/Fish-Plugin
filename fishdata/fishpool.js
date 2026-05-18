@@ -206,7 +206,8 @@ export const mysteryFish = [
   { name: '时间沙漏鱼', size: { min: 30, max: 60 }, weight: { min: 0.8, max: 3.6 } },
   { name: '反方向的鱼', size: { min: 18, max: 50 }, weight: { min: 0.3, max: 2.4 } },
   { name: '不存在的鱼', size: { min: 1, max: 999 }, weight: { min: 0.01, max: 99.99 } },
-  { name: '空指针鲤', size: { min: 0, max: 1 }, weight: { min: 0.01, max: 0.01 } }
+  { name: '空指针鲤', size: { min: 0, max: 1 }, weight: { min: 0.01, max: 0.01 } },
+  { name: '铁yu...?', size: { min: 160, max: 320 }, weight: { min: 12, max: 46 } }
 ];
 
 export const fishTypes = {

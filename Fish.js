@@ -500,6 +500,32 @@ function mergeFishBodyModifiers(...items) {
   });
 }
 
+function amplifyBaitModifiers(bait = {}, amplifier = 0) {
+  const ratio = Math.max(0, Number(amplifier || 0));
+  if (ratio <= 0) return bait;
+
+  const scaledBias = Object.fromEntries(
+    Object.entries(bait.rarityBias || {}).map(([rarity, value]) => [rarity, Number(value || 0) * (1 + ratio)])
+  );
+
+  const scaleDelta = (value, fallback = 1) => {
+    const numeric = Number(value ?? fallback);
+    return fallback + (numeric - fallback) * (1 + ratio);
+  };
+
+  const scaleDirect = (value, fallback = 0) => Number(value ?? fallback) * (1 + ratio);
+
+  return {
+    ...bait,
+    catchRateBonus: Number(bait.catchRateBonus || 0) * (1 + ratio),
+    rarityBias: scaledBias,
+    sizeMultiplier: scaleDelta(bait.sizeMultiplier, 1),
+    weightMultiplier: scaleDelta(bait.weightMultiplier, 1),
+    minSizeRatio: scaleDirect(bait.minSizeRatio, 0),
+    minWeightRatio: scaleDirect(bait.minWeightRatio, 0)
+  };
+}
+
 export class fishing extends plugin {
   constructor() {
     super({
@@ -915,7 +941,9 @@ export class fishing extends plugin {
   // 当前鱼饵是“已装备且有库存”的持续装备，不再是买完立刻生效的临时效果。
   // 这样用户就可以通过 #换饵 在不同鱼饵之间切换，学习成本更低，也更容易做后续扩展。
   consumeShopBait(userData, lockedBait = null) {
-    const bait = lockedBait || getEquippedBait(userData);
+    const rawBait = lockedBait || getEquippedBait(userData);
+    const easterEggEffect = getEasterEggEffects(userData);
+    const bait = amplifyBaitModifiers(rawBait, easterEggEffect.baitEffectAmplifier);
     if (!bait || bait.id === 'plain') {
       return { bonus: 0, message: '', rarityBias: {}, bodyModifiers: {} };
     }
@@ -924,7 +952,6 @@ export class fishing extends plugin {
       return { bonus: 0, message: '\n[鱼饵] 备用鱼饵用完，已自动换回清水团饵。', rarityBias: {}, bodyModifiers: {} };
     }
     const rod = getEquippedRod(userData);
-    const easterEggEffect = getEasterEggEffects(userData);
     const preserveChance = Math.max(0, Math.min(0.9, Number(rod?.baitPreserveChance || 0) + easterEggEffect.baitPreserveChance));
     const preserved = Math.random() < preserveChance;
     const beforeCount = Number(userData.baitInventory[bait.id] || 0);
