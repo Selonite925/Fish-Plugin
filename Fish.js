@@ -458,50 +458,120 @@ function describeMultiplierDirection(value, thresholds = [0.015, 0.04, 0.08]) {
   return describeTrend(numeric, thresholds);
 }
 
-function buildRodTraitLines(rod) {
-  const lines = [];
+function getRarityBiasLabel(rarity) {
+  return rarity === EASTER_EGG_RARITY ? '彩蛋鱼比例' : `${rarity}鱼比例`;
+}
+
+function getRarityBiasTone(rarity, value) {
+  const numeric = Number(value || 0);
+  if (Math.abs(numeric) < 0.004) return 'neutral';
+  const upIsGood = !['common', 'uncommon'].includes(rarity);
+  return (numeric > 0) === upIsGood ? 'positive' : 'negative';
+}
+
+function buildRodTraitEntries(rod) {
+  const entries = [];
 
   const catchRateTrend = describeTrend(rod?.catchRateBonus || 0, [0.006, 0.02, 0.05]);
-  lines.push(catchRateTrend
-    ? `上鱼率${catchRateTrend.level}${catchRateTrend.positive ? '上升' : '下降'}`
-    : '上鱼率基本不变');
+  entries.push(catchRateTrend
+    ? {
+      text: `上鱼率${catchRateTrend.level}${catchRateTrend.positive ? '上升' : '下降'}`,
+      tone: catchRateTrend.positive ? 'positive' : 'negative'
+    }
+    : { text: '上鱼率基本不变', tone: 'neutral' });
 
   const failProtectionTrend = describeTrend(rod?.failProtection || 0, [0.08, 0.18, 0.32]);
   if (failProtectionTrend) {
-    lines.push(`护钩率${failProtectionTrend.level}${failProtectionTrend.positive ? '上升' : '下降'}`);
+    entries.push({
+      text: `护钩率${failProtectionTrend.level}${failProtectionTrend.positive ? '上升' : '下降'}`,
+      tone: failProtectionTrend.positive ? 'positive' : 'negative'
+    });
   }
 
   const waitTrend = describeMultiplierDirection(rod?.waitMultiplier || 1, [0.08, 0.18, 0.3]);
   if (waitTrend) {
-    lines.push(`等口时间${waitTrend.level}${waitTrend.positive ? '变长' : '缩短'}`);
+    entries.push({
+      text: `等口时间${waitTrend.level}${waitTrend.positive ? '变长' : '缩短'}`,
+      tone: waitTrend.positive ? 'negative' : 'positive'
+    });
   }
 
   const rarityBiasEntries = RARITY_ORDER
     .filter(rarity => Object.prototype.hasOwnProperty.call(rod?.rarityBias || {}, rarity))
-    .map(rarity => `${rarity}鱼比例${rarityBiasArrow(rod?.rarityBias?.[rarity])}`);
-  if (rarityBiasEntries.some(text => !text.endsWith('-'))) {
-    lines.push(rarityBiasEntries.join(' '));
+    .map(rarity => {
+      const value = Number(rod?.rarityBias?.[rarity] || 0);
+      const arrow = rarityBiasArrow(value);
+      return {
+        label: getRarityBiasLabel(rarity),
+        arrow,
+        tone: getRarityBiasTone(rarity, value),
+        arrowTone: arrow === '-' ? 'flat' : value > 0 ? 'up' : 'down'
+      };
+    });
+  if (rarityBiasEntries.some(entry => entry.arrow !== '-')) {
+    entries.push({
+      text: rarityBiasEntries.map(entry => `${entry.label}${entry.arrow}`).join(' '),
+      tone: 'mixed',
+      parts: rarityBiasEntries
+    });
   }
 
   const sizeTrend = describeMultiplierDirection(rod?.sizeMultiplier || 1, [0.015, 0.045, 0.09]);
-  if (sizeTrend) lines.push(`尺寸表现${sizeTrend.level}${sizeTrend.positive ? '上升' : '下降'}`);
+  if (sizeTrend) {
+    entries.push({
+      text: `尺寸表现${sizeTrend.level}${sizeTrend.positive ? '上升' : '下降'}`,
+      tone: sizeTrend.positive ? 'positive' : 'negative'
+    });
+  }
 
   const weightTrend = describeMultiplierDirection(rod?.weightMultiplier || 1, [0.02, 0.06, 0.12]);
-  if (weightTrend) lines.push(`重量表现${weightTrend.level}${weightTrend.positive ? '上升' : '下降'}`);
+  if (weightTrend) {
+    entries.push({
+      text: `重量表现${weightTrend.level}${weightTrend.positive ? '上升' : '下降'}`,
+      tone: weightTrend.positive ? 'positive' : 'negative'
+    });
+  }
 
   if (Number(rod?.minSizeRatio || 0) > 0 || Number(rod?.minWeightRatio || 0) > 0) {
-    lines.push('巨物下限更稳，不容易出太小的个体');
+    entries.push({ text: '巨物下限更稳，不容易出太小的个体', tone: 'positive' });
   }
   if (Number(rod?.baitPreserveChance || 0) > 0) {
     const preserveTrend = describeTrend(rod.baitPreserveChance, [0.08, 0.18, 0.28]);
-    lines.push(`保饵能力${preserveTrend?.level || '小幅度'}上升`);
+    entries.push({
+      text: `保饵能力${preserveTrend?.level || '小幅度'}上升`,
+      tone: 'positive'
+    });
   }
-  if (Number(rod?.catchCoinBonus || 0) > 0) lines.push('每次成功上鱼会顺带多捞一点鱼币');
-  if (Number(rod?.signalBonusCoins || 0) > 0) lines.push('命中鱼讯时收成会更亮眼');
-  if (Number(rod?.permanentDailyCasts || 0) > 0) lines.push('装备后每日可抛竿次数会增加');
-  if (Number(rod?.ownedPermanentDailyCasts || 0) > 0) lines.push('只要拥有这根竿，每日可抛竿次数就会增加');
+  if (Number(rod?.catchCoinBonus || 0) > 0) entries.push({ text: '每次成功上鱼会顺带多捞一点鱼币', tone: 'positive' });
+  if (Number(rod?.signalBonusCoins || 0) > 0) entries.push({ text: '命中鱼讯时收成会更亮眼', tone: 'positive' });
+  if (Number(rod?.permanentDailyCasts || 0) > 0) entries.push({ text: '装备后每日可抛竿次数会增加', tone: 'positive' });
+  if (Number(rod?.ownedPermanentDailyCasts || 0) > 0) entries.push({ text: '只要拥有这根竿，每日可抛竿次数就会增加', tone: 'positive' });
 
-  return lines;
+  return entries;
+}
+
+function buildRodTraitLines(rod) {
+  return buildRodTraitEntries(rod).map(entry => entry.text);
+}
+
+function buildRodTraitHtml(rod) {
+  const entries = buildRodTraitEntries(rod);
+  if (!entries.length) return '';
+
+  const html = entries.map(entry => {
+    if (entry.parts?.length) {
+      const partsHtml = entry.parts.map(part => (
+        `<span class="rod-trait-segment rod-trait-${part.tone}">` +
+        `<span class="rod-trait-label">${escapePanelHtml(part.label)}</span>` +
+        `<span class="rod-trait-arrow rod-trait-${part.arrowTone}">${escapePanelHtml(part.arrow)}</span>` +
+        '</span>'
+      )).join('');
+      return `<div class="rod-trait-line rod-trait-mixed">${partsHtml}</div>`;
+    }
+    return `<div class="rod-trait-line rod-trait-${entry.tone}">${escapePanelHtml(entry.text)}</div>`;
+  }).join('');
+
+  return `<div class="rod-trait-list">${html}</div>`;
 }
 
 function createFishFromTemplate(template, rarity) {
@@ -633,7 +703,7 @@ export class fishing extends plugin {
         { reg: '^#同步鱼缸$', fnc: 'syncAllFishTanks' },
         { reg: '^#修复鱼数据$', fnc: 'repairFishData' },
         { reg: '^#(鱼市|售鱼)(.*)$', fnc: 'handleMarketCommand' },
-        { reg: '^#鱼竿(?:详情|属性)\\s+.+$', fnc: 'showRodDetailsCommand' },
+        { reg: '^#鱼竿(?:详情|属性)\\s*.+$', fnc: 'showRodDetailsCommand' },
         { reg: '^#(鱼竿|换竿|换杆)(.*)$', fnc: 'handleRodCommand' },
         { reg: '^#(鱼饵|换饵)(.*)$', fnc: 'handleBaitCommand' },
         { reg: '^#限时鱼讯$', fnc: 'showDailySignal' },
@@ -2504,6 +2574,7 @@ export class fishing extends plugin {
     }
 
     const { fish, recipe } = resolved;
+    const traitLines = buildRodTraitLines(recipe);
     const owned = userData.rodsOwned?.includes(recipe.id);
     const crafted = Boolean(userData.craftedLegendaryRods?.[recipe.id]);
     const sections = [
@@ -2511,7 +2582,7 @@ export class fishing extends plugin {
       `将炼成：${recipe.name}`,
       `状态：${owned ? '已拥有' : '未拥有'}${crafted ? ' | 已炼过' : ''}`,
       `手感描述：${recipe.description}`,
-      ...buildRodTraitLines(recipe)
+      { type: 'html-block', html: buildRodTraitHtml(recipe) }
     ];
     const fallback = [
       '炼竿预览',
@@ -2519,7 +2590,7 @@ export class fishing extends plugin {
       `将炼成：${recipe.name}`,
       `状态：${owned ? '已拥有' : '未拥有'}${crafted ? ' | 已炼过' : ''}`,
       `手感描述：${recipe.description}`,
-      ...buildRodTraitLines(recipe),
+      ...traitLines,
       '使用：#炼竿 该鱼序号 或 #炼竿 legendary鱼名'
     ].join('\n');
 
@@ -2699,7 +2770,7 @@ export class fishing extends plugin {
   }
 
   async showRodDetailsCommand(e) {
-    const keyword = (e.msg.match(/^#鱼竿(?:详情|属性)\s+(.+)$/)?.[1] || '').trim();
+    const keyword = (e.msg.match(/^#鱼竿(?:详情|属性)\s*(.+)$/)?.[1] || '').trim();
     const { text: userDisplay } = getUserDisplay(e);
     if (!keyword) {
       await this.reply(`${userDisplay}\n请输入鱼竿编号或鱼竿名，例如：#鱼竿详情 鱼竿1 / #鱼竿属性 疾风短竿`);
@@ -2764,12 +2835,13 @@ export class fishing extends plugin {
     }
 
     const owned = userData.rodsOwned.includes(rod.id);
+    const traitLines = buildRodTraitLines(rod);
     const sections = [
       `鱼竿：${rod.name}`,
       `状态：${owned ? '已拥有' : '未拥有'}${rod.id === getEquippedRod(userData).id ? ' | 当前装备' : ''}`,
       rod.sourceLegendary ? `炼成来源：${rod.sourceLegendary}` : `售价：${rod.price}鱼币`,
       `手感描述：${rod.description}`,
-      ...buildRodTraitLines(rod)
+      { type: 'html-block', html: buildRodTraitHtml(rod) }
     ];
     const fallback = [
       '鱼竿详情',
@@ -2777,7 +2849,7 @@ export class fishing extends plugin {
       `状态：${owned ? '已拥有' : '未拥有'}${rod.id === getEquippedRod(userData).id ? ' | 当前装备' : ''}`,
       rod.sourceLegendary ? `炼成来源：${rod.sourceLegendary}` : `售价：${rod.price}鱼币`,
       `手感描述：${rod.description}`,
-      ...buildRodTraitLines(rod)
+      ...traitLines
     ].join('\n');
 
     await replyWithPanel(this, {

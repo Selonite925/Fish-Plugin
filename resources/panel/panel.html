@@ -135,6 +135,84 @@
       border: none;
       min-height: auto;
     }
+    .line.html-block {
+      padding: 0;
+      background: transparent;
+      border: none;
+      min-height: auto;
+    }
+    .rod-trait-list {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      margin-top: 4px;
+    }
+    .rod-trait-line {
+      min-height: 38px;
+      padding: 10px 14px;
+      border-radius: 12px;
+      font-size: 22px;
+      line-height: 1.45;
+      font-weight: 700;
+      background: rgba(255,255,255,0.72);
+      border: 1px solid rgba(148, 163, 184, 0.16);
+      word-break: break-word;
+      white-space: pre-wrap;
+    }
+    body.has-bg .rod-trait-line {
+      background: rgba(255,255,255,0.06);
+      border-color: rgba(255,255,255,0.08);
+    }
+    .rod-trait-positive {
+      color: #15803d;
+    }
+    .rod-trait-negative {
+      color: #dc2626;
+    }
+    .rod-trait-neutral {
+      color: #6b7280;
+    }
+    body.has-bg .rod-trait-positive {
+      color: #86efac;
+    }
+    body.has-bg .rod-trait-negative {
+      color: #fca5a5;
+    }
+    body.has-bg .rod-trait-neutral {
+      color: #cbd5e1;
+    }
+    .rod-trait-mixed {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 12px 16px;
+      color: inherit;
+    }
+    .rod-trait-segment {
+      display: inline-flex;
+      align-items: center;
+      gap: 2px;
+    }
+    .rod-trait-arrow {
+      font-weight: 800;
+    }
+    .rod-trait-up {
+      color: #15803d;
+    }
+    .rod-trait-down {
+      color: #dc2626;
+    }
+    .rod-trait-flat {
+      color: #6b7280;
+    }
+    body.has-bg .rod-trait-up {
+      color: #86efac;
+    }
+    body.has-bg .rod-trait-down {
+      color: #fca5a5;
+    }
+    body.has-bg .rod-trait-flat {
+      color: #cbd5e1;
+    }
     .collection-title {
       margin: 14px 0 10px;
       padding: 0 4px 4px;
@@ -354,6 +432,8 @@
             {{@ section.html}}
           </div>
         </div>
+        {{else if section.type === 'html-block'}}
+        <div class="line html-block">{{@ section.html}}</div>
         {{else}}
         <div class="line {{section.type}}">{{section.text}}</div>
         {{/if}}
