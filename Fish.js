@@ -377,26 +377,55 @@ function escapePanelHtml(text = '') {
 
 function buildHelpGridSections(groups = []) {
   return groups.map(group => {
-    const hasFullWidthItem = group.list.some(item => item.fullWidth);
-    const shouldPadEmptyItem = !hasFullWidthItem && group.list.length % 2 === 1;
-    const html = [
-      '<div class="help-grid">',
-      ...group.list.map((item, index) => {
-        const title = escapePanelHtml(item.title || '');
-        const desc = escapePanelHtml(item.desc || '');
-        const noteClass = item.fullWidth ? ' help-grid-item-note' : '';
-        const badge = String(index + 1).padStart(2, '0');
+    const htmlParts = ['<div class="help-grid">'];
+    const items = group.list || [];
+    let visualIndex = 0;
+
+    for (let i = 0; i < items.length; i += 1) {
+      const item = items[i];
+      const title = escapePanelHtml(item.title || '');
+      const desc = escapePanelHtml(item.desc || '');
+      const badge = String(++visualIndex).padStart(2, '0');
+
+      const renderItem = (currentItem, currentBadge) => {
+        const currentTitle = escapePanelHtml(currentItem.title || '');
+        const currentDesc = escapePanelHtml(currentItem.desc || '');
         return (
-          `<div class="help-grid-item${noteClass}">` +
+          '<div class="help-grid-item">' +
+          `<div class="help-grid-item-badge">${currentBadge}</div>` +
+          `<div class="help-grid-item-title">${currentTitle}</div>` +
+          `<div class="help-grid-item-desc">${currentDesc}</div>` +
+          '</div>'
+        );
+      };
+
+      if (item.fullWidth) {
+        htmlParts.push('<div class="help-grid-row">');
+        htmlParts.push(`<div class="help-grid-item help-grid-item-note">` +
           `<div class="help-grid-item-badge">${badge}</div>` +
           `<div class="help-grid-item-title">${title}</div>` +
           `<div class="help-grid-item-desc">${desc}</div>` +
-          '</div>'
-        );
-      }),
-      ...(shouldPadEmptyItem ? ['<div class="help-grid-item help-grid-item-empty" aria-hidden="true"></div>'] : []),
-      '</div>'
-    ].join('');
+          '</div>');
+        htmlParts.push('</div>');
+        continue;
+      }
+
+      const nextItem = items[i + 1];
+      const canPair = nextItem && !nextItem.fullWidth;
+      htmlParts.push('<div class="help-grid-row">');
+      htmlParts.push(renderItem(item, badge));
+      if (canPair) {
+        const nextBadge = String(++visualIndex).padStart(2, '0');
+        htmlParts.push(renderItem(nextItem, nextBadge));
+        i += 1;
+      } else {
+        htmlParts.push('<div class="help-grid-item help-grid-item-empty" aria-hidden="true"></div>');
+      }
+      htmlParts.push('</div>');
+    }
+
+    htmlParts.push('</div>');
+    const html = htmlParts.join('');
 
     return {
       type: 'help-grid',
