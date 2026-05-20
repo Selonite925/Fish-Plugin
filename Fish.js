@@ -376,19 +376,24 @@ function escapePanelHtml(text = '') {
 
 function buildHelpGridSections(groups = []) {
   return groups.map(group => {
+    const hasFullWidthItem = group.list.some(item => item.fullWidth);
+    const shouldPadEmptyItem = !hasFullWidthItem && group.list.length % 2 === 1;
     const html = [
       '<div class="help-grid">',
-      ...group.list.map(item => {
+      ...group.list.map((item, index) => {
         const title = escapePanelHtml(item.title || '');
         const desc = escapePanelHtml(item.desc || '');
         const noteClass = item.fullWidth ? ' help-grid-item-note' : '';
+        const badge = String(index + 1).padStart(2, '0');
         return (
           `<div class="help-grid-item${noteClass}">` +
+          `<div class="help-grid-item-badge">${badge}</div>` +
           `<div class="help-grid-item-title">${title}</div>` +
           `<div class="help-grid-item-desc">${desc}</div>` +
           '</div>'
         );
       }),
+      ...(shouldPadEmptyItem ? ['<div class="help-grid-item help-grid-item-empty" aria-hidden="true"></div>'] : []),
       '</div>'
     ].join('');
 
