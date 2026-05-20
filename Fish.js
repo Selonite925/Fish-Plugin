@@ -16,6 +16,7 @@ import {
   ACHIEVEMENT_DEFS,
   BAIT_CATALOG,
   DEFAULT_ROD_ID,
+  EASTER_EGG_EFFECTS,
   EASTER_EGG_RARITY,
   HIDDEN_PITY_CATCH_BONUS,
   LEGENDARY_ROD_RECIPES,
@@ -376,6 +377,74 @@ function escapePanelHtml(text = '') {
     .replace(/"/g, '&quot;');
 }
 
+const PANEL_GROUP_THEMES = {
+  lake: {
+    accent: '#0f766e',
+    soft: 'rgba(15, 118, 110, 0.18)',
+    title: '#115e59'
+  },
+  sky: {
+    accent: '#2563eb',
+    soft: 'rgba(37, 99, 235, 0.18)',
+    title: '#1d4ed8'
+  },
+  amber: {
+    accent: '#d97706',
+    soft: 'rgba(217, 119, 6, 0.18)',
+    title: '#b45309'
+  },
+  coral: {
+    accent: '#e11d48',
+    soft: 'rgba(225, 29, 72, 0.18)',
+    title: '#be123c'
+  },
+  plum: {
+    accent: '#7c3aed',
+    soft: 'rgba(124, 58, 237, 0.18)',
+    title: '#6d28d9'
+  },
+  slate: {
+    accent: '#475569',
+    soft: 'rgba(71, 85, 105, 0.18)',
+    title: '#334155'
+  },
+  gold: {
+    accent: '#ca8a04',
+    soft: 'rgba(202, 138, 4, 0.18)',
+    title: '#a16207'
+  }
+};
+
+function buildPanelGroupStyle(themeName = 'slate') {
+  const theme = PANEL_GROUP_THEMES[themeName] || PANEL_GROUP_THEMES.slate;
+  return `--group-accent:${theme.accent};--group-accent-soft:${theme.soft};--group-title:${theme.title};`;
+}
+
+function applyGroupThemes(groups = [], themeNames = []) {
+  return groups.map((group, index) => ({
+    ...group,
+    groupStyle: group.groupStyle || buildPanelGroupStyle(themeNames[index] || 'slate')
+  }));
+}
+
+function joinTextParts(parts = [], separator = ' | ', fallback = '无') {
+  const filtered = parts
+    .map(part => String(part || '').trim())
+    .filter(Boolean);
+  return filtered.length ? filtered.join(separator) : fallback;
+}
+
+function getRarityCardTone(rarity) {
+  if (rarity === EASTER_EGG_RARITY) return 'mystery';
+  return ({
+    common: 'common',
+    uncommon: 'uncommon',
+    rare: 'rare',
+    epic: 'epic',
+    legendary: 'legendary'
+  })[rarity] || 'neutral';
+}
+
 function buildHelpGridSections(groups = []) {
   return groups.map(group => {
     const htmlParts = ['<div class="help-grid">'];
@@ -391,8 +460,9 @@ function buildHelpGridSections(groups = []) {
       const renderItem = (currentItem, currentBadge) => {
         const currentTitle = escapePanelHtml(currentItem.title || '');
         const currentDesc = escapePanelHtml(currentItem.desc || '');
+        const toneClass = currentItem.tone ? ` help-grid-item-${currentItem.tone}` : '';
         return (
-          '<div class="help-grid-item">' +
+          `<div class="help-grid-item${toneClass}">` +
           `<div class="help-grid-item-badge">${currentBadge}</div>` +
           `<div class="help-grid-item-title">${currentTitle}</div>` +
           `<div class="help-grid-item-desc">${currentDesc}</div>` +
@@ -431,7 +501,70 @@ function buildHelpGridSections(groups = []) {
     return {
       type: 'help-grid',
       title: group.group,
-      html
+      html,
+      titleStyle: group.titleStyle || '',
+      groupStyle: group.groupStyle || ''
+    };
+  });
+}
+
+function buildCardGridSections(groups = [], options = {}) {
+  const badgePrefix = options.badgePrefix || '';
+  const emptyPlaceholder = options.emptyPlaceholder || '';
+
+  return groups.map(group => {
+    const htmlParts = ['<div class="help-grid">'];
+    const items = group.list || [];
+    let visualIndex = 0;
+
+    const renderItem = (item, badgeText) => {
+      const title = escapePanelHtml(item.title || '');
+      const desc = escapePanelHtml(item.desc || '');
+      const meta = item.meta ? `<div class="help-grid-item-meta">${escapePanelHtml(item.meta)}</div>` : '';
+      const toneClass = item.tone ? ` help-grid-item-${item.tone}` : '';
+      return (
+        `<div class="help-grid-item${toneClass}">` +
+        `<div class="help-grid-item-badge">${escapePanelHtml(badgeText)}</div>` +
+        `<div class="help-grid-item-title">${title}</div>` +
+        `<div class="help-grid-item-desc">${desc}</div>` +
+        meta +
+        '</div>'
+      );
+    };
+
+    for (let i = 0; i < items.length; i += 1) {
+      const item = items[i];
+      const badge = item.badge || `${badgePrefix}${String(++visualIndex).padStart(2, '0')}`;
+
+      if (item.fullWidth) {
+        htmlParts.push('<div class="help-grid-row">');
+        htmlParts.push(renderItem({ ...item, tone: item.tone || 'note' }, badge).replace('help-grid-item', 'help-grid-item help-grid-item-note'));
+        htmlParts.push('</div>');
+        continue;
+      }
+
+      const nextItem = items[i + 1];
+      const canPair = nextItem && !nextItem.fullWidth;
+      htmlParts.push('<div class="help-grid-row">');
+      htmlParts.push(renderItem(item, badge));
+      if (canPair) {
+        const nextBadge = nextItem.badge || `${badgePrefix}${String(++visualIndex).padStart(2, '0')}`;
+        htmlParts.push(renderItem(nextItem, nextBadge));
+        i += 1;
+      } else {
+        htmlParts.push(`<div class="help-grid-item help-grid-item-empty" aria-hidden="true">${escapePanelHtml(emptyPlaceholder)}</div>`);
+      }
+      htmlParts.push('</div>');
+    }
+
+    htmlParts.push('</div>');
+
+    return {
+      type: 'help-grid',
+      title: group.group,
+      html: htmlParts.join(''),
+      titleStyle: group.titleStyle || '',
+      groupStyle: group.groupStyle || ''
     };
   });
 }
@@ -658,6 +791,10 @@ function buildBaitTraitHtml(bait) {
   }).join('');
 
   return `<div class="rod-trait-list">${html}</div>`;
+}
+
+function buildEquipCardItem({ badge, title, desc, meta, tone = 'neutral' }) {
+  return { badge, title, desc, meta, tone };
 }
 
 function createFishFromTemplate(template, rarity) {
@@ -1649,7 +1786,93 @@ export class fishing extends plugin {
       summary.autoSellCoins > 0 ? `鱼缸替换自动售出：+${summary.autoSellCoins}鱼币` : null
     ].filter(Boolean);
 
-    const sections = [
+    const groups = applyGroupThemes([
+      {
+        group: '本次结算',
+        list: [
+          { badge: '玩家', title: userDisplay, desc: `使用鱼竿：${rod.name}`, tone: 'active' },
+          {
+            badge: '抛竿',
+            title: `${summary.casts} 竿`,
+            desc: `上鱼 ${summary.catches} 条，空军 ${summary.misses} 竿`,
+            meta: `今日次数：${getFishingLimitText(this.config, userData, getEquippedRod(userData))}`,
+            tone: summary.catches > 0 ? 'positive' : 'warning'
+          },
+          {
+            badge: '鱼币',
+            title: `${summary.coinGain >= 0 ? '+' : ''}${summary.coinGain} 鱼币`,
+            desc: `当前共有 ${userData.coins} 鱼币`,
+            meta: extraLines.join(' | ') || '本次没有额外结算项',
+            tone: summary.coinGain >= 0 ? 'positive' : 'warning',
+            fullWidth: true
+          }
+        ]
+      },
+      {
+        group: '稀有度统计',
+        list: rarityLines.length
+          ? RARITY_ORDER
+            .filter(rarity => summary.rarityCounts[rarity] > 0)
+            .map(rarity => ({
+              badge: rarityLabel(rarity),
+              title: `${summary.rarityCounts[rarity]} 条`,
+              desc: `${rarityLabel(rarity)} 鱼获`,
+              tone: getRarityCardTone(rarity)
+            }))
+          : [{ badge: '无', title: '本次没有上鱼', desc: '空军统计见下方', tone: 'warning', fullWidth: true }]
+      },
+      {
+        group: '主要鱼获',
+        list: fishLines.length
+          ? fishLines.map((line, index) => ({
+            badge: `鱼${index + 1}`,
+            title: line.split('，')[0] || line,
+            desc: line.split('，').slice(1).join('，') || '本次入袋鱼获',
+            tone: 'neutral'
+          }))
+          : [{ badge: '空', title: '本次没有鱼获', desc: '再来一竿试试手气', tone: 'warning', fullWidth: true }]
+      },
+      ...(notableLines.length ? [{
+        group: '高稀有鱼获',
+        list: notableLines.map((line, index) => ({
+          badge: `高${index + 1}`,
+          title: line.split(' ').slice(0, 2).join(' '),
+          desc: line.split(' ').slice(2).join(' ') || line,
+          tone: 'legendary'
+        }))
+      }] : []),
+      ...(failLines.length ? [{
+        group: '空军统计',
+        list: failLines.map((line, index) => ({
+          badge: `空${index + 1}`,
+          title: line.split('：')[0] || line,
+          desc: line.split('：').slice(1).join('：') || '本次失败记录',
+          tone: 'warning'
+        }))
+      }] : []),
+      ...(baitLines.length ? [{
+        group: '鱼饵消耗',
+        list: baitLines.map((line, index) => ({
+          badge: `饵${index + 1}`,
+          title: line.split('：')[0] || line,
+          desc: line.split('：').slice(1).join('：') || '本次生效次数',
+          tone: 'sky'
+        }))
+      }] : []),
+      ...(summary.achievements.size ? [{
+        group: '成就变化',
+        list: [...summary.achievements].slice(0, 8).map((line, index) => ({
+          badge: `成${index + 1}`,
+          title: line,
+          desc: '本次极速钓鱼中触发',
+          tone: 'positive'
+        }))
+      }] : [])
+    ], ['lake', 'gold', 'sky', 'coral', 'amber', 'plum']);
+    const sections = buildCardGridSections(groups, { badgePrefix: '结' });
+
+    const fallback = [
+      '钓鱼极速版结果',
       userDisplay,
       `鱼竿：${rod.name}`,
       `总抛竿：${summary.casts}竿，上鱼${summary.catches}条，空军${summary.misses}竿`,
@@ -1666,11 +1889,6 @@ export class fishing extends plugin {
       ...(failLines.length ? ['', '空军统计', ...failLines] : []),
       ...(baitLines.length ? ['', '鱼饵消耗', ...baitLines] : []),
       ...(summary.achievements.size ? ['', '成就变化', ...[...summary.achievements].slice(0, 8)] : [])
-    ];
-
-    const fallback = [
-      '钓鱼极速版结果',
-      ...sections
     ].join('\n');
 
     return {
@@ -2272,21 +2490,59 @@ export class fishing extends plugin {
     await this.reply(replyMsg.trim());
   }
 
-  async checkEasterEggCollection(e) {
+async checkEasterEggCollection(e) {
     const data = this.loadData();
+    const { text: userDisplay } = getUserDisplay(e);
     const userData = this.getOrCreateUser(data, String(e.user_id));
     normalizeUserData(userData);
     const status = getEasterEggStatusSummary(userData);
     const ownedText = status.owned.length ? status.owned.join('、') : '暂无';
     const pendingText = status.pendingName ? `${status.pendingName}（明日生效）` : '无';
-    await this.reply(
-      `彩蛋收藏\n` +
-      `已收集：${status.owned.length} 条\n` +
-      `当前生效：${status.activeDescription}\n` +
-      `待切换：${pendingText}\n` +
-      `收藏列表：${ownedText}\n` +
-      `切换方式：#切换彩蛋 彩蛋名`
-    );
+    const effectItems = Object.entries(EASTER_EGG_EFFECTS).map(([name, effect]) => {
+      const owned = status.owned.includes(name);
+      const isActive = status.activeName === name;
+      const isPending = status.pendingName === name;
+      const badges = [
+        owned ? '已收集' : '未收集',
+        isActive ? '当前生效' : null,
+        isPending ? '待切换' : null
+      ].filter(Boolean).join(' | ');
+      return {
+        badge: isActive ? '生效' : isPending ? '待切' : owned ? '已收' : '未收',
+        title: name,
+        desc: effect.description || '隐藏效果',
+        meta: badges,
+        tone: isActive ? 'active' : isPending ? 'warning' : owned ? 'positive' : 'neutral'
+      };
+    });
+    const statusGroups = [{
+      group: '彩蛋状态',
+      list: [
+        { badge: '已收', title: `已收集 ${status.owned.length} 条`, desc: ownedText, tone: 'positive' },
+        { badge: '生效', title: status.activeName || '当前无生效彩蛋', desc: status.activeDescription || '暂无效果', tone: status.activeName ? 'active' : 'neutral' },
+        { badge: '待切', title: status.pendingName || '暂无待切换彩蛋', desc: pendingText, tone: status.pendingName ? 'warning' : 'neutral' },
+        { badge: '切换', title: '#切换彩蛋 彩蛋名', desc: '每天只能安排一次，次日生效。', tone: 'note' }
+      ]
+    }, {
+      group: '彩蛋条目',
+      list: effectItems
+    }];
+    const fallback = [
+      '彩蛋收藏',
+      `已收集：${status.owned.length} 条`,
+      `当前生效：${status.activeDescription}`,
+      `待切换：${pendingText}`,
+      `收藏列表：${ownedText}`,
+      '切换方式：#切换彩蛋 彩蛋名'
+    ].join('\n');
+
+    await replyWithPanel(this, {
+      key: `easter-egg-${e.user_id}`,
+      title: '彩蛋收藏',
+      subtitle: `${userDisplay} 的彩蛋生效状态`,
+      sections: buildCardGridSections(statusGroups, { badgePrefix: '彩' }),
+      footer: status.activeName ? `当前生效：${status.activeName}` : '当前未启用彩蛋效果'
+    }, fallback);
   }
 
   async scheduleActiveEasterEgg(e) {
@@ -2339,25 +2595,92 @@ export class fishing extends plugin {
     const easterEggStatus = getEasterEggStatusSummary(userData);
     const easterEggOwnedText = easterEggStatus.owned.length ? easterEggStatus.owned.join('、') : '暂无';
     const easterEggPendingText = easterEggStatus.pendingName ? `${easterEggStatus.pendingName}（明日生效）` : '无';
-
-    const sections = [
-      `鱼缸容量：${userData.fishTank.length}/${userData.tankCapacity}`,
-      `鱼缸等级：${userData.tankLevel || 0}`,
-      `升级进度：${progressText}`,
-      `今日钓鱼次数：${getFishingLimitText(this.config, userData, rod)}`,
-      `当前鱼竿：${rod.name}`,
-      `当前鱼饵：${getEquippedBait(userData).name}`,
-      `鱼币：${userData.coins}，钓鱼券：${userData.tickets}`,
-      `鱼竿库存：${getOwnedRodsSummary(userData) || '无'}`,
-      `鱼饵库存：${Object.entries(userData.baitInventory || {}).filter(([, count]) => count > 0).map(([id, count]) => `${userData.customBaits?.[id]?.name || BAIT_CATALOG[id]?.name || id}x${count}`).join('、') || '无'}`,
-      `彩蛋收藏：${easterEggStatus.owned.length} 条`,
-      `当前彩蛋：${easterEggStatus.activeDescription}`,
-      `待切换：${easterEggPendingText}`
-    ];
-    sections.push(...sortedFish.slice(0, 16).map((fish, index) => formatFishLine(fish, index)));
-    if (sortedFish.length > 16) {
-      sections.push(`...还有 ${sortedFish.length - 16} 条未展示`);
-    }
+    const baitInventoryText = Object.entries(userData.baitInventory || {})
+      .filter(([, count]) => count > 0)
+      .map(([id, count]) => `${userData.customBaits?.[id]?.name || BAIT_CATALOG[id]?.name || id}x${count}`)
+      .join('、') || '无';
+    const sections = buildCardGridSections(applyGroupThemes([
+      {
+        group: '鱼缸状态',
+        list: [
+          {
+            badge: '容量',
+            title: `${userData.fishTank.length}/${userData.tankCapacity}`,
+            desc: `鱼缸等级 ${userData.tankLevel || 0}`,
+            meta: `升级进度：${progressText}`,
+            tone: 'active'
+          },
+          {
+            badge: '次数',
+            title: getFishingLimitText(this.config, userData, rod),
+            desc: `鱼币 ${userData.coins} | 钓鱼券 ${userData.tickets}`,
+            meta: `总钓鱼次数 ${userData.total || 0}`,
+            tone: 'positive'
+          }
+        ]
+      },
+      {
+        group: '装备与库存',
+        list: [
+          {
+            badge: '鱼竿',
+            title: rod.name,
+            desc: `鱼竿库存：${getOwnedRodsSummary(userData) || '无'}`,
+            tone: 'plum'
+          },
+          {
+            badge: '鱼饵',
+            title: getEquippedBait(userData).name,
+            desc: `鱼饵库存：${baitInventoryText}`,
+            tone: 'sky'
+          }
+        ]
+      },
+      {
+        group: '彩蛋状态',
+        list: [
+          {
+            badge: '收藏',
+            title: `已收集 ${easterEggStatus.owned.length} 条`,
+            desc: easterEggOwnedText,
+            tone: 'positive'
+          },
+          {
+            badge: '生效',
+            title: easterEggStatus.activeDescription,
+            desc: `待切换：${easterEggPendingText}`,
+            tone: easterEggStatus.pendingName ? 'warning' : 'active'
+          }
+        ]
+      },
+      {
+        group: '鱼缸鱼获',
+        list: sortedFish.length
+          ? [
+            ...sortedFish.slice(0, 16).map((fish, index) => ({
+              badge: `${index + 1}`,
+              title: `${fish.name} (${rarityLabel(fish.rarity)})`,
+              desc: `${fish.length}cm / ${fish.weight}kg`,
+              meta: `鱼缸序号 ${index + 1}`,
+              tone: getRarityCardTone(fish.rarity)
+            })),
+            ...(sortedFish.length > 16 ? [{
+              badge: '余量',
+              title: `还有 ${sortedFish.length - 16} 条未展示`,
+              desc: '当前面板只展示前 16 条排序后的鱼获',
+              tone: 'neutral',
+              fullWidth: true
+            }] : [])
+          ]
+          : [{
+            badge: '空',
+            title: '鱼缸里还没有鱼',
+            desc: '先去 #钓鱼 或 #钓鱼极速版 甩几竿吧',
+            tone: 'warning',
+            fullWidth: true
+          }]
+      }
+    ], ['lake', 'plum', 'amber', 'sky']), { badgePrefix: '缸' });
 
     const fallbackText = [
       '你的鱼缸',
@@ -2436,26 +2759,77 @@ export class fishing extends plugin {
     const rodList = getBuyableRodList();
     const utilityItems = Object.values(SHOP_ITEMS).filter(item => item.type === 'ticket' || item.type === 'custom_bait');
 
-    const sections = [
-      `鱼币：${userData.coins} | 钓鱼券：${userData.tickets}`,
-      `当前鱼竿：${getEquippedRod(userData).name}`,
-      `当前鱼饵：${getEquippedBait(userData).name}`,
-      '',
-      '出售示例：#售鱼 1 / #售鱼 common / #售鱼 common3 / #售鱼 鱼缸3 / #售鱼 鱼缸 2 3 4 5 / #售鱼 全部',
-      '说明：#售鱼 1 对应 #今日鱼获 里显示的第 1 条。',
-      '回收示例：#鱼市回收 鱼竿 / #鱼市回收 鱼竿1 / #鱼市回收 疾风短竿',
-      '说明：#鱼市回收 鱼竿1 对应回收列表里的第 1 根，不一定等于 #鱼竿 面板里的鱼竿1。',
-      `示例预估：卖出 ${commonPreview.length} 条 common 可得约 ${previewCoins} 鱼币`,
-      '',
-      '鱼饵区：',
-      ...baitList.map((bait, index) => `鱼饵${index + 1} | ${bait.name} - ${getBaitPackText(bait)} - ${bait.description}`),
-      '',
-      '鱼竿区：',
-      ...rodList.map((rod, index) => `鱼竿${index + 1} | ${rod.name} - ${rod.price}鱼币 - ${rod.description}`),
-      '',
-      '功能区：',
-      ...utilityItems.map(item => `${item.name} - ${item.price}鱼币 - ${item.description}`)
-    ];
+    const groups = applyGroupThemes([
+      {
+        group: '摊位总览',
+        list: [
+          buildEquipCardItem({
+            badge: '鱼币',
+            title: `${userData.coins} 鱼币`,
+            desc: `钓鱼券 ${userData.tickets} 张`,
+            meta: `示例预估：卖出 ${commonPreview.length} 条 common 约得 ${previewCoins} 鱼币`,
+            tone: 'active'
+          }),
+          buildEquipCardItem({
+            badge: '装备',
+            title: getEquippedRod(userData).name,
+            desc: `当前鱼饵：${getEquippedBait(userData).name}`,
+            meta: `鱼缸现有 ${tank.length} 条鱼`,
+            tone: 'positive'
+          })
+        ]
+      },
+      {
+        group: '交易说明',
+        list: [
+          {
+            badge: '售鱼',
+            title: '#售鱼 1 / #售鱼 common / #售鱼 全部',
+            desc: '支持按今日鱼获编号、稀有度、鱼缸序号或全部出售。',
+            meta: '#售鱼 1 对应 #今日鱼获 里显示的第 1 条。',
+            tone: 'amber'
+          },
+          {
+            badge: '回收',
+            title: '#鱼市回收 鱼竿 / #鱼市回收 鱼竿1',
+            desc: '可以按回收列表序号或鱼竿名回收，不一定等于鱼竿面板里的序号。',
+            meta: '回收前需要先卸下当前装备中的鱼竿。',
+            tone: 'coral'
+          }
+        ]
+      },
+      {
+        group: '鱼饵区',
+        list: baitList.map((bait, index) => ({
+          badge: `饵${index + 1}`,
+          title: bait.name,
+          desc: bait.description,
+          meta: getBaitPackText(bait),
+          tone: userData.baitInventory?.[bait.id] > 0 ? 'positive' : 'sky'
+        }))
+      },
+      {
+        group: '鱼竿区',
+        list: rodList.map((rod, index) => ({
+          badge: `竿${index + 1}`,
+          title: rod.name,
+          desc: rod.description,
+          meta: `${rod.price}鱼币`,
+          tone: userData.rodsOwned?.includes(rod.id) ? 'positive' : 'plum'
+        }))
+      },
+      {
+        group: '功能区',
+        list: utilityItems.map((item, index) => ({
+          badge: `功${index + 1}`,
+          title: item.name,
+          desc: item.description,
+          meta: `${item.price}鱼币`,
+          tone: 'gold'
+        }))
+      }
+    ], ['lake', 'slate', 'sky', 'plum', 'amber']);
+    const sections = buildCardGridSections(groups, { badgePrefix: '市' });
 
     const fallback = [
       '鱼市',
@@ -2556,15 +2930,57 @@ export class fishing extends plugin {
 
     const unlocked = this.refreshAchievements(data, userId);
     const achievementText = this.formatAchievementUnlocks(unlocked).replace(/^\n/, '');
-    const sections = [
-      `已售出：${selected.length} 条`,
-      `获得鱼币：${preview.totalCoins}`,
-      `当前鱼币：${userData.coins}`,
-      `出售来源：${target.source === 'tank' ? '鱼缸' : '今日鱼获'}`,
-      ...preview.lines.slice(0, 12),
-      preview.lines.length > 12 ? `...另有 ${preview.lines.length - 12} 条未展开` : null,
-      achievementText || null
-    ].filter(Boolean);
+    const sections = buildCardGridSections(applyGroupThemes([
+      {
+        group: '本次结算',
+        list: [
+          {
+            badge: '售出',
+            title: `${selected.length} 条`,
+            desc: `出售来源：${target.source === 'tank' ? '鱼缸' : '今日鱼获'}`,
+            meta: `${userDisplay} 本次卖鱼收入 ${preview.totalCoins} 鱼币`,
+            tone: 'active'
+          },
+          {
+            badge: '鱼币',
+            title: `+${preview.totalCoins} 鱼币`,
+            desc: `当前共有 ${userData.coins} 鱼币`,
+            meta: achievementText || '本次没有额外成就变化',
+            tone: 'positive'
+          }
+        ]
+      },
+      {
+        group: '售出明细',
+        list: [
+          ...preview.lines.slice(0, 12).map((line, index) => {
+            const [fishPart, coinPart = ''] = line.split(' +');
+            const rarityMatch = fishPart.match(/\(([^)]+)\)/);
+            const rarity = rarityMatch?.[1] || '';
+            return {
+              badge: `鱼${index + 1}`,
+              title: fishPart,
+              desc: coinPart ? `+${coinPart}` : '已结算',
+              tone: getRarityCardTone(rarity)
+            };
+          }),
+          ...(preview.lines.length > 12 ? [{
+            badge: '余量',
+            title: `另有 ${preview.lines.length - 12} 条未展开`,
+            desc: '当前面板最多展示前 12 条售出明细',
+            tone: 'neutral',
+            fullWidth: true
+          }] : []),
+          ...(achievementText ? [{
+            badge: '成就',
+            title: '成就变化',
+            desc: achievementText,
+            tone: 'amber',
+            fullWidth: true
+          }] : [])
+        ]
+      }
+    ], ['lake', 'sky']), { badgePrefix: '售' });
     const fallback = [
       '售鱼结果',
       `已售出 ${selected.length} 条鱼，获得 ${preview.totalCoins} 鱼币。`,
@@ -2883,11 +3299,34 @@ export class fishing extends plugin {
       return `鱼竿${index + 1} | ${rod.name} - ${marks} - ${rod.description}`;
     });
 
-    const sections = [
-      `当前鱼竿：${equipped.name}`,
-      `默认鱼竿：${ROD_CATALOG.starter.name} - 可用 #换竿 0 / #换竿 默认`,
-      ...lines
-    ].filter(Boolean);
+    const sections = buildCardGridSections(applyGroupThemes([
+      {
+        group: '当前装备',
+        list: [{
+          badge: '当前',
+          title: equipped.name,
+          desc: equipped.description,
+          meta: `默认鱼竿：${ROD_CATALOG.starter.name}，可用 #换竿 0 / #换竿 默认 切回`,
+          tone: 'active',
+          fullWidth: true
+        }]
+      },
+      {
+        group: '可切换鱼竿',
+        list: rodList.map((rod, index) => ({
+          badge: `竿${index + 1}`,
+          title: rod.name,
+          desc: rod.description,
+          meta: joinTextParts([
+            rod.id === equipped.id ? '当前装备' : '',
+            owned.has(rod.id) ? '已拥有' : `${rod.price}鱼币`,
+            owned.has(rod.id) && rod.id !== DEFAULT_ROD_ID ? `回收价 ${getRodRecycleValue(rod)}鱼币` : '',
+            rod.sourceLegendary ? `炼成来源 ${rod.sourceLegendary}` : ''
+          ]),
+          tone: rod.id === equipped.id ? 'active' : owned.has(rod.id) ? 'positive' : rod.sourceLegendary ? 'legendary' : 'plum'
+        }))
+      }
+    ], ['lake', 'plum']), { badgePrefix: '竿' });
     const fallback = [
       '鱼竿',
       `当前鱼竿：${equipped.name}`,
@@ -3008,14 +3447,53 @@ export class fishing extends plugin {
         const state = bait.id === equipped.id ? '当前使用' : count > 0 ? '可切换' : '已用完';
         return `鱼饵${builtinBaits.length + index + 1} | ${bait.name} - ${state} - ${bait.description}`;
       });
-    const sections = [
-      `当前鱼饵：${equipped.name}`,
-      `持有鱼饵：${ownedBaitsSummary}`,
-      `已购鱼竿：${ownedRodsSummary}`,
-      `默认鱼饵：${BAIT_CATALOG.plain.name} - 可用 #换饵 0 / #换饵 默认`,
-      ...builtinLines,
-      ...customLines
-    ];
+    const sections = buildCardGridSections(applyGroupThemes([
+      {
+        group: '当前配置',
+        list: [{
+          badge: '当前',
+          title: equipped.name,
+          desc: `持有鱼饵：${ownedBaitsSummary}`,
+          meta: `已购鱼竿：${ownedRodsSummary} | 默认鱼饵：${BAIT_CATALOG.plain.name}`,
+          tone: 'active',
+          fullWidth: true
+        }]
+      },
+      {
+        group: '商店鱼饵',
+        list: builtinBaits.map((bait, index) => {
+          const count = Number(userData.baitInventory?.[bait.id] || 0);
+          return {
+            badge: `饵${index + 1}`,
+            title: bait.name,
+            desc: bait.description,
+            meta: joinTextParts([
+              bait.id === equipped.id ? '当前使用' : '',
+              count > 0 ? `库存 ${count} 份` : '未持有',
+              getBaitPackText(bait)
+            ]),
+            tone: bait.id === equipped.id ? 'active' : count > 0 ? 'positive' : 'sky'
+          };
+        })
+      },
+      ...(getCustomBaitList(userData).length ? [{
+        group: '自定义鱼饵',
+        list: getCustomBaitList(userData).map((bait, index) => {
+          const count = Number(userData.baitInventory?.[bait.id] || 0);
+          return {
+            badge: `定${index + 1}`,
+            title: bait.name,
+            desc: bait.description,
+            meta: joinTextParts([
+              bait.id === equipped.id ? '当前使用' : '',
+              count > 0 ? `库存 ${count} 份` : '已用完',
+              bait.sourceText ? `来源：${bait.sourceText}` : ''
+            ]),
+            tone: bait.id === equipped.id ? 'active' : count > 0 ? 'amber' : 'slate'
+          };
+        })
+      }] : [])
+    ], ['lake', 'sky', 'amber']), { badgePrefix: '饵' });
     const fallback = [
       '鱼饵',
       `当前鱼饵：${equipped.name}`,
@@ -3116,7 +3594,7 @@ export class fishing extends plugin {
     await this.reply(lines.join('\n'));
   }
 
-  async showAchievements(e) {
+async showAchievements(e) {
     const data = this.loadData();
     const userData = this.getOrCreateUser(data, String(e.user_id));
     const unlocked = scanAchievements(userData, this.fishTypes);
@@ -3125,10 +3603,19 @@ export class fishing extends plugin {
     saveFishData(data);
     const list = formatAchievementList(userData);
 
-    const sections = list.map(item => `${item.unlocked ? '已点亮' : '未完成'} | ${item.name} | ${item.description} | 奖励 ${item.rewardText}`);
+    const sections = buildCardGridSections([{
+      group: '成就列表',
+      list: list.map(item => ({
+        badge: item.unlocked ? '达成' : '待解',
+        title: item.name,
+        desc: item.description,
+        meta: `奖励：${item.rewardText}`,
+        tone: item.unlocked ? 'positive' : 'neutral'
+      }))
+    }], { badgePrefix: '成' });
     const fallback = [
       '钓鱼成就',
-      ...sections
+      ...list.map(item => `${item.unlocked ? '已点亮' : '未完成'} | ${item.name} | ${item.description} | 奖励 ${item.rewardText}`)
     ].join('\n');
 
     await replyWithPanel(this, {
