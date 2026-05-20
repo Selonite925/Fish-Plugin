@@ -569,10 +569,16 @@ function buildCardGridSections(groups = [], options = {}) {
   });
 }
 
-function describeTrend(value, thresholds = [0.01, 0.03, 0.06]) {
+function describeTrend(value, thresholds = [0.004, 0.012, 0.03, 0.06, 0.1]) {
   const numeric = Number(value || 0);
   const abs = Math.abs(numeric);
-  const level = abs >= thresholds[2] ? '大幅度' : abs >= thresholds[1] ? '中幅度' : abs >= thresholds[0] ? '小幅度' : null;
+  const level =
+    abs >= thresholds[4] ? '极大幅度'
+      : abs >= thresholds[3] ? '大幅度'
+        : abs >= thresholds[2] ? '较大幅度'
+          : abs >= thresholds[1] ? '中幅度'
+            : abs >= thresholds[0] ? '小幅度'
+              : abs > 0 ? '微小幅度' : null;
   if (!level) return null;
   return { positive: numeric > 0, level };
 }
@@ -599,14 +605,13 @@ function getRarityBiasLabel(rarity) {
 function getRarityBiasTone(rarity, value) {
   const numeric = Number(value || 0);
   if (Math.abs(numeric) < 0.004) return 'neutral';
-  const upIsGood = !['common', 'uncommon'].includes(rarity);
-  return (numeric > 0) === upIsGood ? 'positive' : 'negative';
+  return numeric > 0 ? 'positive' : 'negative';
 }
 
 function buildRodTraitEntries(rod) {
   const entries = [];
 
-  const catchRateTrend = describeTrend(rod?.catchRateBonus || 0, [0.006, 0.02, 0.05]);
+  const catchRateTrend = describeTrend(rod?.catchRateBonus || 0, [0.003, 0.008, 0.018, 0.04, 0.07]);
   entries.push(catchRateTrend
     ? {
       text: `上鱼率${catchRateTrend.level}${catchRateTrend.positive ? '上升' : '下降'}`,
@@ -614,7 +619,7 @@ function buildRodTraitEntries(rod) {
     }
     : { text: '上鱼率基本不变', tone: 'neutral' });
 
-  const failProtectionTrend = describeTrend(rod?.failProtection || 0, [0.08, 0.18, 0.32]);
+  const failProtectionTrend = describeTrend(rod?.failProtection || 0, [0.03, 0.08, 0.15, 0.25, 0.35]);
   if (failProtectionTrend) {
     entries.push({
       text: `护钩率${failProtectionTrend.level}${failProtectionTrend.positive ? '上升' : '下降'}`,
@@ -622,7 +627,7 @@ function buildRodTraitEntries(rod) {
     });
   }
 
-  const waitTrend = describeMultiplierDirection(rod?.waitMultiplier || 1, [0.08, 0.18, 0.3]);
+  const waitTrend = describeMultiplierDirection(rod?.waitMultiplier || 1, [0.03, 0.08, 0.16, 0.26, 0.38]);
   if (waitTrend) {
     entries.push({
       text: `等口时间${waitTrend.level}${waitTrend.positive ? '变长' : '缩短'}`,
@@ -636,7 +641,7 @@ function buildRodTraitEntries(rod) {
       const value = Number(rod?.rarityBias?.[rarity] || 0);
       const arrow = rarityBiasArrow(value);
       return {
-        label: getRarityBiasLabel(rarity),
+        label: `${getRarityBiasLabel(rarity)}几率`,
         arrow,
         tone: getRarityBiasTone(rarity, value),
         arrowTone: arrow === '-' ? 'flat' : value > 0 ? 'up' : 'down'
@@ -650,7 +655,7 @@ function buildRodTraitEntries(rod) {
     });
   }
 
-  const sizeTrend = describeMultiplierDirection(rod?.sizeMultiplier || 1, [0.015, 0.045, 0.09]);
+  const sizeTrend = describeMultiplierDirection(rod?.sizeMultiplier || 1, [0.008, 0.02, 0.05, 0.09, 0.14]);
   if (sizeTrend) {
     entries.push({
       text: `尺寸表现${sizeTrend.level}${sizeTrend.positive ? '上升' : '下降'}`,
@@ -658,7 +663,7 @@ function buildRodTraitEntries(rod) {
     });
   }
 
-  const weightTrend = describeMultiplierDirection(rod?.weightMultiplier || 1, [0.02, 0.06, 0.12]);
+  const weightTrend = describeMultiplierDirection(rod?.weightMultiplier || 1, [0.01, 0.03, 0.07, 0.12, 0.18]);
   if (weightTrend) {
     entries.push({
       text: `重量表现${weightTrend.level}${weightTrend.positive ? '上升' : '下降'}`,
@@ -670,9 +675,9 @@ function buildRodTraitEntries(rod) {
     entries.push({ text: '巨物下限更稳，不容易出太小的个体', tone: 'positive' });
   }
   if (Number(rod?.baitPreserveChance || 0) > 0) {
-    const preserveTrend = describeTrend(rod.baitPreserveChance, [0.08, 0.18, 0.28]);
+    const preserveTrend = describeTrend(rod.baitPreserveChance, [0.03, 0.08, 0.15, 0.24, 0.34]);
     entries.push({
-      text: `保饵能力${preserveTrend?.level || '小幅度'}上升`,
+      text: `保饵能力${preserveTrend?.level || '微小幅度'}上升`,
       tone: 'positive'
     });
   }
@@ -696,8 +701,8 @@ function buildRodTraitHtml(rod) {
     if (entry.parts?.length) {
       const partsHtml = entry.parts.map(part => (
         `<span class="rod-trait-segment rod-trait-${part.tone}">` +
-        `<span class="rod-trait-label">${escapePanelHtml(part.label)}</span>` +
-        `<span class="rod-trait-arrow rod-trait-${part.arrowTone}">${escapePanelHtml(part.arrow)}</span>` +
+        `<span class="rod-trait-label rod-trait-${part.tone}">${escapePanelHtml(part.label)}</span>` +
+        `<span class="rod-trait-arrow rod-trait-${part.tone} rod-trait-${part.arrowTone}">${escapePanelHtml(part.arrow)}</span>` +
         '</span>'
       )).join('');
       return `<div class="rod-trait-line rod-trait-mixed">${partsHtml}</div>`;
@@ -711,7 +716,7 @@ function buildRodTraitHtml(rod) {
 function buildBaitTraitEntries(bait) {
   const entries = [];
 
-  const catchRateTrend = describeTrend(bait?.catchRateBonus || 0, [0.02, 0.07, 0.14]);
+  const catchRateTrend = describeTrend(bait?.catchRateBonus || 0, [0.008, 0.025, 0.055, 0.11, 0.18]);
   entries.push(catchRateTrend
     ? {
       text: `上鱼率${catchRateTrend.level}${catchRateTrend.positive ? '上升' : '下降'}`,
@@ -725,7 +730,7 @@ function buildBaitTraitEntries(bait) {
       const value = Number(bait?.rarityBias?.[rarity] || 0);
       const arrow = rarityBiasArrow(value);
       return {
-        label: getRarityBiasLabel(rarity),
+        label: `${getRarityBiasLabel(rarity)}几率`,
         arrow,
         tone: getRarityBiasTone(rarity, value),
         arrowTone: arrow === '-' ? 'flat' : value > 0 ? 'up' : 'down'
@@ -739,7 +744,7 @@ function buildBaitTraitEntries(bait) {
     });
   }
 
-  const sizeTrend = describeMultiplierDirection(bait?.sizeMultiplier || 1, [0.02, 0.06, 0.12]);
+  const sizeTrend = describeMultiplierDirection(bait?.sizeMultiplier || 1, [0.01, 0.03, 0.06, 0.11, 0.16]);
   if (sizeTrend) {
     entries.push({
       text: `尺寸表现${sizeTrend.level}${sizeTrend.positive ? '上升' : '下降'}`,
@@ -747,7 +752,7 @@ function buildBaitTraitEntries(bait) {
     });
   }
 
-  const weightTrend = describeMultiplierDirection(bait?.weightMultiplier || 1, [0.025, 0.08, 0.16]);
+  const weightTrend = describeMultiplierDirection(bait?.weightMultiplier || 1, [0.012, 0.035, 0.075, 0.13, 0.2]);
   if (weightTrend) {
     entries.push({
       text: `重量表现${weightTrend.level}${weightTrend.positive ? '上升' : '下降'}`,
@@ -759,9 +764,9 @@ function buildBaitTraitEntries(bait) {
     entries.push({ text: '巨物下限更稳，不容易摸到太瘦小的个体', tone: 'positive' });
   }
   if (Number(bait?.baitPreserveChance || 0) > 0) {
-    const preserveTrend = describeTrend(bait.baitPreserveChance, [0.08, 0.16, 0.24]);
+    const preserveTrend = describeTrend(bait.baitPreserveChance, [0.03, 0.07, 0.13, 0.21, 0.3]);
     entries.push({
-      text: `保饵能力${preserveTrend?.level || '小幅度'}上升`,
+      text: `保饵能力${preserveTrend?.level || '微小幅度'}上升`,
       tone: 'positive'
     });
   }
@@ -781,8 +786,8 @@ function buildBaitTraitHtml(bait) {
     if (entry.parts?.length) {
       const partsHtml = entry.parts.map(part => (
         `<span class="rod-trait-segment rod-trait-${part.tone}">` +
-        `<span class="rod-trait-label">${escapePanelHtml(part.label)}</span>` +
-        `<span class="rod-trait-arrow rod-trait-${part.arrowTone}">${escapePanelHtml(part.arrow)}</span>` +
+        `<span class="rod-trait-label rod-trait-${part.tone}">${escapePanelHtml(part.label)}</span>` +
+        `<span class="rod-trait-arrow rod-trait-${part.tone} rod-trait-${part.arrowTone}">${escapePanelHtml(part.arrow)}</span>` +
         '</span>'
       )).join('');
       return `<div class="rod-trait-line rod-trait-mixed">${partsHtml}</div>`;
@@ -1942,7 +1947,7 @@ export class fishing extends plugin {
 
         const easterEggEffect = getEasterEggEffects(userData);
         let hiddenPityBonus = 0;
-        if (currentCount === 10 && Number(userData.today.catches || 0) === 0) {
+        if (Number(userData?.stats?.consecutiveEmpty || 0) >= 9) {
           hiddenPityBonus = HIDDEN_PITY_CATCH_BONUS;
         }
 
@@ -2052,7 +2057,7 @@ export class fishing extends plugin {
       const manualBait = this.consumeManualBait(userId, baitData);
 
       let hiddenPityBonus = 0;
-      if (currentCount === 10 && Number(settleUser.today.catches || 0) === 0) {
+      if (Number(settleUser?.stats?.consecutiveEmpty || 0) >= 9) {
         hiddenPityBonus = HIDDEN_PITY_CATCH_BONUS;
       }
 
@@ -3606,11 +3611,11 @@ async showAchievements(e) {
     const sections = buildCardGridSections([{
       group: '成就列表',
       list: list.map(item => ({
-        badge: item.unlocked ? '达成' : '待解',
+        badge: item.unlocked ? '达成' : '未解',
         title: item.name,
         desc: item.description,
         meta: `奖励：${item.rewardText}`,
-        tone: item.unlocked ? 'positive' : 'neutral'
+        tone: item.unlocked ? 'positive' : 'warning'
       }))
     }], { badgePrefix: '成' });
     const fallback = [
