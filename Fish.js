@@ -132,7 +132,8 @@ const HELP_GROUPS = [
       { title: '#鱼市购买 鱼竿1 / #鱼市回收 鱼竿1', desc: '购买普通鱼竿，或按回收列表序号回收已拥有鱼竿；普通竿半价，legendary 竿回收价 750。' },
       { title: '#鱼竿 / #换竿 0', desc: '查看鱼竿库存，并切换到默认竿或指定鱼竿。' },
       { title: '#鱼竿详情 鱼竿1 / #鱼竿属性 疾风短竿', desc: '查看已有或可见鱼竿的属性值概览。' },
-      { title: '#鱼饵 / #换饵 0', desc: '查看鱼饵库存，并切回默认饵或切到指定鱼饵。' }
+      { title: '#鱼饵 / #换饵 0', desc: '查看鱼饵库存，并切回默认饵或切到指定鱼饵。' },
+      { title: '#鱼饵详情 鱼饵1 / #鱼饵属性 自定义鱼饵名', desc: '查看已有或可见鱼饵的属性值概览，自定义鱼饵也支持。' }
     ]
   },
   {
@@ -574,6 +575,91 @@ function buildRodTraitHtml(rod) {
   return `<div class="rod-trait-list">${html}</div>`;
 }
 
+function buildBaitTraitEntries(bait) {
+  const entries = [];
+
+  const catchRateTrend = describeTrend(bait?.catchRateBonus || 0, [0.02, 0.07, 0.14]);
+  entries.push(catchRateTrend
+    ? {
+      text: `上鱼率${catchRateTrend.level}${catchRateTrend.positive ? '上升' : '下降'}`,
+      tone: catchRateTrend.positive ? 'positive' : 'negative'
+    }
+    : { text: '上鱼率基本不变', tone: 'neutral' });
+
+  const rarityBiasEntries = RARITY_ORDER
+    .filter(rarity => Object.prototype.hasOwnProperty.call(bait?.rarityBias || {}, rarity))
+    .map(rarity => {
+      const value = Number(bait?.rarityBias?.[rarity] || 0);
+      const arrow = rarityBiasArrow(value);
+      return {
+        label: getRarityBiasLabel(rarity),
+        arrow,
+        tone: getRarityBiasTone(rarity, value),
+        arrowTone: arrow === '-' ? 'flat' : value > 0 ? 'up' : 'down'
+      };
+    });
+  if (rarityBiasEntries.some(entry => entry.arrow !== '-')) {
+    entries.push({
+      text: rarityBiasEntries.map(entry => `${entry.label}${entry.arrow}`).join(' '),
+      tone: 'mixed',
+      parts: rarityBiasEntries
+    });
+  }
+
+  const sizeTrend = describeMultiplierDirection(bait?.sizeMultiplier || 1, [0.02, 0.06, 0.12]);
+  if (sizeTrend) {
+    entries.push({
+      text: `尺寸表现${sizeTrend.level}${sizeTrend.positive ? '上升' : '下降'}`,
+      tone: sizeTrend.positive ? 'positive' : 'negative'
+    });
+  }
+
+  const weightTrend = describeMultiplierDirection(bait?.weightMultiplier || 1, [0.025, 0.08, 0.16]);
+  if (weightTrend) {
+    entries.push({
+      text: `重量表现${weightTrend.level}${weightTrend.positive ? '上升' : '下降'}`,
+      tone: weightTrend.positive ? 'positive' : 'negative'
+    });
+  }
+
+  if (Number(bait?.minSizeRatio || 0) > 0 || Number(bait?.minWeightRatio || 0) > 0) {
+    entries.push({ text: '巨物下限更稳，不容易摸到太瘦小的个体', tone: 'positive' });
+  }
+  if (Number(bait?.baitPreserveChance || 0) > 0) {
+    const preserveTrend = describeTrend(bait.baitPreserveChance, [0.08, 0.16, 0.24]);
+    entries.push({
+      text: `保饵能力${preserveTrend?.level || '小幅度'}上升`,
+      tone: 'positive'
+    });
+  }
+
+  return entries;
+}
+
+function buildBaitTraitLines(bait) {
+  return buildBaitTraitEntries(bait).map(entry => entry.text);
+}
+
+function buildBaitTraitHtml(bait) {
+  const entries = buildBaitTraitEntries(bait);
+  if (!entries.length) return '';
+
+  const html = entries.map(entry => {
+    if (entry.parts?.length) {
+      const partsHtml = entry.parts.map(part => (
+        `<span class="rod-trait-segment rod-trait-${part.tone}">` +
+        `<span class="rod-trait-label">${escapePanelHtml(part.label)}</span>` +
+        `<span class="rod-trait-arrow rod-trait-${part.arrowTone}">${escapePanelHtml(part.arrow)}</span>` +
+        '</span>'
+      )).join('');
+      return `<div class="rod-trait-line rod-trait-mixed">${partsHtml}</div>`;
+    }
+    return `<div class="rod-trait-line rod-trait-${entry.tone}">${escapePanelHtml(entry.text)}</div>`;
+  }).join('');
+
+  return `<div class="rod-trait-list">${html}</div>`;
+}
+
 function createFishFromTemplate(template, rarity) {
   return {
     name: template.name,
@@ -704,6 +790,7 @@ export class fishing extends plugin {
         { reg: '^#修复鱼数据$', fnc: 'repairFishData' },
         { reg: '^#(鱼市|售鱼)(.*)$', fnc: 'handleMarketCommand' },
         { reg: '^#鱼竿(?:详情|属性)\\s*.+$', fnc: 'showRodDetailsCommand' },
+        { reg: '^#鱼饵(?:详情|属性)\\s*.+$', fnc: 'showBaitDetailsCommand' },
         { reg: '^#(鱼竿|换竿|换杆)(.*)$', fnc: 'handleRodCommand' },
         { reg: '^#(鱼饵|换饵)(.*)$', fnc: 'handleBaitCommand' },
         { reg: '^#限时鱼讯$', fnc: 'showDailySignal' },
@@ -2893,6 +2980,16 @@ export class fishing extends plugin {
     await this.switchBait(e, tail);
   }
 
+  async showBaitDetailsCommand(e) {
+    const keyword = (e.msg.match(/^#鱼饵(?:详情|属性)\s*(.+)$/)?.[1] || '').trim();
+    const { text: userDisplay } = getUserDisplay(e);
+    if (!keyword) {
+      await this.reply(`${userDisplay}\n请输入鱼饵编号或鱼饵名，例如：#鱼饵详情 鱼饵1 / #鱼饵属性 沉流鱼饵 / #鱼饵详情 桂花酒糟特调饵`);
+      return;
+    }
+    await this.showBaitDetails(e, keyword);
+  }
+
   async showBaits(e) {
     const data = this.loadData();
     const userData = this.getOrCreateUser(data, String(e.user_id));
@@ -2927,14 +3024,62 @@ export class fishing extends plugin {
       `默认鱼饵：${BAIT_CATALOG.plain.name} - 可用 #换饵 0 / #换饵 默认`,
       ...builtinLines,
       ...customLines,
-      '使用：#换饵 编号 或 #换饵 鱼饵名'
+      '使用：#换饵 编号 或 #换饵 鱼饵名 / #鱼饵详情 鱼饵1'
     ].join('\n');
     await replyWithPanel(this, {
       key: `baits-${e.user_id}`,
       title: '鱼饵',
       subtitle: `当前使用：${equipped.name}`,
       sections,
-      footer: '使用：#换饵 1 / #换饵 沉流鱼饵'
+      footer: '使用：#换饵 1 / #换饵 沉流鱼饵 / #鱼饵详情 1 / #鱼饵属性 自定义鱼饵名'
+    }, fallback);
+  }
+
+  async showBaitDetails(e, keyword) {
+    const data = this.loadData();
+    const { userId, text: userDisplay } = getUserDisplay(e);
+    const userData = this.getOrCreateUser(data, userId);
+    const visibleBaits = getSwitchableBaitList(userData);
+    const baitIndex = parseBaitIndex(keyword);
+    const bait = baitIndex === 'default'
+      ? BAIT_CATALOG.plain
+      : baitIndex !== null
+        ? visibleBaits[baitIndex]
+        : this.getBaitByKeyword(userData, keyword);
+
+    if (!bait) {
+      await this.reply(`${userDisplay}\n没有找到这种鱼饵。`);
+      return;
+    }
+
+    const inventory = Number(userData.baitInventory?.[bait.id] || 0);
+    const isEquipped = bait.id === getEquippedBait(userData).id;
+    const traitLines = buildBaitTraitLines(bait);
+    const sourceText = bait.isCustom && bait.sourceText ? `定制来源：${bait.sourceText}` : null;
+    const sections = [
+      `鱼饵：${bait.name}`,
+      `状态：${bait.isDefault ? '默认鱼饵' : inventory > 0 ? `持有 ${inventory} 份` : '未持有'}${isEquipped ? ' | 当前装备' : ''}`,
+      bait.isDefault ? '售价：不可购买' : `售价：${bait.price}鱼币 / ${Math.max(1, Number(bait.packSize || 1))}份`,
+      sourceText,
+      `手感描述：${bait.description}`,
+      { type: 'html-block', html: buildBaitTraitHtml(bait) }
+    ].filter(Boolean);
+    const fallback = [
+      '鱼饵详情',
+      `鱼饵：${bait.name}`,
+      `状态：${bait.isDefault ? '默认鱼饵' : inventory > 0 ? `持有 ${inventory} 份` : '未持有'}${isEquipped ? ' | 当前装备' : ''}`,
+      bait.isDefault ? '售价：不可购买' : `售价：${bait.price}鱼币 / ${Math.max(1, Number(bait.packSize || 1))}份`,
+      sourceText,
+      `手感描述：${bait.description}`,
+      ...traitLines
+    ].filter(Boolean).join('\n');
+
+    await replyWithPanel(this, {
+      key: `bait-details-${e.user_id}`,
+      title: '鱼饵详情',
+      subtitle: bait.name,
+      sections,
+      footer: '这里只展示词条倾向，不直接公开具体数值。'
     }, fallback);
   }
 
