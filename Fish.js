@@ -87,6 +87,13 @@ import { formatAchievementList, getAchievementCatchRateBonus, getAchievementDail
 import { ensureDailySignal, getTodayKey } from './lib/signals.js';
 import { ensureResourceDirs, replyWithPanel } from './lib/panel.js';
 import { findCustomBaitBySource, generateCustomBaitFromText } from './lib/custom-bait.js';
+import {
+  parseBaitIndex,
+  parseLegendaryCraftTarget,
+  parseLegendaryPreviewTarget,
+  parseMarketPurchaseKeyword,
+  parseRodIndex
+} from './lib/command-parsers.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -113,26 +120,29 @@ const HELP_GROUPS = [
       { title: '#查看鱼缸', desc: '查看鱼缸容量、升级进度、库存和当前收藏。' },
       { title: '#升级鱼缸 legendary 1 / #升级鱼缸 epic 1 2 3', desc: '支持 epic 与 legendary 混交、分次提交；传说计3点，史诗计1点。' },
       { title: '#放生鱼 1', desc: '从鱼缸放生指定鱼。彩蛋鱼属于收藏，不在鱼缸里。' },
-      { title: '#赠渔 @某人 1 / #炼竿 1 / #炼竿 神龙2', desc: '把鱼送人，或消耗 legendary 炼成对应特殊鱼竿。' }
+      { title: '#赠渔 @某人 1', desc: '把指定鱼送给别人，方便互换收藏或代管材料。' }
     ]
   },
   {
     group: '鱼市与装备',
     list: [
-      { title: '#鱼市 / #售鱼 1 / #售鱼 common / #售鱼 全部', desc: '卖鱼、看鱼市，也可以按稀有度或批量处理。' },
+      { title: '#鱼市 / #售鱼 1 / #售鱼 common / #售鱼 全部', desc: '卖鱼、看鱼市，也可以按今日鱼获编号、稀有度或批量处理。' },
       { title: '#售鱼 鱼缸3 / #售鱼 鱼缸 2 3 4 5', desc: '支持卖鱼缸单条或多条，不会和第23条这种写法冲突。' },
       { title: '#鱼市购买 鱼饵1*5 / #鱼市购买 钓鱼券*3', desc: '批量购买鱼饵和钓鱼券。' },
-      { title: '#鱼市回收 鱼竿 / #鱼市回收 鱼竿1', desc: '查看并回收已拥有的鱼竿；普通竿半价，legendary 竿回收价 750。' },
-      { title: '#鱼竿 / #换竿 0 / #鱼饵 / #换饵 0', desc: '查看并切换当前鱼竿、鱼饵。' }
+      { title: '#鱼市购买 鱼竿1 / #鱼市回收 鱼竿1', desc: '购买普通鱼竿，或按回收列表序号回收已拥有鱼竿；普通竿半价，legendary 竿回收价 750。' },
+      { title: '#鱼竿 / #换竿 0', desc: '查看鱼竿库存，并切换到默认竿或指定鱼竿。' },
+      { title: '#鱼饵 / #换饵 0', desc: '查看鱼饵库存，并切回默认饵或切到指定鱼饵。' }
     ]
   },
   {
     group: '活动与进阶',
     list: [
       { title: '#限时鱼讯', desc: '查看当天高活跃鱼讯与命中奖励。' },
-      { title: '#彩蛋收藏 / #切换彩蛋 愿望锦鲤', desc: '查看已收集彩蛋、当前生效项和待切换项，并安排次日切换。' },
+      { title: '#彩蛋收藏', desc: '查看已收集彩蛋、当前生效项和待切换项。' },
+      { title: '#切换彩蛋 愿望锦鲤', desc: '安排彩蛋效果切换；每天只能安排一次，次日生效。' },
       { title: '#钓鱼成就', desc: '查看成就进度和永久加成。' },
       { title: '#打窝 文本 / #打窝 @某人', desc: '生成自定义鱼饵，按文本倾向组合正负效果。' },
+      { title: '#炼竿 1 / #炼竿预览 1', desc: '按鱼缸展示序号先预览 legendary 会炼成什么鱼竿，再决定是否正式炼制。' },
       { title: '#钓鱼管理', desc: '查看主人和群管理维护命令。' }
     ]
   }
@@ -143,14 +153,18 @@ const MANAGEMENT_HELP_GROUPS = [
     group: '主人命令',
     list: [
       { title: '#设置钓鱼次数10', desc: '调整全局基础每日钓鱼次数。' },
-      { title: '#鱼币补偿 @某人 *100', desc: '按人或全体补发鱼币。' },
+      { title: '#鱼币补偿 @某人 *100', desc: '给单人补发鱼币。' },
+      { title: '#鱼币补偿 全体 *100', desc: '给已有数据的全部玩家统一补发鱼币。' },
       { title: '#补鱼 @某人 rare 鳗鱼 80 3.5', desc: '直接补发指定鱼，长度和重量可省略。' },
-      { title: '#强制刷新钓鱼日 / #封竿 / #解封竿', desc: '重置当日状态，或关闭/恢复当前群的钓鱼响应。' }
+      { title: '#强制刷新钓鱼日', desc: '强制刷新全服当天钓鱼状态。' },
+      { title: '#钓鱼更新', desc: '从远端仓库拉取 Fish-plugin 最新版本并重启。' }
     ]
   },
   {
-    group: '维护命令',
+    group: '群与维护',
     list: [
+      { title: '#封竿', desc: '关闭当前群里的 Fish-plugin 响应。' },
+      { title: '#解封竿', desc: '恢复当前群里的 Fish-plugin 响应。' },
       { title: '#同步鱼缸', desc: '同步和整理鱼缸数据。' },
       { title: '#修复鱼数据', desc: '修复缺失 fishId、重复鱼和异常记录。' }
     ]
@@ -158,8 +172,7 @@ const MANAGEMENT_HELP_GROUPS = [
   {
     group: '群管理命令',
     list: [
-      { title: '#重置钓鱼次数 @某人', desc: '重置单人的当日抛竿次数。' },
-      { title: '#重置钓鱼次数 全体', desc: '重置当前已有数据玩家的当日抛竿次数。' },
+      { title: '#重置钓鱼次数 @某人 / 全体', desc: '重置单人或当前已有数据玩家的当日抛竿次数。' },
       { title: '#钓鱼次数', desc: '查看当前每日上限与已用次数。' }
     ]
   }
@@ -255,6 +268,11 @@ function formatFishLine(fish, index = null) {
   return `${prefix} ${fish.name}(${fish.rarity}) ${fish.length}cm/${fish.weight}kg`;
 }
 
+function formatTodayFishRecordLine(fish, index = null) {
+  const prefix = index == null ? '•' : `[${index + 1}]`;
+  return `${prefix} ${fish.name}(${fish.rarity}) 长度：${fish.length}cm，重量：${fish.weight}kg`;
+}
+
 function getSignalRodBonusCoins(rod, fish) {
   if (!rod) return 0;
   if (rod.id === 'legend_poseidon') {
@@ -306,15 +324,6 @@ function getRecyclableRodList(userData) {
     });
 }
 
-function parseRodIndex(keyword = '') {
-  const compact = String(keyword || '').replace(/\s+/g, '');
-  if (/^(?:0|默认|默认鱼竿|新手|新手竿|新手杆|新手竹竿)$/.test(compact)) return 'default';
-  const match = compact.match(/^(?:鱼竿|鱼杆|竿|杆)?(\d{1,3})$/);
-  if (!match) return null;
-  const index = Number(match[1]) - 1;
-  return Number.isInteger(index) && index >= 0 ? index : null;
-}
-
 function getBuiltinBuyableBaitList() {
   return Object.values(BAIT_CATALOG).filter(item => !item.isDefault);
 }
@@ -327,45 +336,6 @@ function getCustomBaitList(userData) {
 
 function getSwitchableBaitList(userData) {
   return [...getBuiltinBuyableBaitList(), ...getCustomBaitList(userData)];
-}
-
-function parseBaitIndex(keyword = '') {
-  const compact = String(keyword || '').replace(/\s+/g, '');
-  if (/^(?:0|默认|默认鱼饵|清水|清水饵|清水团饵)$/.test(compact)) return 'default';
-  const match = compact.match(/^(?:鱼饵|饵料|饵)?(\d{1,3})$/);
-  if (!match) return null;
-  const index = Number(match[1]) - 1;
-  return Number.isInteger(index) && index >= 0 ? index : null;
-}
-
-function parseLegendaryCraftTarget(text = '') {
-  const compact = String(text || '').replace(/\s+/g, '');
-  const body = compact.replace(/^#炼竿/, '');
-  if (!body) return null;
-  if (/^\d{1,3}$/.test(body)) {
-    return { mode: 'tank_index', index: Number(body) - 1 };
-  }
-  const match = body.match(/^(.*?)(\d{1,3})?$/);
-  const fishName = String(match?.[1] || '').trim();
-  const duplicateIndex = match?.[2] ? Number(match[2]) - 1 : 0;
-  if (!fishName) return null;
-  return { mode: 'legendary_name', fishName, duplicateIndex };
-}
-
-function parseMarketPurchaseKeyword(keyword = '') {
-  const text = String(keyword || '').trim();
-  const compact = text.replace(/\s+/g, '');
-  const match =
-    text.match(/^(.*?)\s+(\d{1,3})(?:包|份|个)?$/) ||
-    compact.match(/^(.*?)[*xX×](\d{1,3})(?:包|份|个)?$/) ||
-    compact.match(/^(.*?)(?:包|份|个)(\d{1,3})$/) ||
-    compact.match(/^(.*?)(?:包|份|个)$/);
-  if (!match) return { keyword: text, compactKeyword: compact, quantity: 1 };
-  const quantity = Number(match[2] || 1);
-  if (!Number.isInteger(quantity) || quantity < 1) return null;
-  const itemCompactKeyword = match[1];
-  if (!itemCompactKeyword) return null;
-  return { keyword: itemCompactKeyword, compactKeyword: itemCompactKeyword, quantity };
 }
 
 function getBaitPackText(bait) {
@@ -428,6 +398,50 @@ function buildHelpGridSections(groups = []) {
       html
     };
   });
+}
+
+function formatPercent(value, digits = 1) {
+  const numeric = Number(value || 0);
+  return `${(numeric * 100).toFixed(digits)}%`;
+}
+
+function formatMultiplier(value, digits = 2) {
+  return `${Number(value || 1).toFixed(digits)}x`;
+}
+
+function formatSignedNumber(value, digits = 2) {
+  const numeric = Number(value || 0);
+  return `${numeric > 0 ? '+' : ''}${numeric.toFixed(digits)}`;
+}
+
+function formatRarityBiasText(bias = {}) {
+  const entries = Object.entries(bias || {}).filter(([, value]) => Math.abs(Number(value || 0)) > 0.0001);
+  if (!entries.length) return '无';
+  return entries
+    .sort((a, b) => RARITY_ORDER.indexOf(a[0]) - RARITY_ORDER.indexOf(b[0]))
+    .map(([rarity, value]) => `${rarityLabel(rarity)}${formatSignedNumber(Number(value || 0) * 100, 1)}%`)
+    .join(' / ');
+}
+
+function buildRodTraitLines(rod) {
+  const lines = [
+    `上鱼率修正：${formatSignedNumber(Number(rod?.catchRateBonus || 0) * 100, 2)}%`,
+    `空钩补救：${formatPercent(rod?.failProtection || 0, 1)}`,
+    `等待倍率：${formatMultiplier(rod?.waitMultiplier || 1, 2)}`,
+    `稀有度倾向：${formatRarityBiasText(rod?.rarityBias)}`
+  ];
+
+  if (Number(rod?.sizeMultiplier || 1) !== 1) lines.push(`尺寸倍率：${formatMultiplier(rod.sizeMultiplier, 3)}`);
+  if (Number(rod?.weightMultiplier || 1) !== 1) lines.push(`重量倍率：${formatMultiplier(rod.weightMultiplier, 3)}`);
+  if (Number(rod?.minSizeRatio || 0) > 0) lines.push(`尺寸保底：模板区间底部以上 ${formatPercent(rod.minSizeRatio, 1)}`);
+  if (Number(rod?.minWeightRatio || 0) > 0) lines.push(`重量保底：模板区间底部以上 ${formatPercent(rod.minWeightRatio, 1)}`);
+  if (Number(rod?.baitPreserveChance || 0) > 0) lines.push(`保饵概率：${formatPercent(rod.baitPreserveChance, 1)}`);
+  if (Number(rod?.catchCoinBonus || 0) > 0) lines.push(`额外鱼币：+${Math.floor(Number(rod.catchCoinBonus || 0))}`);
+  if (Number(rod?.signalBonusCoins || 0) > 0) lines.push(`命中鱼讯奖励：+${Math.floor(Number(rod.signalBonusCoins || 0))}鱼币`);
+  if (Number(rod?.permanentDailyCasts || 0) > 0) lines.push(`装备后额外每日竿数：+${Math.floor(Number(rod.permanentDailyCasts || 0))}`);
+  if (Number(rod?.ownedPermanentDailyCasts || 0) > 0) lines.push(`拥有即生效每日竿数：+${Math.floor(Number(rod.ownedPermanentDailyCasts || 0))}`);
+
+  return lines;
 }
 
 function createFishFromTemplate(template, rarity) {
@@ -553,6 +567,7 @@ export class fishing extends plugin {
         { reg: '^#升级鱼缸\\s+(legendary|epic)\\s+.+', fnc: 'upgradeFishTank' },
         { reg: '^#放生鱼\\s+\\d+(?:\\s+.*)?$', fnc: 'releaseFish' },
         { reg: '^#赠渔\\s*.*\\d+$', fnc: 'giftFish' },
+        { reg: '^#炼竿预览.*$', fnc: 'previewLegendaryRod' },
         { reg: '^#炼竿.*$', fnc: 'craftLegendaryRod' },
         { reg: '^#打窝', fnc: 'addBait' },
         { reg: '^#同步鱼缸$', fnc: 'syncAllFishTanks' },
@@ -863,6 +878,43 @@ export class fishing extends plugin {
       Object.values(userData?.customBaits || {}).find(item => item.name === text || item.sourceText === text) ||
       Object.values(BAIT_CATALOG).find(item => item.id === text || item.name === text || item.aliases?.includes(text)) ||
       null;
+  }
+
+  resolveLegendaryCraftSelection(userData, target) {
+    if (!target) return { error: '请输入鱼缸序号，或 legendary 鱼名。' };
+
+    let originalIndex = null;
+    let fish = null;
+    if (target.mode === 'tank_index') {
+      originalIndex = getOriginalIndexByDisplayIndex(userData, target.index);
+      if (!Number.isInteger(originalIndex)) {
+        return { error: '鱼缸序号不存在，请先用 #查看鱼缸 确认序号。' };
+      }
+      fish = userData.fishTank[originalIndex];
+    } else {
+      const matches = getSortedTankWithIndex(userData.fishTank)
+        .filter(item => item.fish?.rarity === 'legendary' && item.fish?.name === target.fishName);
+      if (!matches.length) {
+        return { error: `鱼缸里没有名为 ${target.fishName} 的 legendary 鱼。` };
+      }
+      const picked = matches[target.duplicateIndex];
+      if (!picked) {
+        return { error: `${target.fishName} 只有 ${matches.length} 条，无法选择第 ${target.duplicateIndex + 1} 条。` };
+      }
+      originalIndex = picked.originalIndex;
+      fish = picked.fish;
+    }
+
+    if (!fish || fish.rarity !== 'legendary') {
+      return { error: '只有 legendary 鱼可以拿来炼制特殊鱼竿。' };
+    }
+
+    const recipe = Object.values(LEGENDARY_ROD_RECIPES).find(item => item.sourceLegendary === fish.name);
+    if (!recipe) {
+      return { error: `这条 ${fish.name} 还没有对应的特殊鱼竿配方。` };
+    }
+
+    return { originalIndex, fish, recipe };
   }
 
   getDailySignal() {
@@ -1893,8 +1945,8 @@ export class fishing extends plugin {
     }
 
     let replyMsg = `今日钓鱼次数：${getFishingLimitText(this.config, userData, getEquippedRod(userData))}\n今日钓到鱼：${todayCatchCount}条\n当前剩余鱼获：${userData.today.fish.length}条\n总共钓鱼次数：${userData.total}\n\n今日鱼获：\n`;
-    for (const fish of userData.today.fish) {
-      replyMsg += `${fish.name}(${fish.rarity}) 长度：${fish.length}cm，重量：${fish.weight}kg\n`;
+    for (const [index, fish] of userData.today.fish.entries()) {
+      replyMsg += `${formatTodayFishRecordLine(fish, index)}\n`;
     }
     await this.reply(replyMsg.trim());
   }
@@ -1922,8 +1974,8 @@ export class fishing extends plugin {
     }
 
     let replyMsg = `${targetDisplay}的鱼获记录：\n\n今日钓鱼次数：${getFishingLimitText(this.config, userFish, getEquippedRod(userFish))}\n今日钓到鱼：${todayCatchCount}条\n当前剩余鱼获：${userFish.today.fish.length}条\n总共钓鱼次数：${userFish.total}\n\n今日鱼获：\n`;
-    for (const fish of userFish.today.fish) {
-      replyMsg += `${fish.name}(${fish.rarity}) 长度：${fish.length}cm，重量：${fish.weight}kg\n`;
+    for (const [index, fish] of userFish.today.fish.entries()) {
+      replyMsg += `${formatTodayFishRecordLine(fish, index)}\n`;
     }
     await this.reply(replyMsg.trim());
   }
@@ -2172,7 +2224,9 @@ export class fishing extends plugin {
       `当前鱼饵：${getEquippedBait(userData).name}`,
       '',
       '出售示例：#售鱼 1 / #售鱼 common / #售鱼 common3 / #售鱼 鱼缸3 / #售鱼 鱼缸 2 3 4 5 / #售鱼 全部',
+      '说明：#售鱼 1 对应 #今日鱼获 里显示的第 1 条。',
       '回收示例：#鱼市回收 鱼竿 / #鱼市回收 鱼竿1 / #鱼市回收 疾风短竿',
+      '说明：#鱼市回收 鱼竿1 对应回收列表里的第 1 根，不一定等于 #鱼竿 面板里的鱼竿1。',
       `示例预估：卖出 ${commonPreview.length} 条 common 可得约 ${previewCoins} 鱼币`,
       '',
       '鱼饵区：',
@@ -2206,7 +2260,7 @@ export class fishing extends plugin {
       title: '鱼市',
       subtitle: '卖多余鱼换鱼币，再购入鱼饵、额外钓鱼券和鱼竿。',
       sections,
-      footer: '购买格式：#鱼市购买 鱼饵1 / #鱼市购买 鱼饵1*5 / #鱼市购买 鱼竿1 / #鱼市购买 自定义鱼饵 桂花酒糟；回收格式：#鱼市回收 鱼竿1'
+      footer: '购买格式：#鱼市购买 鱼饵1 / #鱼市购买 鱼饵1*5 / #鱼市购买 鱼竿1 / #鱼市购买 自定义鱼饵 桂花酒糟；回收格式：#鱼市回收 鱼竿1；炼竿预览：#炼竿预览 1'
     }, fallback);
   }
 
@@ -2236,12 +2290,7 @@ export class fishing extends plugin {
 
     const todayFish = (userData.today.fish || [])
       .map((fish, index) => ({ source: 'today', originalIndex: index, fish }))
-      .filter(item => canSellFish(item.fish))
-      .sort((a, b) => {
-        const rarityDiff = (RARITY_ORDER.indexOf(a.fish.rarity) - RARITY_ORDER.indexOf(b.fish.rarity));
-        if (rarityDiff !== 0) return rarityDiff;
-        return (a.fish.weight || 0) - (b.fish.weight || 0);
-      });
+      .filter(item => canSellFish(item.fish));
     if (target.rarity && ['common', 'uncommon', 'rare', 'epic'].includes(target.rarity)) {
       const matched = todayFish.filter(item => item.fish.rarity === target.rarity);
       if (target.all || target.mode === 'rarity_all') return matched;
@@ -2288,13 +2337,32 @@ export class fishing extends plugin {
     userData.marketTrades += 1;
 
     const unlocked = this.refreshAchievements(data, userId);
+    const achievementText = this.formatAchievementUnlocks(unlocked).replace(/^\n/, '');
+    const sections = [
+      `已售出：${selected.length} 条`,
+      `获得鱼币：${preview.totalCoins}`,
+      `当前鱼币：${userData.coins}`,
+      `出售来源：${target.source === 'tank' ? '鱼缸' : '今日鱼获'}`,
+      ...preview.lines.slice(0, 12),
+      preview.lines.length > 12 ? `...另有 ${preview.lines.length - 12} 条未展开` : null,
+      achievementText || null
+    ].filter(Boolean);
+    const fallback = [
+      '售鱼结果',
+      `已售出 ${selected.length} 条鱼，获得 ${preview.totalCoins} 鱼币。`,
+      ...preview.lines.slice(0, 12),
+      preview.lines.length > 12 ? `...另有 ${preview.lines.length - 12} 条未展开` : null,
+      `当前鱼币：${userData.coins}`,
+      achievementText || null
+    ].filter(Boolean).join('\n');
 
-    await this.reply(
-      `${userDisplay}\n已售出 ${selected.length} 条鱼，获得 ${preview.totalCoins} 鱼币。\n` +
-      `${preview.lines.slice(0, 8).join('\n')}` +
-      `${preview.lines.length > 8 ? `\n...另有 ${preview.lines.length - 8} 条未展开` : ''}` +
-      `\n当前鱼币：${userData.coins}${this.formatAchievementUnlocks(unlocked)}`
-    );
+    await replyWithPanel(this, {
+      key: `sell-result-${e.user_id}`,
+      title: '售鱼结果',
+      subtitle: `${userDisplay} 本次卖鱼收入 ${preview.totalCoins} 鱼币`,
+      sections,
+      footer: '继续使用：#售鱼 1 / #售鱼 common / #售鱼 鱼缸3 / #售鱼 全部'
+    }, fallback);
   }
 
   async recycleMarketItem(e, keyword) {
@@ -2353,6 +2421,56 @@ export class fishing extends plugin {
     await this.reply(`${userDisplay}\n已回收鱼竿 ${rod.name}，获得 ${recycleValue} 鱼币。当前鱼币：${userData.coins}`);
   }
 
+  async previewLegendaryRod(e) {
+    const data = this.loadData();
+    const { text: userDisplay } = getUserDisplay(e);
+    const userData = this.getOrCreateUser(data, String(e.user_id));
+    if (!userData.fishTank?.length) {
+      await this.reply(`${userDisplay}\n鱼缸里没有可用于炼竿的传说鱼。`);
+      return;
+    }
+
+    const target = parseLegendaryPreviewTarget(e.msg);
+    if (!target) {
+      await this.reply(`${userDisplay}\n请输入鱼缸序号，或 legendary 鱼名。\n例如：#炼竿预览 3 / #炼竿预览 神龙 / #炼竿预览 神龙 2`);
+      return;
+    }
+
+    const resolved = this.resolveLegendaryCraftSelection(userData, target);
+    if (resolved.error) {
+      await this.reply(`${userDisplay}\n${resolved.error}`);
+      return;
+    }
+
+    const { fish, recipe } = resolved;
+    const owned = userData.rodsOwned?.includes(recipe.id);
+    const crafted = Boolean(userData.craftedLegendaryRods?.[recipe.id]);
+    const sections = [
+      `材料鱼：${fish.name} | ${fish.length}cm / ${fish.weight}kg`,
+      `将炼成：${recipe.name}`,
+      `状态：${owned ? '已拥有' : '未拥有'}${crafted ? ' | 已炼过' : ''}`,
+      `手感描述：${recipe.description}`,
+      ...buildRodTraitLines(recipe)
+    ];
+    const fallback = [
+      '炼竿预览',
+      `材料鱼：${fish.name} | ${fish.length}cm / ${fish.weight}kg`,
+      `将炼成：${recipe.name}`,
+      `状态：${owned ? '已拥有' : '未拥有'}${crafted ? ' | 已炼过' : ''}`,
+      `手感描述：${recipe.description}`,
+      ...buildRodTraitLines(recipe),
+      '使用：#炼竿 该鱼序号 或 #炼竿 legendary鱼名'
+    ].join('\n');
+
+    await replyWithPanel(this, {
+      key: `craft-preview-${e.user_id}`,
+      title: '炼竿预览',
+      subtitle: `${fish.name} -> ${recipe.name}`,
+      sections,
+      footer: '确认后可用：#炼竿 1 / #炼竿 神龙2；同一种 legendary 特殊竿不能重复炼制。'
+    }, fallback);
+  }
+
   async craftLegendaryRod(e) {
     const data = this.loadData();
     const { userId, text: userDisplay } = getUserDisplay(e);
@@ -2369,42 +2487,12 @@ export class fishing extends plugin {
       await this.reply(`${userDisplay}\n请输入鱼缸序号，或 legendary 鱼名。\n例如：#炼竿 3 / #炼竿神龙 / #炼竿 神龙 2`);
       return;
     }
-
-    let originalIndex = null;
-    let fish = null;
-    if (target.mode === 'tank_index') {
-      originalIndex = getOriginalIndexByDisplayIndex(userData, target.index);
-      if (!Number.isInteger(originalIndex)) {
-        await this.reply(`${userDisplay}\n鱼缸序号不存在，请先用 #查看鱼缸 确认序号。`);
-        return;
-      }
-      fish = userData.fishTank[originalIndex];
-    } else {
-      const matches = getSortedTankWithIndex(userData.fishTank)
-        .filter(item => item.fish?.rarity === 'legendary' && item.fish?.name === target.fishName);
-      if (!matches.length) {
-        await this.reply(`${userDisplay}\n鱼缸里没有名为 ${target.fishName} 的 legendary 鱼。`);
-        return;
-      }
-      const picked = matches[target.duplicateIndex];
-      if (!picked) {
-        await this.reply(`${userDisplay}\n${target.fishName} 只有 ${matches.length} 条，无法选择第 ${target.duplicateIndex + 1} 条。`);
-        return;
-      }
-      originalIndex = picked.originalIndex;
-      fish = picked.fish;
-    }
-
-    if (!fish || fish.rarity !== 'legendary') {
-      await this.reply(`${userDisplay}\n只有 legendary 鱼可以拿来炼制特殊鱼竿。`);
+    const resolved = this.resolveLegendaryCraftSelection(userData, target);
+    if (resolved.error) {
+      await this.reply(`${userDisplay}\n${resolved.error}`);
       return;
     }
-
-    const recipe = Object.values(LEGENDARY_ROD_RECIPES).find(item => item.sourceLegendary === fish.name);
-    if (!recipe) {
-      await this.reply(`${userDisplay}\n这条 ${fish.name} 还没有对应的特殊鱼竿配方。`);
-      return;
-    }
+    const { originalIndex, fish, recipe } = resolved;
     if (userData.rodsOwned.includes(recipe.id)) {
       await this.reply(`${userDisplay}\n你已经拥有 ${recipe.name} 了，这条 ${fish.name} 先留着吧。`);
       return;
@@ -2583,7 +2671,7 @@ export class fishing extends plugin {
       title: '鱼竿',
       subtitle: `当前使用：${equipped.name}`,
       sections,
-      footer: '使用：#换竿 0 / #换竿 鱼竿1 / #换竿 疾风短竿 / #炼竿 1 / #鱼市回收 鱼竿1'
+      footer: '使用：#换竿 0 / #换竿 鱼竿1 / #换竿 疾风短竿 / #炼竿预览 1 / #炼竿 1 / #鱼市回收 鱼竿1'
     }, fallback);
   }
 
