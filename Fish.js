@@ -131,6 +131,7 @@ const HELP_GROUPS = [
       { title: '#鱼市购买 鱼饵1*5 / #鱼市购买 钓鱼券*3', desc: '批量购买鱼饵和钓鱼券。' },
       { title: '#鱼市购买 鱼竿1 / #鱼市回收 鱼竿1', desc: '购买普通鱼竿，或按回收列表序号回收已拥有鱼竿；普通竿半价，legendary 竿回收价 750。' },
       { title: '#鱼竿 / #换竿 0', desc: '查看鱼竿库存，并切换到默认竿或指定鱼竿。' },
+      { title: '#鱼竿详情 鱼竿1 / #鱼竿属性 疾风短竿', desc: '查看已有或可见鱼竿的词条风格说明，不直接展示具体数值。' },
       { title: '#鱼饵 / #换饵 0', desc: '查看鱼饵库存，并切回默认饵或切到指定鱼饵。' }
     ]
   },
@@ -405,46 +406,71 @@ function buildHelpGridSections(groups = []) {
   });
 }
 
-function formatPercent(value, digits = 1) {
+function describeTrend(value, thresholds = [0.01, 0.03, 0.06]) {
   const numeric = Number(value || 0);
-  return `${(numeric * 100).toFixed(digits)}%`;
+  const abs = Math.abs(numeric);
+  const level = abs >= thresholds[2] ? '大幅度' : abs >= thresholds[1] ? '中幅度' : abs >= thresholds[0] ? '小幅度' : null;
+  if (!level) return null;
+  return { positive: numeric > 0, level };
 }
 
-function formatMultiplier(value, digits = 2) {
-  return `${Number(value || 1).toFixed(digits)}x`;
-}
-
-function formatSignedNumber(value, digits = 2) {
+function rarityBiasArrow(value) {
   const numeric = Number(value || 0);
-  return `${numeric > 0 ? '+' : ''}${numeric.toFixed(digits)}`;
+  const abs = Math.abs(numeric);
+  if (abs < 0.004) return '-';
+  const arrow = numeric > 0 ? '↑' : '↓';
+  if (abs >= 0.04) return `${arrow}${arrow}${arrow}`;
+  if (abs >= 0.02) return `${arrow}${arrow}`;
+  return arrow;
 }
 
-function formatRarityBiasText(bias = {}) {
-  const entries = Object.entries(bias || {}).filter(([, value]) => Math.abs(Number(value || 0)) > 0.0001);
-  if (!entries.length) return '无';
-  return entries
-    .sort((a, b) => RARITY_ORDER.indexOf(a[0]) - RARITY_ORDER.indexOf(b[0]))
-    .map(([rarity, value]) => `${rarityLabel(rarity)}${formatSignedNumber(Number(value || 0) * 100, 1)}%`)
-    .join(' / ');
+function describeMultiplierDirection(value, thresholds = [0.015, 0.04, 0.08]) {
+  const numeric = Number(value || 1) - 1;
+  return describeTrend(numeric, thresholds);
 }
 
 function buildRodTraitLines(rod) {
-  const lines = [
-    `上鱼率修正：${formatSignedNumber(Number(rod?.catchRateBonus || 0) * 100, 2)}%`,
-    `空钩补救：${formatPercent(rod?.failProtection || 0, 1)}`,
-    `等待倍率：${formatMultiplier(rod?.waitMultiplier || 1, 2)}`,
-    `稀有度倾向：${formatRarityBiasText(rod?.rarityBias)}`
-  ];
+  const lines = [];
 
-  if (Number(rod?.sizeMultiplier || 1) !== 1) lines.push(`尺寸倍率：${formatMultiplier(rod.sizeMultiplier, 3)}`);
-  if (Number(rod?.weightMultiplier || 1) !== 1) lines.push(`重量倍率：${formatMultiplier(rod.weightMultiplier, 3)}`);
-  if (Number(rod?.minSizeRatio || 0) > 0) lines.push(`尺寸保底：模板区间底部以上 ${formatPercent(rod.minSizeRatio, 1)}`);
-  if (Number(rod?.minWeightRatio || 0) > 0) lines.push(`重量保底：模板区间底部以上 ${formatPercent(rod.minWeightRatio, 1)}`);
-  if (Number(rod?.baitPreserveChance || 0) > 0) lines.push(`保饵概率：${formatPercent(rod.baitPreserveChance, 1)}`);
-  if (Number(rod?.catchCoinBonus || 0) > 0) lines.push(`额外鱼币：+${Math.floor(Number(rod.catchCoinBonus || 0))}`);
-  if (Number(rod?.signalBonusCoins || 0) > 0) lines.push(`命中鱼讯奖励：+${Math.floor(Number(rod.signalBonusCoins || 0))}鱼币`);
-  if (Number(rod?.permanentDailyCasts || 0) > 0) lines.push(`装备后额外每日竿数：+${Math.floor(Number(rod.permanentDailyCasts || 0))}`);
-  if (Number(rod?.ownedPermanentDailyCasts || 0) > 0) lines.push(`拥有即生效每日竿数：+${Math.floor(Number(rod.ownedPermanentDailyCasts || 0))}`);
+  const catchRateTrend = describeTrend(rod?.catchRateBonus || 0, [0.006, 0.02, 0.05]);
+  lines.push(catchRateTrend
+    ? `上鱼率${catchRateTrend.level}${catchRateTrend.positive ? '上升' : '下降'}`
+    : '上鱼率基本不变');
+
+  const failProtectionTrend = describeTrend(rod?.failProtection || 0, [0.08, 0.18, 0.32]);
+  if (failProtectionTrend) {
+    lines.push(`护钩率${failProtectionTrend.level}${failProtectionTrend.positive ? '上升' : '下降'}`);
+  }
+
+  const waitTrend = describeMultiplierDirection(rod?.waitMultiplier || 1, [0.08, 0.18, 0.3]);
+  if (waitTrend) {
+    lines.push(`等口时间${waitTrend.level}${waitTrend.positive ? '变长' : '缩短'}`);
+  }
+
+  const rarityBiasEntries = RARITY_ORDER
+    .filter(rarity => Object.prototype.hasOwnProperty.call(rod?.rarityBias || {}, rarity))
+    .map(rarity => `${rarity}鱼比例${rarityBiasArrow(rod?.rarityBias?.[rarity])}`);
+  if (rarityBiasEntries.some(text => !text.endsWith('-'))) {
+    lines.push(rarityBiasEntries.join(' '));
+  }
+
+  const sizeTrend = describeMultiplierDirection(rod?.sizeMultiplier || 1, [0.015, 0.045, 0.09]);
+  if (sizeTrend) lines.push(`尺寸表现${sizeTrend.level}${sizeTrend.positive ? '上升' : '下降'}`);
+
+  const weightTrend = describeMultiplierDirection(rod?.weightMultiplier || 1, [0.02, 0.06, 0.12]);
+  if (weightTrend) lines.push(`重量表现${weightTrend.level}${weightTrend.positive ? '上升' : '下降'}`);
+
+  if (Number(rod?.minSizeRatio || 0) > 0 || Number(rod?.minWeightRatio || 0) > 0) {
+    lines.push('巨物下限更稳，不容易出太小的个体');
+  }
+  if (Number(rod?.baitPreserveChance || 0) > 0) {
+    const preserveTrend = describeTrend(rod.baitPreserveChance, [0.08, 0.18, 0.28]);
+    lines.push(`保饵能力${preserveTrend?.level || '小幅度'}上升`);
+  }
+  if (Number(rod?.catchCoinBonus || 0) > 0) lines.push('每次成功上鱼会顺带多捞一点鱼币');
+  if (Number(rod?.signalBonusCoins || 0) > 0) lines.push('命中鱼讯时收成会更亮眼');
+  if (Number(rod?.permanentDailyCasts || 0) > 0) lines.push('装备后每日可抛竿次数会增加');
+  if (Number(rod?.ownedPermanentDailyCasts || 0) > 0) lines.push('只要拥有这根竿，每日可抛竿次数就会增加');
 
   return lines;
 }
@@ -578,6 +604,7 @@ export class fishing extends plugin {
         { reg: '^#同步鱼缸$', fnc: 'syncAllFishTanks' },
         { reg: '^#修复鱼数据$', fnc: 'repairFishData' },
         { reg: '^#(鱼市|售鱼)(.*)$', fnc: 'handleMarketCommand' },
+        { reg: '^#鱼竿(?:详情|属性)\\s+.+$', fnc: 'showRodDetailsCommand' },
         { reg: '^#(鱼竿|换竿|换杆)(.*)$', fnc: 'handleRodCommand' },
         { reg: '^#(鱼饵|换饵)(.*)$', fnc: 'handleBaitCommand' },
         { reg: '^#限时鱼讯$', fnc: 'showDailySignal' },
@@ -1036,7 +1063,7 @@ export class fishing extends plugin {
       title: '钓鱼帮助',
       subtitle: `今日鱼讯：${signal.targets.map(fish => `${fish.name}(${fish.rarity})`).join('、')}`,
       sections: buildHelpGridSections(HELP_GROUPS),
-      footer: '钓鱼、鱼缸、鱼市和装备都在这里；帮助面板会自动套用 resources/backgrounds 里的背景。'
+      footer: ''
     }, HELP_TEXT);
   }
 
@@ -2642,6 +2669,16 @@ export class fishing extends plugin {
     await this.equipRod(e, tail);
   }
 
+  async showRodDetailsCommand(e) {
+    const keyword = (e.msg.match(/^#鱼竿(?:详情|属性)\s+(.+)$/)?.[1] || '').trim();
+    const { text: userDisplay } = getUserDisplay(e);
+    if (!keyword) {
+      await this.reply(`${userDisplay}\n请输入鱼竿编号或鱼竿名，例如：#鱼竿详情 鱼竿1 / #鱼竿属性 疾风短竿`);
+      return;
+    }
+    await this.showRodDetails(e, keyword);
+  }
+
   async showRods(e) {
     const data = this.loadData();
     const userData = this.getOrCreateUser(data, String(e.user_id));
@@ -2676,7 +2713,50 @@ export class fishing extends plugin {
       title: '鱼竿',
       subtitle: `当前使用：${equipped.name}`,
       sections,
-      footer: '使用：#换竿 0 / #换竿 鱼竿1 / #换竿 疾风短竿 / #炼竿预览 1 / #炼竿 1 / #鱼市回收 鱼竿1'
+      footer: '使用：#换竿 0 / #换竿 鱼竿1 / #鱼竿详情 鱼竿1 / #炼竿预览 1 / #炼竿 1 / #鱼市回收 鱼竿1'
+    }, fallback);
+  }
+
+  async showRodDetails(e, keyword) {
+    const data = this.loadData();
+    const { userId, text: userDisplay } = getUserDisplay(e);
+    const userData = this.getOrCreateUser(data, userId);
+    const visibleRods = getSwitchableRodList(userData);
+    const rodIndex = parseRodIndex(keyword);
+    const rod = rodIndex === 'default'
+      ? ROD_CATALOG.starter
+      : rodIndex !== null
+        ? visibleRods[rodIndex]
+        : this.getRodByKeyword(keyword);
+
+    if (!rod) {
+      await this.reply(`${userDisplay}\n没有找到这根鱼竿。`);
+      return;
+    }
+
+    const owned = userData.rodsOwned.includes(rod.id);
+    const sections = [
+      `鱼竿：${rod.name}`,
+      `状态：${owned ? '已拥有' : '未拥有'}${rod.id === getEquippedRod(userData).id ? ' | 当前装备' : ''}`,
+      rod.sourceLegendary ? `炼成来源：${rod.sourceLegendary}` : `售价：${rod.price}鱼币`,
+      `手感描述：${rod.description}`,
+      ...buildRodTraitLines(rod)
+    ];
+    const fallback = [
+      '鱼竿详情',
+      `鱼竿：${rod.name}`,
+      `状态：${owned ? '已拥有' : '未拥有'}${rod.id === getEquippedRod(userData).id ? ' | 当前装备' : ''}`,
+      rod.sourceLegendary ? `炼成来源：${rod.sourceLegendary}` : `售价：${rod.price}鱼币`,
+      `手感描述：${rod.description}`,
+      ...buildRodTraitLines(rod)
+    ].join('\n');
+
+    await replyWithPanel(this, {
+      key: `rod-details-${e.user_id}`,
+      title: '鱼竿详情',
+      subtitle: rod.name,
+      sections,
+      footer: '这里只展示词条倾向，不直接公开具体数值。'
     }, fallback);
   }
 
