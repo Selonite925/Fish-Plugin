@@ -101,11 +101,17 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const FISH_PLUGIN_REPO = 'https://github.com/Selonite925/Fish-Plugin.git';
 const SELF_UPDATE_BACKUP_DIR = '.self-update-backups';
+const USER_BACKUP_DIR = 'user_backup';
+const USER_BACKUP_FILES = [
+  'fishdata/fishData.json',
+  'fishdata/baitData.json'
+];
 const SELF_UPDATE_PRESERVE_PATHS = [
   /^fishdata\/(?!fishpool\.js$).+/i,
   /^resources\/backgrounds(?:\/|$)/i,
   /^resources\/generated(?:\/|$)/i
 ];
+let fishPluginUpdating = false;
 
 const HELP_GROUPS = [
   {
@@ -1089,6 +1095,45 @@ export class fishing extends plugin {
     return ret.stdout.trim();
   }
 
+  async gitExec(args, options = {}) {
+    return Bot.exec(['git', '-C', __dirname, ...args], options);
+  }
+
+  async getCurrentBranch(repoDir = __dirname) {
+    const ret = await Bot.exec(['git', '-C', repoDir, 'branch', '--show-current'], { quiet: true });
+    if (ret.error) return '';
+    return ret.stdout.trim();
+  }
+
+  async getRemoteNameForBranch(repoDir = __dirname, branch = '') {
+    if (!branch) return '';
+    const ret = await Bot.exec(['git', '-C', repoDir, 'config', `branch.${branch}.remote`], { quiet: true });
+    if (ret.error) return '';
+    return ret.stdout.trim();
+  }
+
+  async getRemoteTrackingRef(repoDir = __dirname) {
+    const branch = await this.getCurrentBranch(repoDir);
+    const remote = await this.getRemoteNameForBranch(repoDir, branch);
+    if (!branch || !remote) return '';
+    return `${remote}/${branch}`;
+  }
+
+  async fetchRemote(repoDir = __dirname) {
+    return Bot.exec(['git', '-C', repoDir, 'fetch', '--all', '--prune'], { quiet: true });
+  }
+
+  async getRemoteHead(repoDir = __dirname, short = true) {
+    const trackingRef = await this.getRemoteTrackingRef(repoDir);
+    if (!trackingRef) return '';
+    const args = ['git', '-C', repoDir, 'rev-parse'];
+    if (short) args.push('--short');
+    args.push(trackingRef);
+    const ret = await Bot.exec(args, { quiet: true });
+    if (ret.error) return '';
+    return ret.stdout.trim();
+  }
+
   async getGitDirtyTrackedFiles(repoDir) {
     const ret = await Bot.exec(['git', '-C', repoDir, 'status', '--porcelain', '--untracked-files=no'], { quiet: true });
     if (ret.error) throw ret.error;
@@ -1109,6 +1154,30 @@ export class fishing extends plugin {
   shouldPreserveSelfUpdatePath(file) {
     const normalized = file.split(path.sep).join('/');
     return SELF_UPDATE_PRESERVE_PATHS.some(reg => reg.test(normalized));
+  }
+
+  backupUserData() {
+    const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+    const backupDir = path.join(__dirname, USER_BACKUP_DIR, timestamp);
+    const copiedFiles = [];
+
+    for (const file of USER_BACKUP_FILES) {
+      const sourcePath = path.join(__dirname, file);
+      if (!fs.existsSync(sourcePath)) continue;
+      const targetPath = path.join(backupDir, file.replace(/^fishdata\//, ''));
+      fs.mkdirSync(path.dirname(targetPath), { recursive: true });
+      fs.copyFileSync(sourcePath, targetPath);
+      copiedFiles.push(file);
+    }
+
+    if (!copiedFiles.length) return '';
+
+    fs.writeFileSync(path.join(backupDir, 'manifest.json'), JSON.stringify({
+      createdAt: new Date().toISOString(),
+      copiedFiles
+    }, null, 2), 'utf8');
+
+    return backupDir;
   }
 
   backupSelfUpdateFiles(files) {
@@ -1173,6 +1242,7 @@ export class fishing extends plugin {
       const currentTrackedFiles = await this.getGitTrackedFiles(__dirname).catch(() => []);
       const dirtyFiles = await this.getGitDirtyTrackedFiles(__dirname).catch(() => []);
       const backupDir = this.backupSelfUpdateFiles(dirtyFiles);
+      const userBackupDir = this.backupUserData();
       const staleFiles = currentTrackedFiles.filter(file => !trackedFiles.includes(file));
       const previousHead = await this.getGitHead(__dirname);
       const latestHead = await this.getGitHead(tempDir);
@@ -1185,11 +1255,13 @@ export class fishing extends plugin {
         ? `已校正本地文件，当前版本 ${latestHead}`
         : `已同步到最新版本 ${latestHead || ''}`.trim();
       const backupText = backupDir ? `\n已备份被覆盖的本地文件：${backupDir}` : '';
+      const userBackupText = userBackupDir ? `\n已备份用户数据：${userBackupDir}` : '';
       return {
-        stdout: `已从 ${FISH_PLUGIN_REPO} 获取最新代码。\n${statusText}${backupText}`,
+        stdout: `已从 ${FISH_PLUGIN_REPO} 获取最新代码。\n${statusText}${backupText}${userBackupText}`,
         stderr: '',
         meta: {
           backupDir,
+          userBackupDir,
           dirtyFiles,
           previousHead,
           latestHead
@@ -1206,22 +1278,71 @@ export class fishing extends plugin {
       return false;
     }
 
-    await this.reply('开始更新 Fish-plugin，请稍后。');
-    await this.reply('正在同步远端文件，并自动备份会被覆盖的本地改动。');
-    const ret = await this.reinstallFishPluginFromGithub();
-    const output = [ret.stdout, ret.stderr].filter(Boolean).join('\n').trim();
-    if (ret.error) {
-      await this.reply(`Fish-plugin 更新失败：\n${ret.error.message}${output ? `\n${output}` : ''}`);
+    if (fishPluginUpdating) {
+      await this.reply('Fish-plugin 正在更新中，请稍后再试。');
       return false;
     }
 
-    await this.reply(`Fish-plugin 更新完成。\n${output}\n正在重启机器人以应用改动。`);
-    const restartRet = await Bot.restart();
-    if (restartRet?.error) {
-      await this.reply(`重启失败：\n${Bot.String(restartRet)}`);
-      return false;
+    fishPluginUpdating = true;
+    try {
+      await this.reply('开始更新 Fish-plugin，请稍后。');
+
+      const currentHead = await this.getGitHead(__dirname);
+      const fetchRet = await this.fetchRemote(__dirname);
+      if (fetchRet.error) {
+        const fetchOutput = [fetchRet.stdout, fetchRet.stderr].filter(Boolean).join('\n').trim();
+        await this.reply(`Fish-plugin 更新失败：\n${fetchRet.error.message}${fetchOutput ? `\n${fetchOutput}` : ''}`);
+        return false;
+      }
+
+      const remoteHead = await this.getRemoteHead(__dirname);
+      const dirtyFiles = await this.getGitDirtyTrackedFiles(__dirname).catch(() => []);
+      const hasRemoteUpdate = Boolean(currentHead && remoteHead && currentHead !== remoteHead);
+
+      if (!hasRemoteUpdate && dirtyFiles.length === 0) {
+        await this.reply(`Fish-plugin 已是最新版。\n当前版本：${currentHead || remoteHead || 'unknown'}`);
+        return true;
+      }
+
+      if (dirtyFiles.length === 0 && hasRemoteUpdate) {
+        await this.reply(`检测到新版本 ${currentHead || 'unknown'} -> ${remoteHead}，正在尝试标准更新。`);
+        const pullRet = await this.gitExec(['pull', '--ff-only']);
+        const pullOutput = [pullRet.stdout, pullRet.stderr].filter(Boolean).join('\n').trim();
+        if (!pullRet.error) {
+          const userBackupDir = this.backupUserData();
+          const userBackupText = userBackupDir ? `\n已备份用户数据：${userBackupDir}` : '';
+          await this.reply(`Fish-plugin 更新完成。\n${pullOutput || `已更新到 ${remoteHead}`}${userBackupText}\n正在重启机器人以应用改动。`);
+          const restartRet = await Bot.restart();
+          if (restartRet?.error) {
+            await this.reply(`重启失败：\n${Bot.String(restartRet)}`);
+            return false;
+          }
+          return true;
+        }
+      }
+
+      const dirtyTip = dirtyFiles.length
+        ? `检测到 ${dirtyFiles.length} 个本地改动，改为安全更新模式。`
+        : '标准更新未成功，改为安全更新模式。';
+      await this.reply(`${dirtyTip}\n正在同步远端文件，并自动备份本地改动与用户数据。`);
+
+      const reinstallRet = await this.reinstallFishPluginFromGithub();
+      const output = [reinstallRet.stdout, reinstallRet.stderr].filter(Boolean).join('\n').trim();
+      if (reinstallRet.error) {
+        await this.reply(`Fish-plugin 更新失败：\n${reinstallRet.error.message}${output ? `\n${output}` : ''}`);
+        return false;
+      }
+
+      await this.reply(`Fish-plugin 更新完成。\n${output}\n正在重启机器人以应用改动。`);
+      const restartRet = await Bot.restart();
+      if (restartRet?.error) {
+        await this.reply(`重启失败：\n${Bot.String(restartRet)}`);
+        return false;
+      }
+      return true;
+    } finally {
+      fishPluginUpdating = false;
     }
-    return true;
   }
 
   isFishCommand(msg = '') {
