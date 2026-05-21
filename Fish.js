@@ -3617,7 +3617,7 @@ async showAchievements(e) {
         title: item.name,
         desc: item.description,
         meta: `奖励：${item.rewardText}`,
-        tone: item.unlocked ? 'positive' : 'warning'
+        tone: item.unlocked ? 'achievement-done' : 'achievement-pending'
       }))
     }], { badgePrefix: '成' });
     const fallback = [
