@@ -375,10 +375,52 @@
       background: linear-gradient(180deg, var(--group-accent, #2563eb), color-mix(in srgb, var(--group-accent, #2563eb) 72%, #111827));
       box-shadow: 0 4px 10px color-mix(in srgb, var(--group-accent, #2563eb) 24%, transparent);
     }
+    .help-grid-item-badge-stack {
+      position: absolute;
+      left: 16px;
+      top: 16px;
+      width: 76px;
+      height: 34px;
+      pointer-events: none;
+      z-index: 2;
+    }
+    .help-grid-item-badge-stack .help-grid-item-badge {
+      left: 0;
+      top: 0;
+      max-width: 76px;
+      width: 100%;
+      z-index: 1;
+    }
+    .help-grid-item-badge-overlay {
+      position: absolute;
+      inset: 0;
+      border-radius: 999px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 0 8px;
+      font-size: 12px;
+      font-weight: 900;
+      line-height: 1;
+      letter-spacing: 0.06em;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      color: #f8fafc;
+      background: linear-gradient(180deg, rgba(239, 68, 68, 0.92), rgba(153, 27, 27, 0.84));
+      box-shadow: 0 4px 12px rgba(127, 29, 29, 0.18);
+      backdrop-filter: blur(1px);
+      z-index: 2;
+    }
     body.has-bg .help-grid-item-badge {
       color: #fff9f0;
       background: linear-gradient(180deg, var(--group-accent, #60a5fa), color-mix(in srgb, var(--group-accent, #60a5fa) 68%, #0f172a));
       box-shadow: 0 6px 14px rgba(0,0,0,0.22);
+    }
+    body.has-bg .help-grid-item-badge-overlay {
+      color: #fff5f5;
+      background: linear-gradient(180deg, rgba(248, 113, 113, 0.88), rgba(153, 27, 27, 0.76));
+      box-shadow: 0 6px 14px rgba(0,0,0,0.26);
     }
     .help-grid-item-title {
       color: #0f172a;
@@ -624,6 +666,30 @@
     .help-grid-item-mystery .help-grid-item-desc,
     .help-grid-item-mystery .help-grid-item-meta {
       color: #be185d;
+    }
+    .help-grid-item-locked {
+      border-color: rgba(148, 163, 184, 0.28);
+      background: linear-gradient(180deg, rgba(241,245,249,0.96), rgba(226,232,240,0.92));
+      box-shadow: 0 8px 20px rgba(15, 23, 42, 0.08);
+    }
+    .help-grid-item-locked .help-grid-item-title {
+      color: #334155;
+    }
+    .help-grid-item-locked .help-grid-item-desc,
+    .help-grid-item-locked .help-grid-item-meta {
+      color: #475569;
+    }
+    body.has-bg .help-grid-item-locked {
+      border-color: rgba(148, 163, 184, 0.24);
+      background: linear-gradient(180deg, rgba(71,85,105,0.26), rgba(30,41,59,0.20));
+      box-shadow: 0 8px 22px rgba(0,0,0,0.18);
+    }
+    body.has-bg .help-grid-item-locked .help-grid-item-title {
+      color: #e2e8f0;
+    }
+    body.has-bg .help-grid-item-locked .help-grid-item-desc,
+    body.has-bg .help-grid-item-locked .help-grid-item-meta {
+      color: #cbd5e1;
     }
     .help-grid-item-empty {
       flex: 1 1 50%;

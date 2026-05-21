@@ -499,6 +499,17 @@ function resolveFishNameSelection(entries, fishName, duplicateIndex = 0, options
   return { item: picked, matches };
 }
 
+function renderGridBadge(badgeText, overlayText = '') {
+  const badge = escapePanelHtml(badgeText);
+  const overlay = String(overlayText || '').trim();
+  return (
+    `<div class="help-grid-item-badge-stack">` +
+    `<div class="help-grid-item-badge">${badge}</div>` +
+    (overlay ? `<div class="help-grid-item-badge-overlay">${escapePanelHtml(overlay)}</div>` : '') +
+    `</div>`
+  );
+}
+
 function buildHelpGridSections(groups = []) {
   return groups.map(group => {
     const htmlParts = ['<div class="help-grid">'];
@@ -517,7 +528,7 @@ function buildHelpGridSections(groups = []) {
         const toneClass = currentItem.tone ? ` help-grid-item-${currentItem.tone}` : '';
         return (
           `<div class="help-grid-item${toneClass}">` +
-          `<div class="help-grid-item-badge">${currentBadge}</div>` +
+          renderGridBadge(currentBadge, currentItem.badgeOverlay) +
           `<div class="help-grid-item-title">${currentTitle}</div>` +
           `<div class="help-grid-item-desc">${currentDesc}</div>` +
           '</div>'
@@ -527,7 +538,7 @@ function buildHelpGridSections(groups = []) {
       if (item.fullWidth) {
         htmlParts.push('<div class="help-grid-row">');
         htmlParts.push(`<div class="help-grid-item help-grid-item-note">` +
-          `<div class="help-grid-item-badge">${badge}</div>` +
+          renderGridBadge(badge, item.badgeOverlay) +
           `<div class="help-grid-item-title">${title}</div>` +
           `<div class="help-grid-item-desc">${desc}</div>` +
           '</div>');
@@ -578,7 +589,7 @@ function buildCardGridSections(groups = [], options = {}) {
       const toneClass = item.tone ? ` help-grid-item-${item.tone}` : '';
       return (
         `<div class="help-grid-item${toneClass}">` +
-        `<div class="help-grid-item-badge">${escapePanelHtml(badgeText)}</div>` +
+        renderGridBadge(badgeText, item.badgeOverlay) +
         `<div class="help-grid-item-title">${title}</div>` +
         `<div class="help-grid-item-desc">${desc}</div>` +
         meta +
@@ -3018,6 +3029,7 @@ async checkEasterEggCollection(e) {
           ? [
             ...sortedEntries.slice(0, 16).map(item => ({
               badge: `${item.displayIndex + 1}`,
+              badgeOverlay: item.locked ? '锁定' : '',
               title: `${item.fish.name} (${rarityLabel(item.fish.rarity)})${item.locked ? ' · 已锁定' : ''}`,
               desc: `${item.fish.length}cm / ${item.fish.weight}kg`,
               meta: item.locked ? `鱼缸序号 ${item.displayIndex + 1} | 已锁定，解锁前不能操作` : `鱼缸序号 ${item.displayIndex + 1}`,
