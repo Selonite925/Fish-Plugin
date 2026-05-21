@@ -100,6 +100,7 @@ import {
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const FISH_PLUGIN_REPO = 'https://github.com/Selonite925/Fish-Plugin.git';
+const SELF_UPDATE_BACKUP_DIR = '.self-update-backups';
 const SELF_UPDATE_PRESERVE_PATHS = [
   /^fishdata\/(?!fishpool\.js$).+/i,
   /^resources\/backgrounds(?:\/|$)/i,
@@ -1074,14 +1075,83 @@ export class fishing extends plugin {
     const ret = await Bot.exec(['git', '-C', repoDir, 'ls-files'], { quiet: true });
     if (ret.error) throw ret.error;
     return ret.stdout
-      .split('\n')
+      .split(/\r?\n/)
       .map(item => item.trim())
+      .filter(Boolean);
+  }
+
+  async getGitHead(repoDir, short = true) {
+    const args = ['git', '-C', repoDir, 'rev-parse'];
+    if (short) args.push('--short');
+    args.push('HEAD');
+    const ret = await Bot.exec(args, { quiet: true });
+    if (ret.error) return '';
+    return ret.stdout.trim();
+  }
+
+  async getGitDirtyTrackedFiles(repoDir) {
+    const ret = await Bot.exec(['git', '-C', repoDir, 'status', '--porcelain', '--untracked-files=no'], { quiet: true });
+    if (ret.error) throw ret.error;
+    return ret.stdout
+      .split(/\r?\n/)
+      .map(line => line.trimEnd())
+      .filter(Boolean)
+      .map(line => {
+        const rawPath = line.slice(3).trim();
+        const normalized = rawPath.includes(' -> ')
+          ? rawPath.split(' -> ').pop().trim()
+          : rawPath;
+        return normalized.replace(/\\/g, '/');
+      })
       .filter(Boolean);
   }
 
   shouldPreserveSelfUpdatePath(file) {
     const normalized = file.split(path.sep).join('/');
     return SELF_UPDATE_PRESERVE_PATHS.some(reg => reg.test(normalized));
+  }
+
+  backupSelfUpdateFiles(files) {
+    const normalizedFiles = [...new Set(files.map(file => file.replace(/\\/g, '/')).filter(Boolean))];
+    if (!normalizedFiles.length) return '';
+
+    const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+    const backupDir = path.join(__dirname, SELF_UPDATE_BACKUP_DIR, timestamp);
+    const copiedFiles = [];
+    const missingFiles = [];
+
+    for (const file of normalizedFiles) {
+      const sourcePath = path.join(__dirname, file);
+      if (!fs.existsSync(sourcePath)) {
+        missingFiles.push(file);
+        continue;
+      }
+
+      const targetPath = path.join(backupDir, file);
+      fs.mkdirSync(path.dirname(targetPath), { recursive: true });
+      fs.copyFileSync(sourcePath, targetPath);
+      copiedFiles.push(file);
+    }
+
+    fs.mkdirSync(backupDir, { recursive: true });
+    fs.writeFileSync(path.join(backupDir, 'manifest.json'), JSON.stringify({
+      createdAt: new Date().toISOString(),
+      repo: FISH_PLUGIN_REPO,
+      copiedFiles,
+      missingFiles
+    }, null, 2), 'utf8');
+
+    return backupDir;
+  }
+
+  removeGitTrackedFiles(targetDir, files) {
+    for (const file of files) {
+      if (this.shouldPreserveSelfUpdatePath(file)) continue;
+      const targetPath = path.join(targetDir, file);
+      if (fs.existsSync(targetPath)) {
+        fs.rmSync(targetPath, { recursive: true, force: true });
+      }
+    }
   }
 
   copyGitTrackedFiles(sourceDir, targetDir, files) {
@@ -1100,10 +1170,31 @@ export class fishing extends plugin {
       const cloneRet = await Bot.exec(['git', 'clone', '--depth=1', FISH_PLUGIN_REPO, tempDir]);
       if (cloneRet.error) return cloneRet;
       const trackedFiles = await this.getGitTrackedFiles(tempDir);
+      const currentTrackedFiles = await this.getGitTrackedFiles(__dirname).catch(() => []);
+      const dirtyFiles = await this.getGitDirtyTrackedFiles(__dirname).catch(() => []);
+      const backupDir = this.backupSelfUpdateFiles(dirtyFiles);
+      const staleFiles = currentTrackedFiles.filter(file => !trackedFiles.includes(file));
+      const previousHead = await this.getGitHead(__dirname);
+      const latestHead = await this.getGitHead(tempDir);
+
+      this.removeGitTrackedFiles(__dirname, staleFiles);
       fs.rmSync(path.join(__dirname, '.git'), { recursive: true, force: true });
       fs.cpSync(path.join(tempDir, '.git'), path.join(__dirname, '.git'), { recursive: true, force: true });
       this.copyGitTrackedFiles(tempDir, __dirname, trackedFiles);
-      return { stdout: `已从 ${FISH_PLUGIN_REPO} 重新安装 Fish-plugin 仓库。`, stderr: '' };
+      const statusText = previousHead && latestHead && previousHead === latestHead
+        ? `已校正本地文件，当前版本 ${latestHead}`
+        : `已同步到最新版本 ${latestHead || ''}`.trim();
+      const backupText = backupDir ? `\n已备份被覆盖的本地文件：${backupDir}` : '';
+      return {
+        stdout: `已从 ${FISH_PLUGIN_REPO} 获取最新代码。\n${statusText}${backupText}`,
+        stderr: '',
+        meta: {
+          backupDir,
+          dirtyFiles,
+          previousHead,
+          latestHead
+        }
+      };
     } finally {
       fs.rmSync(tempDir, { recursive: true, force: true });
     }
@@ -1115,35 +1206,21 @@ export class fishing extends plugin {
       return false;
     }
 
-    await this.reply('开始更新Fish-Plugin，请稍后');
-    const remoteRet = await Bot.exec(['git', '-C', __dirname, 'config', '--get', 'remote.origin.url'], { quiet: true });
-    const remoteUrl = remoteRet.stdout.trim();
-    if (remoteRet.error || !/Fish-Plugin(?:\.git)?$/i.test(remoteUrl.replace(/\/+$/, ''))) {
-      await this.reply('正在合并，请稍后');
-      const reinstallRet = await this.reinstallFishPluginFromGithub();
-      const reinstallOutput = [reinstallRet.stdout, reinstallRet.stderr].filter(Boolean).join('\n').trim();
-      if (reinstallRet.error) {
-        await this.reply(`Fish-plugin 重新安装失败：\n${reinstallRet.error.message}${reinstallOutput ? `\n${reinstallOutput}` : ''}`);
-        return false;
-      }
-
-      await this.reply('Fish-Plugin已经是最新版，现在开始重启以生效变动。');
-      const restartRet = await Bot.restart();
-      await this.reply(`重启错误：\n${Bot.String(restartRet)}`);
-      return true;
-    }
-
-    await this.reply('正在合并，请稍后');
-    const ret = await Bot.exec(['git', '-C', __dirname, 'pull']);
+    await this.reply('开始更新 Fish-plugin，请稍后。');
+    await this.reply('正在同步远端文件，并自动备份会被覆盖的本地改动。');
+    const ret = await this.reinstallFishPluginFromGithub();
     const output = [ret.stdout, ret.stderr].filter(Boolean).join('\n').trim();
     if (ret.error) {
       await this.reply(`Fish-plugin 更新失败：\n${ret.error.message}${output ? `\n${output}` : ''}`);
       return false;
     }
 
-    await this.reply('Fish-Plugin已经是最新版，现在开始重启以生效变动。');
+    await this.reply(`Fish-plugin 更新完成。\n${output}\n正在重启机器人以应用改动。`);
     const restartRet = await Bot.restart();
-    await this.reply(`重启错误：\n${Bot.String(restartRet)}`);
+    if (restartRet?.error) {
+      await this.reply(`重启失败：\n${Bot.String(restartRet)}`);
+      return false;
+    }
     return true;
   }
 

@@ -6,6 +6,7 @@ resources/generated/
 resources/backgrounds/
 !resources/backgrounds/
 !resources/backgrounds/background1.png
+.self-update-backups/
 
 # Local/editor noise
 .DS_Store
