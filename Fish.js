@@ -57,13 +57,16 @@ import {
   getEquippedRod,
   getFishingLimitExhaustedText,
   getFishingLimitText,
+  getLockedFishIds,
   getTargetUserId,
   getDisplayNameForUser,
   getUserDisplay,
   getOwnedBaitsSummary,
   getOwnedEasterEggCollection,
   getOwnedRodsSummary,
+  isFishLocked,
   isSameFish,
+  lockFishById,
   normalizeAllUsers,
   normalizeUserData,
   repairAllUsersFishData,
@@ -72,6 +75,7 @@ import {
   resetEmptyCastStreak,
   registerCastUsage,
   scheduleEasterEggSwitch,
+  unlockFishById,
   unlockEasterEgg
 } from './lib/user.js';
 import {
@@ -129,14 +133,15 @@ const HELP_GROUPS = [
       { title: '#查看鱼缸', desc: '查看鱼缸容量、升级进度、库存和当前收藏。' },
       { title: '#升级鱼缸 legendary 1 / #升级鱼缸 epic 1 2 3', desc: '按鱼缸展示序号提交材料，支持分次提交；legendary 模式只收传说鱼，epic 模式只收史诗鱼。' },
       { title: '#放生鱼 1', desc: '从鱼缸放生指定鱼。彩蛋鱼属于收藏，不在鱼缸里。' },
-      { title: '#赠渔 @某人 1', desc: '把指定鱼送给别人，方便互换收藏或代管材料。' }
+      { title: '#赠渔 @某人 1', desc: '把指定鱼送给别人，方便互换收藏或代管材料。' },
+      { title: '#锁定鱼 3 / #锁定鱼 虹鳟2 / #解锁鱼 3', desc: '支持按鱼缸序号或鱼名锁定；已锁定的鱼不能出售、升级、炼竿、放生、赠送或被自动替换。' }
     ]
   },
   {
     group: '鱼市与装备',
     list: [
       { title: '#鱼市 / #售鱼 1 / #售鱼 common / #售鱼 全部', desc: '卖鱼、看鱼市，也可以按今日鱼获编号、稀有度或批量处理。' },
-      { title: '#售鱼 鱼缸3 / #售鱼 鱼缸 2 3 4 5', desc: '支持卖鱼缸单条或多条，不会和第23条这种写法冲突。' },
+      { title: '#售鱼 鱼缸3 / #售鱼 鱼缸 2 3 4 5 / #售鱼 鱼缸虹鳟 / #售鱼 鱼缸 uncommon', desc: '支持按鱼缸序号、同名鱼顺序、鱼缸稀有度或全部出售。' },
       { title: '#鱼市购买 鱼饵1*5 / #鱼市购买 钓鱼券*3', desc: '批量购买鱼饵和钓鱼券。' },
       { title: '#鱼市购买 鱼竿1 / #鱼市回收 鱼竿1', desc: '购买普通鱼竿，或按回收列表序号回收已拥有鱼竿；普通竿半价，legendary 竿回收价 750。' },
       { title: '#鱼竿 / #换竿 0', desc: '查看鱼竿库存，并切换到默认竿或指定鱼竿。' },
@@ -276,12 +281,14 @@ const FISH_KING_SCORE_BANDS = {
 
 function formatFishLine(fish, index = null) {
   const prefix = index == null ? '•' : `[${index + 1}]`;
-  return `${prefix} ${fish.name}(${fish.rarity}) ${fish.length}cm/${fish.weight}kg`;
+  const lockMark = fish?.locked ? ' [已锁定]' : '';
+  return `${prefix} ${fish.name}(${fish.rarity}) ${fish.length}cm/${fish.weight}kg${lockMark}`;
 }
 
 function formatTodayFishRecordLine(fish, index = null) {
   const prefix = index == null ? '•' : `[${index + 1}]`;
-  return `${prefix} ${fish.name}(${fish.rarity}) 长度：${fish.length}cm，重量：${fish.weight}kg`;
+  const lockMark = fish?.locked ? ' [已锁定]' : '';
+  return `${prefix} ${fish.name}(${fish.rarity}) 长度：${fish.length}cm，重量：${fish.weight}kg${lockMark}`;
 }
 
 function getSignalRodBonusCoins(rod, fish) {
@@ -451,6 +458,45 @@ function getRarityCardTone(rarity) {
     epic: 'epic',
     legendary: 'legendary'
   })[rarity] || 'neutral';
+}
+
+function getFishCardTone(fish, locked = false) {
+  if (locked) return 'locked';
+  return getRarityCardTone(fish?.rarity);
+}
+
+function annotateFishLock(userData, fish) {
+  if (!fish || typeof fish !== 'object') return fish;
+  return { ...fish, locked: isFishLocked(userData, fish) };
+}
+
+function getSortedTankEntries(userData) {
+  return getSortedTankWithIndex(userData?.fishTank || []).map((item, displayIndex) => ({
+    ...item,
+    displayIndex,
+    locked: isFishLocked(userData, item.fish)
+  }));
+}
+
+function resolveFishNameSelection(entries, fishName, duplicateIndex = 0, options = {}) {
+  const { rarity = null, allowAmbiguous = false } = options;
+  const normalizedName = String(fishName || '').trim();
+  if (!normalizedName) return { error: '请输入鱼名。' };
+  const matches = entries.filter(item =>
+    item?.fish?.name === normalizedName &&
+    (!rarity || item?.fish?.rarity === rarity)
+  );
+  if (!matches.length) {
+    return { error: rarity ? `没有找到名为 ${normalizedName} 的 ${rarity} 鱼。` : `没有找到名为 ${normalizedName} 的鱼。` };
+  }
+  if (!allowAmbiguous && matches.length > 1 && duplicateIndex === 0) {
+    return { error: `${normalizedName} 有 ${matches.length} 条，请写成 ${normalizedName}2 这种形式指定第几条。` };
+  }
+  const picked = matches[duplicateIndex];
+  if (!picked) {
+    return { error: `${normalizedName} 只有 ${matches.length} 条，无法选择第 ${duplicateIndex + 1} 条。` };
+  }
+  return { item: picked, matches };
 }
 
 function buildHelpGridSections(groups = []) {
@@ -933,6 +979,8 @@ export class fishing extends plugin {
         { reg: '^#升级鱼缸\\s+(legendary|epic)\\s+.+', fnc: 'upgradeFishTank' },
         { reg: '^#放生鱼\\s+\\d+(?:\\s+.*)?$', fnc: 'releaseFish' },
         { reg: '^#赠渔\\s*.*\\d+$', fnc: 'giftFish' },
+        { reg: '^#锁定鱼\\s*.+$', fnc: 'lockFishCommand' },
+        { reg: '^#解锁鱼\\s*.+$', fnc: 'unlockFishCommand' },
         { reg: '^#炼竿预览.*$', fnc: 'previewLegendaryRod' },
         { reg: '^#炼竿.*$', fnc: 'craftLegendaryRod' },
         { reg: '^#打窝', fnc: 'addBait' },
@@ -1440,33 +1488,110 @@ export class fishing extends plugin {
       null;
   }
 
-  resolveLegendaryCraftSelection(userData, target) {
+  parseTankFishSelector(text = '') {
+    const body = String(text || '')
+      .replace(/^#?(?:锁定鱼|解锁鱼)\s*/i, '')
+      .replace(/^鱼缸\s*/i, '')
+      .trim();
+    if (!body) return null;
+    if (/^\d{1,3}$/.test(body)) {
+      return { mode: 'tank_index', index: Number(body) - 1 };
+    }
+    const match = body.match(/^(.*?)(\d{1,3})?$/);
+    const fishName = String(match?.[1] || '').trim();
+    const duplicateIndex = match?.[2] ? Number(match[2]) - 1 : 0;
+    if (!fishName) return null;
+    return { mode: 'tank_name', fishName, duplicateIndex };
+  }
+
+  resolveTankFishSelection(userData, target) {
+    if (!target) return { error: '请输入鱼缸序号，或鱼名。' };
+    const sortedEntries = getSortedTankEntries(userData);
+    if (target.mode === 'tank_index') {
+      const picked = sortedEntries[target.index];
+      if (!picked) {
+        return { error: '鱼缸序号不存在，请先用 #查看鱼缸 确认序号。' };
+      }
+      return picked;
+    }
+    const resolved = resolveFishNameSelection(sortedEntries, target.fishName, target.duplicateIndex);
+    if (resolved.error) return resolved;
+    return resolved.item;
+  }
+
+  getLockedFishMessage(fish, actionText = '操作') {
+    return `${fish?.name || '这条鱼'} 已被锁定，解锁前不能${actionText}。`;
+  }
+
+  async toggleFishLock(e, shouldLock) {
+    const data = this.loadData();
+    const { userId, text: userDisplay } = getUserDisplay(e);
+    const userData = this.getOrCreateUser(data, userId);
+    normalizeUserData(userData);
+    if (!userData.fishTank?.length) {
+      await this.reply(`${userDisplay}\n你的鱼缸是空的，没有可以${shouldLock ? '锁定' : '解锁'}的鱼。`);
+      return;
+    }
+    const target = this.parseTankFishSelector(e.msg);
+    if (!target) {
+      await this.reply(`${userDisplay}\n请输入鱼缸序号，或鱼名。\n例如：#锁定鱼 3 / #锁定鱼 虹鳟2 / #解锁鱼 3`);
+      return;
+    }
+    const resolved = this.resolveTankFishSelection(userData, target);
+    if (resolved.error) {
+      await this.reply(`${userDisplay}\n${resolved.error}`);
+      return;
+    }
+    const fish = resolved.fish;
+    const changed = shouldLock
+      ? lockFishById(userData, fish.fishId)
+      : unlockFishById(userData, fish.fishId);
+    const lockedCount = getLockedFishIds(userData).length;
+    saveFishData(data);
+    if (!changed) {
+      await this.reply(`${userDisplay}\n${fish.name}（鱼缸序号 ${resolved.displayIndex + 1}）当前已经是${shouldLock ? '锁定' : '未锁定'}状态。`);
+      return;
+    }
+    await this.reply(`${userDisplay}\n已${shouldLock ? '锁定' : '解锁'} ${fish.name}（鱼缸序号 ${resolved.displayIndex + 1}，${fish.rarity}）。\n当前锁定鱼：${lockedCount} 条。`);
+  }
+
+  async lockFishCommand(e) {
+    await this.toggleFishLock(e, true);
+  }
+
+  async unlockFishCommand(e) {
+    await this.toggleFishLock(e, false);
+  }
+
+  resolveLegendaryCraftSelection(userData, target, options = {}) {
+    const { allowLocked = false } = options;
     if (!target) return { error: '请输入鱼缸序号，或 legendary 鱼名。' };
 
     let originalIndex = null;
     let fish = null;
+    let displayIndex = null;
     if (target.mode === 'tank_index') {
-      originalIndex = getOriginalIndexByDisplayIndex(userData, target.index);
-      if (!Number.isInteger(originalIndex)) {
-        return { error: '鱼缸序号不存在，请先用 #查看鱼缸 确认序号。' };
-      }
-      fish = userData.fishTank[originalIndex];
-    } else {
-      const matches = getSortedTankWithIndex(userData.fishTank)
-        .filter(item => item.fish?.rarity === 'legendary' && item.fish?.name === target.fishName);
-      if (!matches.length) {
-        return { error: `鱼缸里没有名为 ${target.fishName} 的 legendary 鱼。` };
-      }
-      const picked = matches[target.duplicateIndex];
-      if (!picked) {
-        return { error: `${target.fishName} 只有 ${matches.length} 条，无法选择第 ${target.duplicateIndex + 1} 条。` };
-      }
+      const picked = this.resolveTankFishSelection(userData, target);
+      if (picked.error) return picked;
       originalIndex = picked.originalIndex;
+      displayIndex = picked.displayIndex;
       fish = picked.fish;
+    } else {
+      const sortedEntries = getSortedTankEntries(userData).filter(item => item.fish?.rarity === 'legendary');
+      const resolved = resolveFishNameSelection(sortedEntries, target.fishName, target.duplicateIndex);
+      if (resolved.error) {
+        return { error: resolved.error.replace(`名为 ${target.fishName} 的鱼`, `名为 ${target.fishName} 的 legendary 鱼`) };
+      }
+      originalIndex = resolved.item.originalIndex;
+      displayIndex = resolved.item.displayIndex;
+      fish = resolved.item.fish;
     }
 
     if (!fish || fish.rarity !== 'legendary') {
       return { error: '只有 legendary 鱼可以拿来炼制特殊鱼竿。' };
+    }
+    if (!allowLocked && isFishLocked(userData, fish)) {
+      return { error: this.getLockedFishMessage(fish, '炼竿') };
     }
 
     const recipe = Object.values(LEGENDARY_ROD_RECIPES).find(item => item.sourceLegendary === fish.name);
@@ -1474,7 +1599,7 @@ export class fishing extends plugin {
       return { error: `这条 ${fish.name} 还没有对应的特殊鱼竿配方。` };
     }
 
-    return { originalIndex, fish, recipe };
+    return { originalIndex, displayIndex, fish, recipe };
   }
 
   getDailySignal() {
@@ -2405,6 +2530,11 @@ export class fishing extends plugin {
       return;
     }
     const consumedFish = selected.map(item => item.fish);
+    const lockedFish = consumedFish.find(fish => isFishLocked(userData, fish));
+    if (lockedFish) {
+      await this.reply(`${userDisplay}\n${this.getLockedFishMessage(lockedFish, '作为升级材料提交')}`);
+      return;
+    }
     const invalidFish = consumedFish.find(fish => getFishUpgradePoints(fish) <= 0);
     if (invalidFish) {
       await this.reply(`${userDisplay}\n只能提交 epic 或 legendary 鱼作为升级材料。`);
@@ -2479,6 +2609,10 @@ export class fishing extends plugin {
     }
 
     const releasedFish = userData.fishTank[originalIndex];
+    if (isFishLocked(userData, releasedFish)) {
+      await this.reply(`${userDisplay}\n${this.getLockedFishMessage(releasedFish, '放生')}`);
+      return;
+    }
     userData.fishTank.splice(originalIndex, 1);
     removeOwnedFish(userData, releasedFish, { today: true, tank: false });
     saveFishData(data);
@@ -2518,7 +2652,12 @@ export class fishing extends plugin {
     }
 
     const giftedFish = userData.fishTank[originalIndex];
+    if (isFishLocked(userData, giftedFish)) {
+      await this.reply(`${userDisplay}\n${this.getLockedFishMessage(giftedFish, '赠送')}`);
+      return;
+    }
     userData.fishTank.splice(originalIndex, 1);
+    unlockFishById(userData, giftedFish.fishId);
     giftedFish.giftedFrom = userId;
     giftedFish.giftedAt = getNowTimestamp();
     removeOwnedFish(userData, giftedFish, { today: true, tank: false });
@@ -2601,7 +2740,7 @@ export class fishing extends plugin {
 
     let replyMsg = `今日钓鱼次数：${getFishingLimitText(this.config, userData, getEquippedRod(userData))}\n今日钓到鱼：${todayCatchCount}条\n当前剩余鱼获：${userData.today.fish.length}条\n总共钓鱼次数：${userData.total}\n\n今日鱼获：\n`;
     for (const [index, fish] of userData.today.fish.entries()) {
-      replyMsg += `${formatTodayFishRecordLine(fish, index)}\n`;
+      replyMsg += `${formatTodayFishRecordLine(annotateFishLock(userData, fish), index)}\n`;
     }
     await this.reply(replyMsg.trim());
   }
@@ -2630,7 +2769,7 @@ export class fishing extends plugin {
 
     let replyMsg = `${targetDisplay}的鱼获记录：\n\n今日钓鱼次数：${getFishingLimitText(this.config, userFish, getEquippedRod(userFish))}\n今日钓到鱼：${todayCatchCount}条\n当前剩余鱼获：${userFish.today.fish.length}条\n总共钓鱼次数：${userFish.total}\n\n今日鱼获：\n`;
     for (const [index, fish] of userFish.today.fish.entries()) {
-      replyMsg += `${formatTodayFishRecordLine(fish, index)}\n`;
+      replyMsg += `${formatTodayFishRecordLine(annotateFishLock(userFish, fish), index)}\n`;
     }
     await this.reply(replyMsg.trim());
   }
@@ -2808,7 +2947,8 @@ async checkEasterEggCollection(e) {
     const data = this.loadData();
     const userData = this.getOrCreateUser(data, String(e.user_id));
     normalizeUserData(userData);
-    const sortedFish = getSortedTankWithIndex(userData.fishTank).map(item => item.fish);
+    const sortedEntries = getSortedTankEntries(userData);
+    const sortedFish = sortedEntries.map(item => annotateFishLock(userData, item.fish));
     const rod = getEquippedRod(userData);
     const progressText = this.getTankUpgradeProgressText(userData);
     const easterEggStatus = getEasterEggStatusSummary(userData);
@@ -2826,7 +2966,7 @@ async checkEasterEggCollection(e) {
             badge: '容量',
             title: `${userData.fishTank.length}/${userData.tankCapacity}`,
             desc: `鱼缸等级 ${userData.tankLevel || 0}`,
-            meta: `升级进度：${progressText}`,
+            meta: `升级进度：${progressText} | 已锁定 ${getLockedFishIds(userData).length} 条`,
             tone: 'active'
           },
           {
@@ -2874,18 +3014,18 @@ async checkEasterEggCollection(e) {
       },
       {
         group: '鱼缸鱼获',
-        list: sortedFish.length
+        list: sortedEntries.length
           ? [
-            ...sortedFish.slice(0, 16).map((fish, index) => ({
-              badge: `${index + 1}`,
-              title: `${fish.name} (${rarityLabel(fish.rarity)})`,
-              desc: `${fish.length}cm / ${fish.weight}kg`,
-              meta: `鱼缸序号 ${index + 1}`,
-              tone: getRarityCardTone(fish.rarity)
+            ...sortedEntries.slice(0, 16).map(item => ({
+              badge: `${item.displayIndex + 1}`,
+              title: `${item.fish.name} (${rarityLabel(item.fish.rarity)})${item.locked ? ' · 已锁定' : ''}`,
+              desc: `${item.fish.length}cm / ${item.fish.weight}kg`,
+              meta: item.locked ? `鱼缸序号 ${item.displayIndex + 1} | 已锁定，解锁前不能操作` : `鱼缸序号 ${item.displayIndex + 1}`,
+              tone: getFishCardTone(item.fish, item.locked)
             })),
-            ...(sortedFish.length > 16 ? [{
+            ...(sortedEntries.length > 16 ? [{
               badge: '余量',
-              title: `还有 ${sortedFish.length - 16} 条未展示`,
+              title: `还有 ${sortedEntries.length - 16} 条未展示`,
               desc: '当前面板只展示前 16 条排序后的鱼获',
               tone: 'neutral',
               fullWidth: true
@@ -3003,9 +3143,9 @@ async checkEasterEggCollection(e) {
         list: [
           {
             badge: '售鱼',
-            title: '#售鱼 1 / #售鱼 common / #售鱼 全部',
-            desc: '支持按今日鱼获编号、稀有度、鱼缸序号或全部出售。',
-            meta: '#售鱼 1 对应 #今日鱼获 里显示的第 1 条。',
+            title: '#售鱼 1 / #售鱼 鱼缸8 / #售鱼 鱼缸虹鳟 / #售鱼 鱼缸 uncommon',
+            desc: '支持按今日鱼获编号、鱼缸序号、同名鱼顺序、稀有度或全部出售。',
+            meta: '#售鱼 1 对应 #今日鱼获 里显示的第 1 条；已锁定的鱼不会被出售。',
             tone: 'amber'
           },
           {
@@ -3078,38 +3218,79 @@ async checkEasterEggCollection(e) {
   // #售鱼 默认卖“今日渔获”，这样不会和鱼缸序号命令混在一起；
   // 如果用户明确写“鱼缸”，才去卖鱼缸里的鱼。
   pickFishForSale(userData, target) {
+    const lockedSelected = [];
+    const registerLocked = item => {
+      if (item?.fish && isFishLocked(userData, item.fish)) lockedSelected.push(item.fish);
+      return item;
+    };
+
     if (target.source === 'tank') {
-      const sortedTank = getSortedTankWithIndex(userData.fishTank)
-        .map(item => ({ source: 'tank', originalIndex: item.originalIndex, fish: item.fish }));
-      if (target.explicitTankIndexes?.length) {
-        return target.explicitTankIndexes
-          .map(index => sortedTank[index])
-          .filter(item => item && canSellFish(item.fish));
+      const sortedTank = getSortedTankEntries(userData)
+        .map(item => ({ source: 'tank', originalIndex: item.originalIndex, displayIndex: item.displayIndex, fish: item.fish, locked: item.locked }));
+      if (target.mode === 'tank_index') {
+        return {
+          picked: target.explicitIndexes
+            .map(index => registerLocked(sortedTank[index]))
+            .filter(item => item && canSellFish(item.fish) && !item.locked),
+          lockedSelected
+        };
       }
-      const sellableTank = sortedTank
-        .filter(item => canSellFish(item.fish))
-        .reverse();
+      if (target.mode === 'tank_name') {
+        const resolved = resolveFishNameSelection(sortedTank, target.fishName, target.duplicateIndex);
+        if (resolved.error) return { error: resolved.error, lockedSelected };
+        registerLocked(resolved.item);
+        return {
+          picked: resolved.item && canSellFish(resolved.item.fish) && !resolved.item.locked ? [resolved.item] : [],
+          lockedSelected
+        };
+      }
+      const sellableTank = sortedTank.filter(item => canSellFish(item.fish) && !item.locked);
       if (target.rarity && ['common', 'uncommon', 'rare', 'epic'].includes(target.rarity)) {
         const matched = sellableTank.filter(item => item.fish.rarity === target.rarity);
-        if (target.all || target.mode === 'rarity_all') return matched;
-        if (target.mode === 'rarity_index') return matched[target.count - 1] ? [matched[target.count - 1]] : [];
-        return matched;
+        if (target.all || target.mode === 'rarity_all') return { picked: matched, lockedSelected };
+        if (target.mode === 'rarity_index') return { picked: matched[target.count - 1] ? [matched[target.count - 1]] : [], lockedSelected };
+        if (target.mode === 'rarity_indexes') {
+          const picked = target.explicitIndexes
+            .map(index => matched[index])
+            .filter(Boolean);
+          return { picked, lockedSelected };
+        }
+        return { picked: matched, lockedSelected };
       }
-      if (target.all) return sellableTank;
-      return sellableTank.slice(0, target.count);
+      if (target.all) return { picked: sellableTank, lockedSelected };
+      return { picked: sellableTank.slice(0, target.count), lockedSelected };
     }
 
-    const todayFish = (userData.today.fish || [])
-      .map((fish, index) => ({ source: 'today', originalIndex: index, fish }))
-      .filter(item => canSellFish(item.fish));
-    if (target.rarity && ['common', 'uncommon', 'rare', 'epic'].includes(target.rarity)) {
-      const matched = todayFish.filter(item => item.fish.rarity === target.rarity);
-      if (target.all || target.mode === 'rarity_all') return matched;
-      if (target.mode === 'rarity_index') return matched[target.count - 1] ? [matched[target.count - 1]] : [];
-      return matched;
+    const todayFish = (userData.today.fish || []).map((fish, index) => ({
+      source: 'today',
+      originalIndex: index,
+      displayIndex: index,
+      fish,
+      locked: isFishLocked(userData, fish)
+    }));
+    if (target.mode === 'today_index') {
+      return {
+        picked: target.explicitIndexes
+          .map(index => registerLocked(todayFish[index]))
+          .filter(item => item && canSellFish(item.fish) && !item.locked),
+        lockedSelected
+      };
     }
-    if (target.all) return todayFish;
-    return todayFish.slice(0, target.count);
+    const sellableTodayFish = todayFish.filter(item => canSellFish(item.fish) && !item.locked);
+    if (target.rarity && ['common', 'uncommon', 'rare', 'epic'].includes(target.rarity)) {
+      const matched = sellableTodayFish.filter(item => item.fish.rarity === target.rarity);
+      if (target.all || target.mode === 'rarity_all') return { picked: matched, lockedSelected };
+      if (target.mode === 'rarity_index') return { picked: matched[target.count - 1] ? [matched[target.count - 1]] : [], lockedSelected };
+      if (target.mode === 'rarity_indexes') {
+        const picked = target.explicitIndexes
+          .map(index => matched[index])
+          .filter(Boolean);
+        return { picked, lockedSelected };
+      }
+      return { picked: matched, lockedSelected };
+    }
+    if (target.all) return { picked: sellableTodayFish, lockedSelected };
+    return { picked: sellableTodayFish.slice(0, target.count), lockedSelected };
   }
 
   async sellFish(e, commandText) {
@@ -3127,13 +3308,26 @@ async checkEasterEggCollection(e) {
       return;
     }
 
-    const picked = this.pickFishForSale(userData, target);
+    const selection = this.pickFishForSale(userData, target);
+    if (selection.error) {
+      await this.reply(`${userDisplay}\n${selection.error}`);
+      return;
+    }
+    const picked = selection.picked || [];
+    if (selection.lockedSelected?.length) {
+      await this.reply(`${userDisplay}\n${this.getLockedFishMessage(selection.lockedSelected[0], '出售')}`);
+      return;
+    }
     if (!picked.length) {
       await this.reply(`${userDisplay}\n没有符合条件的鱼可售卖。legendary 鱼和彩蛋鱼不会进入售卖列表。`);
       return;
     }
-    if (target.source === 'tank' && target.explicitTankIndexes?.length && picked.length !== target.explicitTankIndexes.length) {
+    if (target.source === 'tank' && target.mode === 'tank_index' && target.explicitIndexes?.length && picked.length !== target.explicitIndexes.length) {
       await this.reply(`${userDisplay}\n选择的鱼缸序号里有不存在或不可售卖的鱼，请先用 #查看鱼缸 确认序号。`);
+      return;
+    }
+    if (target.source === 'today' && target.mode === 'today_index' && target.explicitIndexes?.length && picked.length !== target.explicitIndexes.length) {
+      await this.reply(`${userDisplay}\n选择的今日鱼获编号里有不存在或不可售卖的鱼，请先用 #今日鱼获 确认编号。`);
       return;
     }
 
@@ -3172,15 +3366,14 @@ async checkEasterEggCollection(e) {
       {
         group: '售出明细',
         list: [
-          ...preview.lines.slice(0, 12).map((line, index) => {
+          ...selected.slice(0, 12).map((fish, index) => {
+            const line = preview.lines[index] || `${fish.name}(${rarityLabel(fish.rarity)}) +${getFishSellValue(fish)}鱼币`;
             const [fishPart, coinPart = ''] = line.split(' +');
-            const rarityMatch = fishPart.match(/\(([^)]+)\)/);
-            const rarity = rarityMatch?.[1] || '';
             return {
               badge: `鱼${index + 1}`,
               title: fishPart,
               desc: coinPart ? `+${coinPart}` : '已结算',
-              tone: getRarityCardTone(rarity)
+              tone: getFishCardTone(fish, false)
             };
           }),
           ...(preview.lines.length > 12 ? [{
@@ -3289,7 +3482,7 @@ async checkEasterEggCollection(e) {
       return;
     }
 
-    const resolved = this.resolveLegendaryCraftSelection(userData, target);
+    const resolved = this.resolveLegendaryCraftSelection(userData, target, { allowLocked: true });
     if (resolved.error) {
       await this.reply(`${userDisplay}\n${resolved.error}`);
       return;
