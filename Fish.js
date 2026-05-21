@@ -127,7 +127,7 @@ const HELP_GROUPS = [
     group: '鱼缸与鱼获',
     list: [
       { title: '#查看鱼缸', desc: '查看鱼缸容量、升级进度、库存和当前收藏。' },
-      { title: '#升级鱼缸 legendary 1 / #升级鱼缸 epic 1 2 3', desc: '支持 epic 与 legendary 混交、分次提交；传说计3点，史诗计1点。' },
+      { title: '#升级鱼缸 legendary 1 / #升级鱼缸 epic 1 2 3', desc: '按鱼缸展示序号提交材料，支持分次提交；legendary 模式只收传说鱼，epic 模式只收史诗鱼。' },
       { title: '#放生鱼 1', desc: '从鱼缸放生指定鱼。彩蛋鱼属于收藏，不在鱼缸里。' },
       { title: '#赠渔 @某人 1', desc: '把指定鱼送给别人，方便互换收藏或代管材料。' }
     ]
@@ -2408,6 +2408,20 @@ export class fishing extends plugin {
     const invalidFish = consumedFish.find(fish => getFishUpgradePoints(fish) <= 0);
     if (invalidFish) {
       await this.reply(`${userDisplay}\n只能提交 epic 或 legendary 鱼作为升级材料。`);
+      return;
+    }
+
+    const invalidByMode = consumedFish.find(fish => fish?.rarity !== costType);
+    if (invalidByMode) {
+      const modeLabel = costType === 'epic' ? 'epic' : 'legendary';
+      const invalidSummary = consumedFish
+        .map((fish, idx) => `${uniqueDisplayIndexes[idx] + 1}:${fish.name}(${fish.rarity})`)
+        .join('、');
+      await this.reply(
+        `${userDisplay}\n当前是 ${modeLabel} 升级模式，只能提交 ${modeLabel} 鱼。\n` +
+        `你选中的材料：${invalidSummary}\n` +
+        `请按 #查看鱼缸 里的展示序号重新选择，避免把别的稀有度鱼误提交。`
+      );
       return;
     }
 
