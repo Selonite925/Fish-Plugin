@@ -5,7 +5,9 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import {
   fishTemplateByName,
+  fishRarityByName,
   fishTypes,
+  legacyFishAliases,
   rarityWeights,
   trashItems,
   randomEvents,
@@ -116,6 +118,8 @@ const SELF_UPDATE_PRESERVE_PATHS = [
   /^resources\/generated(?:\/|$)/i
 ];
 let fishPluginUpdating = false;
+const GIFT_COMMAND_FILLER_TOKENS = new Set(['给', '给到', '送给', '发给', '转给', '把']);
+const COMPENSATE_COMMAND_FILLER_TOKENS = new Set(['给', '给到', '补给', '补到', '发给', '来条', '来个', '来一条']);
 
 const HELP_GROUPS = [
   {
@@ -133,7 +137,7 @@ const HELP_GROUPS = [
       { title: '#查看鱼缸', desc: '查看鱼缸容量、升级进度、库存和当前收藏。' },
       { title: '#升级鱼缸 legendary 1 / #升级鱼缸 epic 1 2 3', desc: '按鱼缸展示序号提交材料，支持分次提交；legendary 模式只收传说鱼，epic 模式只收史诗鱼。' },
       { title: '#放生鱼 1', desc: '从鱼缸放生指定鱼。彩蛋鱼属于收藏，不在鱼缸里。' },
-      { title: '#赠渔 @某人 1', desc: '把指定鱼送给别人，方便互换收藏或代管材料。' },
+      { title: '#赠鱼 @某人 1 / #赠鱼 1 @某人', desc: '把指定鱼送给别人，支持按鱼缸序号或鱼名赠送。' },
       { title: '#锁定鱼 3 / #锁定鱼 虹鳟2 / #解锁鱼 3', desc: '支持按鱼缸序号或鱼名锁定；已锁定的鱼不能出售、升级、炼竿、放生、赠送或被自动替换。' }
     ]
   },
@@ -171,7 +175,7 @@ const MANAGEMENT_HELP_GROUPS = [
       { title: '#设置钓鱼次数10', desc: '调整全局基础每日钓鱼次数。' },
       { title: '#鱼币补偿 @某人 *100', desc: '给单人补发鱼币。' },
       { title: '#鱼币补偿 全体 *100', desc: '给已有数据的全部玩家统一补发鱼币。' },
-      { title: '#补鱼 @某人 rare 鳗鱼 80 3.5', desc: '直接补发指定鱼，长度和重量可省略。' },
+      { title: '#补鱼 @某人 鳗鱼 / #补鱼 rare 鳗鱼 @某人 80 3.5', desc: '直接补发指定鱼，目标、稀有度、鱼名顺序更自由，长度和重量可省略。' },
       { title: '#强制刷新钓鱼日', desc: '强制刷新全服当天钓鱼状态。' },
       { title: '#钓鱼更新', desc: '从远端仓库拉取 Fish-plugin 最新版本并重启。' }
     ]
@@ -902,7 +906,26 @@ function normalizeRarityKeyword(keyword = '') {
 }
 
 function getCompensateFishUsage() {
-  return '格式示例：#补鱼 @某人 rare 鳗鱼 80 3.5，也可写 #补鱼 @某人 鳗鱼 rare；长度和重量可省略。';
+  return '格式示例：#补鱼 @某人 rare 鳗鱼 80 3.5、#补鱼 rare 鳗鱼 @某人、#补鱼 @某人 鳗鱼；长度和重量可省略。';
+}
+
+function escapeRegExp(text = '') {
+  return String(text).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function normalizeFishTemplateName(name = '') {
+  const text = String(name || '').trim();
+  if (!text) return '';
+  return legacyFishAliases?.[text] || text;
+}
+
+function findFishTemplatesByName(name = '') {
+  const normalized = normalizeFishTemplateName(name);
+  if (!normalized) return [];
+  return Object.entries(fishTypes)
+    .filter(([, list]) => Array.isArray(list) && list.some(item => item.name === normalized))
+    .map(([rarity]) => ({ rarity, template: fishTemplateByName?.[normalized] || null }))
+    .filter(item => item.template);
 }
 
 function applyFishBodyBuffs(fish, modifiers = {}) {
@@ -989,7 +1012,7 @@ export class fishing extends plugin {
         { reg: '^#切换彩蛋\\s+.+$', fnc: 'scheduleActiveEasterEgg' },
         { reg: '^#升级鱼缸\\s+(legendary|epic)\\s+.+', fnc: 'upgradeFishTank' },
         { reg: '^#放生鱼\\s+\\d+(?:\\s+.*)?$', fnc: 'releaseFish' },
-        { reg: '^#赠渔\\s*.*\\d+$', fnc: 'giftFish' },
+        { reg: '^#(?:赠鱼|赠渔|送鱼)\\s*.+$', fnc: 'giftFish' },
         { reg: '^#锁定鱼\\s*.+$', fnc: 'lockFishCommand' },
         { reg: '^#解锁鱼\\s*.+$', fnc: 'unlockFishCommand' },
         { reg: '^#炼竿预览.*$', fnc: 'previewLegendaryRod' },
@@ -1452,38 +1475,106 @@ export class fishing extends plugin {
       text = text.replace(/\b\d{5,}\b/, '').trim();
     }
     text = text.replace(/[，,;；|/]+/g, ' ').replace(/[：:＝=×xX*]+/g, ' ').replace(/\s+/g, ' ').trim();
+    text = text
+      .replace(/^(?:给|补给|补到|发给)\s*/g, '')
+      .replace(/\s+/g, ' ')
+      .trim();
+    if (!text) return { error: `请填写鱼名，${getCompensateFishUsage()}` };
 
-    const tokens = text.split(/\s+/).filter(Boolean);
-    const rarityTokenIndex = tokens.findIndex(token => normalizeRarityKeyword(token));
-    const rarity = rarityTokenIndex >= 0 ? normalizeRarityKeyword(tokens[rarityTokenIndex]) : null;
-    if (!rarity) return { error: `请指定稀有度：common / uncommon / rare / epic / legendary / ？。${getCompensateFishUsage()}` };
-    tokens.splice(rarityTokenIndex, 1);
+    let tokens = text
+      .split(/\s+/)
+      .filter(Boolean)
+      .filter(token => !COMPENSATE_COMMAND_FILLER_TOKENS.has(token));
     text = tokens.join(' ').trim();
+    if (!text) return { error: `请填写鱼名，${getCompensateFishUsage()}` };
 
-    const numbers = [...text.matchAll(/(?:^|\s)(\d+(?:\.\d+)?)(?=\s*$|\s)/g)].map(match => Number(match[1]));
-    const sizeProvided = numbers.length >= 2;
-    const length = sizeProvided ? numbers[numbers.length - 2] : null;
-    const weight = sizeProvided ? numbers[numbers.length - 1] : null;
-    if (numbers.length === 1 || numbers.length > 2) {
+    const rarityTokenIndex = tokens.findIndex(token => normalizeRarityKeyword(token));
+    let rarity = rarityTokenIndex >= 0 ? normalizeRarityKeyword(tokens[rarityTokenIndex]) : null;
+    if (rarityTokenIndex >= 0) tokens.splice(rarityTokenIndex, 1);
+
+    const numberIndexes = tokens
+      .map((token, index) => ({ token, index }))
+      .filter(item => /^\d+(?:\.\d+)?$/.test(item.token));
+    if (numberIndexes.length === 1 || numberIndexes.length > 2) {
       return { error: `长度和重量需要同时填写。${getCompensateFishUsage()}` };
     }
+    const sizeProvided = numberIndexes.length === 2;
+    const length = sizeProvided ? Number(numberIndexes[0].token) : null;
+    const weight = sizeProvided ? Number(numberIndexes[1].token) : null;
     if (sizeProvided && (!Number.isFinite(length) || !Number.isFinite(weight) || length < 0 || weight < 0)) {
       return { error: '长度和重量需要是非负数字。' };
     }
 
-    const fishName = (sizeProvided
-      ? text.replace(/(?:^|\s)\d+(?:\.\d+)?(?:\s+\d+(?:\.\d+)?)\s*$/, '')
-      : text
+    const fishName = normalizeFishTemplateName(
+      tokens
+        .filter(token => !/^\d+(?:\.\d+)?$/.test(token))
+        .join(' ')
     ).trim();
     if (!fishName) return { error: `请填写鱼名，${getCompensateFishUsage()}` };
 
+    const candidates = findFishTemplatesByName(fishName);
+    if (!rarity) {
+      if (candidates.length === 1) {
+        rarity = candidates[0].rarity;
+      } else if (candidates.length > 1) {
+        return { error: `鱼名 ${fishName} 存在多个稀有度版本，请补充 rare/common 等稀有度。${getCompensateFishUsage()}` };
+      }
+    }
+    if (!rarity) return { error: `请指定稀有度：common / uncommon / rare / epic / legendary / ？。${getCompensateFishUsage()}` };
+
     const template = (this.fishTypes[rarity] || []).find(item => item.name === fishName);
-    if (!template) return { error: `鱼池里没有 ${rarity} 鱼：${fishName}` };
+    if (!template) {
+      if (candidates.length === 1) {
+        return { error: `${fishName} 实际属于 ${candidates[0].rarity}，不是 ${rarity}。` };
+      }
+      if (candidates.length > 1) {
+        return { error: `${fishName} 目前可用稀有度：${candidates.map(item => item.rarity).join(' / ')}，不是 ${rarity}。` };
+      }
+      return { error: `鱼池里没有 ${rarity} 鱼：${fishName}` };
+    }
 
     const fish = sizeProvided
       ? { name: fishName, rarity, length: Number(length.toFixed(1)), weight: Number(weight.toFixed(2)) }
       : createFishFromTemplate(template, rarity);
     return { targetUserId, fish };
+  }
+
+  parseGiftFishCommand(e) {
+    let text = String(e?.msg || '').replace(/^#(?:赠鱼|赠渔|送鱼)\s*/i, '').trim();
+    const targetUserId = getTargetUserId(e);
+    if (!targetUserId) return { error: '请@群友或输入QQ号，例如：#赠鱼 @某人 1 / #赠鱼 1 @某人 / #赠鱼 @某人 虹鳟2' };
+
+    text = text
+      .replace(/\[CQ:at,qq=\d+\]/g, ' ')
+      .replace(/@\d{5,}\b/g, ' ')
+      .replace(/\b\d{5,}\b/g, match => (match === String(targetUserId) ? ' ' : match))
+      .replace(/[，,;；|/]+/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+    text = text
+      .replace(/^(?:把|给|送给|发给|转给)\s*/g, '')
+      .replace(/\s*(?:给到|送给|发给|转给|给)\s*$/g, '')
+      .trim();
+
+    if (e?.at) {
+      text = text.replace(new RegExp(`\\b${escapeRegExp(String(e.at))}\\b`, 'g'), ' ').replace(/\s+/g, ' ').trim();
+    }
+
+    const body = text
+      .split(/\s+/)
+      .filter(Boolean)
+      .filter(token => !GIFT_COMMAND_FILLER_TOKENS.has(token))
+      .join(' ')
+      .trim();
+
+    if (!body) {
+      return { error: '请写要赠送的鱼缸序号或鱼名，例如：#赠鱼 @某人 3 / #赠鱼 3 @某人 / #赠鱼 @某人 虹鳟2' };
+    }
+
+    return {
+      targetUserId,
+      selector: this.parseTankFishSelector(body)
+    };
   }
 
   getRodByKeyword(keyword) {
@@ -2633,11 +2724,12 @@ export class fishing extends plugin {
   async giftFish(e) {
     const data = this.loadData();
     const { userId, text: userDisplay } = getUserDisplay(e);
-    const targetUserId = getTargetUserId(e);
-    if (!targetUserId) {
-      await this.reply(`${userDisplay}\n请@群友或输入QQ号，例如：#赠渔 @某人 1`);
+    const parsed = this.parseGiftFishCommand(e);
+    if (parsed.error) {
+      await this.reply(`${userDisplay}\n${parsed.error}`);
       return;
     }
+    const { targetUserId, selector } = parsed;
     if (targetUserId === userId) {
       await this.reply(`${userDisplay}\n不能把鱼赠送给自己。`);
       return;
@@ -2651,10 +2743,9 @@ export class fishing extends plugin {
     normalizeUserData(userData);
     const targetData = this.getOrCreateUser(data, targetUserId);
 
-    const [displayIndex] = parseTankIndexes(e.msg, 1);
-    const originalIndex = getOriginalIndexByDisplayIndex(userData, displayIndex);
-    if (!Number.isInteger(originalIndex)) {
-      await this.reply(`${userDisplay}\n鱼缸序号不存在，请先用 #查看鱼缸 确认序号。`);
+    const resolved = this.resolveTankFishSelection(userData, selector);
+    if (resolved.error) {
+      await this.reply(`${userDisplay}\n${resolved.error}`);
       return;
     }
     if (targetData.fishTank.length >= targetData.tankCapacity) {
@@ -2662,12 +2753,12 @@ export class fishing extends plugin {
       return;
     }
 
-    const giftedFish = userData.fishTank[originalIndex];
+    const giftedFish = userData.fishTank[resolved.originalIndex];
     if (isFishLocked(userData, giftedFish)) {
       await this.reply(`${userDisplay}\n${this.getLockedFishMessage(giftedFish, '赠送')}`);
       return;
     }
-    userData.fishTank.splice(originalIndex, 1);
+    userData.fishTank.splice(resolved.originalIndex, 1);
     unlockFishById(userData, giftedFish.fishId);
     giftedFish.giftedFrom = userId;
     giftedFish.giftedAt = getNowTimestamp();
@@ -2676,7 +2767,10 @@ export class fishing extends plugin {
     addFishHistory(targetData, giftedFish);
     saveFishData(data);
     const targetDisplay = getDisplayNameForUser(e, targetUserId);
-    await this.reply(`${userDisplay}\n已将 ${giftedFish.name}（${giftedFish.rarity}）赠送给 ${targetDisplay}。`);
+    await this.reply(
+      `${userDisplay}\n已将 ${giftedFish.name}（${giftedFish.rarity}）赠送给 ${targetDisplay}。` +
+      `\n鱼缸序号 ${resolved.displayIndex + 1} 已转出；对方会在鱼缸里收到这条鱼。`
+    );
   }
 
   async syncAllFishTanks(e) {
