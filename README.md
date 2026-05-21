@@ -29,6 +29,39 @@ git clone --depth=1 https://github.com/Selonite925/Fish-Plugin.git ./plugins/Fis
 
 如果你的环境使用 pnpm 管理依赖，通常不需要额外安装依赖；插件会使用 Yunzai 已有的运行环境和 puppeteer 图片渲染能力。
 
+### 可选的时间增强依赖
+
+插件默认不依赖额外时间库，没装也能正常运行；当前会优先使用原生 `Date`、`Intl.DateTimeFormat` 和框架自带定时任务。
+
+如果你后面想给时间逻辑留扩展位，比如：
+
+- 更统一的时区处理
+- 更方便的时间格式化
+- 后续扩展相对时间、时间区间、活动时段判断
+
+可以额外安装可选依赖 `luxon`。Fish 插件已经内置了自动探测逻辑：
+
+- 装了 `luxon`：自动启用增强时间处理
+- 没装 `luxon`：自动回退到当前原生实现
+
+可选安装方式：
+
+```bash
+cd ./plugins/Fish-plugin
+pnpm install
+```
+
+或者只安装这个时间库：
+
+```bash
+pnpm add luxon
+```
+
+说明：
+
+- 插件目录里的 `package.json` 已把 `luxon` 声明为 `optionalDependencies`
+- 不安装不会报错，也不会影响现有日切、鱼讯、等待时间和时间戳记录
+
 ## 更新
 
 进入机器人根目录，执行：

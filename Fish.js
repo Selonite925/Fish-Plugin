@@ -85,9 +85,10 @@ import {
 } from './lib/tank.js';
 import { buildSellPreview, canSellFish, findShopItem, getFishSellValue, parseSellTarget } from './lib/economy.js';
 import { formatAchievementList, getAchievementCatchRateBonus, getAchievementDailyCastBonus, getCollectionStats, scanAchievements } from './lib/achievements.js';
-import { ensureDailySignal, getTodayKey } from './lib/signals.js';
+import { ensureDailySignal } from './lib/signals.js';
 import { ensureResourceDirs, replyWithPanel } from './lib/panel.js';
 import { findCustomBaitBySource, generateCustomBaitFromText } from './lib/custom-bait.js';
+import { getNowDateKey, getNowTimestamp, getTodayKey, getTimeRuntimeInfo } from './lib/time.js';
 import {
   parseBaitIndex,
   parseLegendaryCraftTarget,
@@ -953,6 +954,7 @@ export class fishing extends plugin {
     this.config = loadConfig();
     ensureGeneratedDir();
     ensureResourceDirs();
+    this.timeRuntime = getTimeRuntimeInfo();
     this.ensureWorldState();
     this.task = {
       name: 'fish-daily-reset',
@@ -982,7 +984,7 @@ export class fishing extends plugin {
       return loadWorldState();
     }
     if (!world.lastDailyResetDate) {
-      world.lastDailyResetDate = getTodayKey();
+      world.lastDailyResetDate = getNowDateKey();
     }
     ensureDailySignal(world, this.fishTypes);
     saveWorldState(world);
@@ -996,7 +998,7 @@ export class fishing extends plugin {
     return data;
   }
 
-  resetDailyState(targetDate = getTodayKey()) {
+  resetDailyState(targetDate = getNowDateKey()) {
     const data = loadFishData();
     for (const userId in data) {
       const userData = data[userId];
@@ -1032,7 +1034,7 @@ export class fishing extends plugin {
   }
 
   ensureDailyResetIfNeeded() {
-    const today = getTodayKey();
+    const today = getNowDateKey();
     const world = loadWorldState();
     const lastReset = String(world.lastDailyResetDate || '').trim();
     if (lastReset === today) return false;
@@ -1569,7 +1571,7 @@ export class fishing extends plugin {
         ownerId: userId,
         ownerName: e.sender?.card || e.sender?.nickname || userId,
         itemName: lostEvent.itemName,
-        timestamp: Date.now()
+        timestamp: getNowTimestamp()
       });
       persistLostItems();
       return {
@@ -1593,7 +1595,7 @@ export class fishing extends plugin {
   }
 
   addCaughtFishToUser(userData, fish) {
-    const fishWithTimestamp = { ...fish, timestamp: Date.now() };
+    const fishWithTimestamp = { ...fish, timestamp: getNowTimestamp() };
     ensureFishId(fishWithTimestamp);
     userData.today.fish.push(fishWithTimestamp);
     userData.today.catches = Number(userData.today.catches || 0) + 1;
@@ -1743,7 +1745,7 @@ export class fishing extends plugin {
 
     return {
       panel: {
-        key: `collection-${Date.now()}`,
+        key: `collection-${getNowTimestamp()}`,
         title: '钓鱼图鉴',
         subtitle: `已收集 ${collectedCount}/${totalSpecies} 种 | 完成度 ${progress}%`,
         sections,
@@ -1898,7 +1900,7 @@ export class fishing extends plugin {
 
     return {
       panel: {
-        key: `fast-fishing-${Date.now()}`,
+        key: `fast-fishing-${getNowTimestamp()}`,
         title: '钓鱼极速版结果',
         subtitle: `一次结算 ${summary.casts} 竿 | 上鱼 ${summary.catches} 条`,
         sections,
@@ -2306,7 +2308,7 @@ export class fishing extends plugin {
     const giftedFish = userData.fishTank[originalIndex];
     userData.fishTank.splice(originalIndex, 1);
     giftedFish.giftedFrom = userId;
-    giftedFish.giftedAt = Date.now();
+    giftedFish.giftedAt = getNowTimestamp();
     removeOwnedFish(userData, giftedFish, { today: true, tank: false });
     targetData.fishTank.push(giftedFish);
     addFishHistory(targetData, giftedFish);
@@ -3148,7 +3150,7 @@ async checkEasterEggCollection(e) {
     userData.craftedLegendaryRods[recipe.id] = {
       sourceFishName: fish.name,
       sourceFishId: fish.fishId || null,
-      craftedAt: Date.now()
+      craftedAt: getNowTimestamp()
     };
 
     const unlocked = this.refreshAchievements(data, userId);
