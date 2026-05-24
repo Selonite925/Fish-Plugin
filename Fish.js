@@ -211,15 +211,16 @@ const MANAGEMENT_HELP_TEXT = MANAGEMENT_HELP_GROUPS.flatMap(group => [
   ''
 ]).slice(0, -1).join('\n');
 
-const EMPTY_HOOK_FAIL_RATE = 0.3;
-const FAIL_EVENT_RATE = 0.30;
-const FAIL_TRASH_RATE = 0.25;
+const EMPTY_HOOK_FAIL_RATE = 0.30;
+const FAIL_LOST_EVENT_RATE = 0.15;
 const FAIL_LOST_ITEM_RATE = 0.10;
-const FAIL_RANDOM_TRASH_RATE = 0.10;
+const FAIL_TRASH_RATE = 0.15;
+const FAIL_RANDOM_EVENT_RATE = 0.30;
 const POST_EMPTY_FAIL_RANGE = 1 - EMPTY_HOOK_FAIL_RATE;
-const FAIL_EVENT_POST_EMPTY_RATE = FAIL_EVENT_RATE / POST_EMPTY_FAIL_RANGE;
-const FAIL_TRASH_POST_EMPTY_RATE = FAIL_TRASH_RATE / POST_EMPTY_FAIL_RANGE;
+const FAIL_LOST_EVENT_POST_EMPTY_RATE = FAIL_LOST_EVENT_RATE / POST_EMPTY_FAIL_RANGE;
 const FAIL_LOST_ITEM_POST_EMPTY_RATE = FAIL_LOST_ITEM_RATE / POST_EMPTY_FAIL_RANGE;
+const FAIL_TRASH_POST_EMPTY_RATE = FAIL_TRASH_RATE / POST_EMPTY_FAIL_RANGE;
+const FAIL_RANDOM_EVENT_POST_EMPTY_RATE = FAIL_RANDOM_EVENT_RATE / POST_EMPTY_FAIL_RANGE;
 const DAILY_TICKET_PURCHASE_LIMIT = 5;
 const FAST_FISHING_CATCH_RATE_PENALTY = 0.08;
 const FISHING_BUSY_MESSAGE = '你正在钓鱼，钓鱼就要戒骄戒躁，请稍后。';
@@ -1981,6 +1982,14 @@ export class fishing extends plugin {
     const persistLostItems = () => {
       if (options.autoSaveLostItems !== false) saveLostItems(lostItems);
     };
+    const buildTrashFailResult = () => {
+      const trashItem = this.trashItems[Math.floor(Math.random() * this.trashItems.length)];
+      const messageTemplate = trashCatchMessages[Math.floor(Math.random() * trashCatchMessages.length)];
+      return {
+        type: 'trash',
+        message: fillMessageTemplate(messageTemplate, { item: trashItem })
+      };
+    };
 
     if (Math.random() < EMPTY_HOOK_FAIL_RATE) {
       return {
@@ -1990,30 +1999,13 @@ export class fishing extends plugin {
     }
 
     const failRoll = Math.random();
+    const groupLostItems = Array.isArray(lostItems[groupId]) ? lostItems[groupId] : [];
+    const lostEventThreshold = FAIL_LOST_EVENT_POST_EMPTY_RATE;
+    const lostItemThreshold = lostEventThreshold + FAIL_LOST_ITEM_POST_EMPTY_RATE;
+    const trashThreshold = lostItemThreshold + FAIL_TRASH_POST_EMPTY_RATE;
+    const randomEventThreshold = trashThreshold + FAIL_RANDOM_EVENT_POST_EMPTY_RATE;
 
-    if (failRoll < FAIL_TRASH_POST_EMPTY_RATE) {
-      const lostItemAvailable = FAIL_LOST_ITEM_POST_EMPTY_RATE > 0 && lostItems[groupId] && lostItems[groupId].length > 0;
-      if (lostItemAvailable && failRoll < FAIL_LOST_ITEM_POST_EMPTY_RATE) {
-        const randomIndex = Math.floor(Math.random() * lostItems[groupId].length);
-        const foundItem = lostItems[groupId][randomIndex];
-        lostItems[groupId].splice(randomIndex, 1);
-        if (lostItems[groupId].length === 0) delete lostItems[groupId];
-        persistLostItems();
-        const messageTemplate = lostItemRecoverMessages[Math.floor(Math.random() * lostItemRecoverMessages.length)];
-        return {
-          type: 'lost_item',
-          message: fillMessageTemplate(messageTemplate, foundItem)
-        };
-      }
-      const trashItem = this.trashItems[Math.floor(Math.random() * this.trashItems.length)];
-      const messageTemplate = trashCatchMessages[Math.floor(Math.random() * trashCatchMessages.length)];
-      return {
-        type: 'trash',
-        message: fillMessageTemplate(messageTemplate, { item: trashItem })
-      };
-    }
-
-    if (failRoll < FAIL_TRASH_POST_EMPTY_RATE + FAIL_EVENT_POST_EMPTY_RATE) {
+    if (failRoll < lostEventThreshold) {
       const lostEvent = this.lostItemEvents[Math.floor(Math.random() * this.lostItemEvents.length)];
       if (!lostItems[groupId]) lostItems[groupId] = [];
       lostItems[groupId].push({
@@ -2029,49 +2021,59 @@ export class fishing extends plugin {
       };
     }
 
+    if (failRoll < lostItemThreshold) {
+      if (!groupLostItems.length) {
+        return buildTrashFailResult();
+      }
+      const randomIndex = Math.floor(Math.random() * groupLostItems.length);
+      const foundItem = groupLostItems[randomIndex];
+      groupLostItems.splice(randomIndex, 1);
+      if (groupLostItems.length === 0) delete lostItems[groupId];
+      persistLostItems();
+      const messageTemplate = lostItemRecoverMessages[Math.floor(Math.random() * lostItemRecoverMessages.length)];
+      return {
+        type: 'lost_item',
+        message: fillMessageTemplate(messageTemplate, foundItem)
+      };
+    }
+
+    if (failRoll < trashThreshold) {
+      return buildTrashFailResult();
+    }
+
+    if (failRoll < randomEventThreshold) {
+      return {
+        type: 'random_event',
+        message: this.randomEvents[Math.floor(Math.random() * this.randomEvents.length)]
+      };
+    }
+
     return {
       type: 'random_event',
       message: this.randomEvents[Math.floor(Math.random() * this.randomEvents.length)]
     };
   }
 
-  applyXianyuTrashRecycle(data, groupId, catcherUserId, e) {
-    const normalizedGroupId = String(groupId || '').trim();
-    if (!normalizedGroupId) return null;
-
-    const candidates = Object.entries(data)
-      .filter(([ownerUserId, ownerData]) => {
-        if (String(ownerUserId) === String(catcherUserId)) return false;
-        normalizeUserData(ownerData);
-        if (getEasterEggEffects(ownerData).activeName !== XIANYU_EASTER_EGG_NAME) return false;
-        const displayName = getDisplayNameForUser(e, ownerUserId);
-        return Boolean(displayName) && displayName !== String(ownerUserId);
-      })
-      .map(([ownerUserId, ownerData]) => ({
-        ownerUserId,
-        ownerData,
-        displayName: getDisplayNameForUser(e, ownerUserId) || ownerUserId
-      }))
-      .sort((left, right) => String(left.ownerUserId).localeCompare(String(right.ownerUserId)));
-
-    if (!candidates.length) return null;
-
-    const receiver = candidates[Math.floor(Math.random() * candidates.length)];
+  applyXianyuTrashRecycle(data, catcherUserId, e) {
+    const catcherData = data?.[catcherUserId];
+    if (!catcherData) return null;
+    normalizeUserData(catcherData);
+    if (getEasterEggEffects(catcherData).activeName !== XIANYU_EASTER_EGG_NAME) return null;
     const reward = rollXianyuRecycleReward();
-    receiver.ownerData.coins = Number(receiver.ownerData.coins || 0) + reward;
+    catcherData.coins = Number(catcherData.coins || 0) + reward;
 
     return {
-      ownerUserId: receiver.ownerUserId,
-      ownerDisplay: receiver.displayName,
+      ownerUserId: catcherUserId,
+      ownerDisplay: getDisplayNameForUser(e, catcherUserId) || catcherUserId,
       reward
     };
   }
 
-  applyTrashRecycleMessage(data, failResult, catcherUserId, groupId, e) {
+  applyTrashRecycleMessage(data, failResult, catcherUserId, e) {
     if (!failResult || failResult.type !== 'trash') return null;
-    const recycleResult = this.applyXianyuTrashRecycle(data, groupId, catcherUserId, e);
+    const recycleResult = this.applyXianyuTrashRecycle(data, catcherUserId, e);
     if (!recycleResult) return null;
-    failResult.message += `\n[闲鱼回收] ${recycleResult.ownerDisplay} 的闲鱼顺手把这件杂物回收了，到账 ${recycleResult.reward} 鱼币。`;
+    failResult.message += `\n[闲鱼回收] 你装备的闲鱼顺手把这件杂物回收了，到账 ${recycleResult.reward} 鱼币。`;
     return recycleResult;
   }
 
@@ -2453,7 +2455,7 @@ export class fishing extends plugin {
         if (rescuedCatch) summary.rescued += 1;
 
         if (missedCatch && !rescuedCatch) {
-          this.applyTrashRecycleMessage(data, failResult, userId, e.group_id, e);
+          this.applyTrashRecycleMessage(data, failResult, userId, e);
           summary.misses += 1;
           summary.failTypes[failResult.type] = (summary.failTypes[failResult.type] || 0) + 1;
           recordEmptyCast(userData);
@@ -2569,7 +2571,7 @@ export class fishing extends plugin {
         await this.reply(`${userDisplay}\n${rescuedCatchFakeFailMessage}`);
       }
       if (missedCatch && !rescuedCatch) {
-        this.applyTrashRecycleMessage(settleData, failResult, userId, e.group_id, e);
+        this.applyTrashRecycleMessage(settleData, failResult, userId, e);
         recordEmptyCast(settleUser);
         const unlocked = scanAchievements(settleUser, this.fishTypes);
         settleUser.achievementCatchRateBonus = getAchievementCatchRateBonus(settleUser);
