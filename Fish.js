@@ -120,6 +120,7 @@ const SELF_UPDATE_PRESERVE_PATHS = [
 let fishPluginUpdating = false;
 const GIFT_COMMAND_FILLER_TOKENS = new Set(['给', '给到', '送给', '发给', '转给', '把']);
 const COMPENSATE_COMMAND_FILLER_TOKENS = new Set(['给', '给到', '补给', '补到', '发给', '来条', '来个', '来一条']);
+const XIANYU_EASTER_EGG_NAME = '闲鱼';
 
 const HELP_GROUPS = [
   {
@@ -926,6 +927,12 @@ function findFishTemplatesByName(name = '') {
     .filter(([, list]) => Array.isArray(list) && list.some(item => item.name === normalized))
     .map(([rarity]) => ({ rarity, template: fishTemplateByName?.[normalized] || null }))
     .filter(item => item.template);
+}
+
+function rollXianyuRecycleReward() {
+  return Math.random() < 0.01
+    ? 200
+    : Math.floor(Math.random() * 41) + 10;
 }
 
 function applyFishBodyBuffs(fish, modifiers = {}) {
@@ -2011,6 +2018,46 @@ export class fishing extends plugin {
     };
   }
 
+  applyXianyuTrashRecycle(data, groupId, catcherUserId, e) {
+    const normalizedGroupId = String(groupId || '').trim();
+    if (!normalizedGroupId) return null;
+
+    const candidates = Object.entries(data)
+      .filter(([ownerUserId, ownerData]) => {
+        if (String(ownerUserId) === String(catcherUserId)) return false;
+        normalizeUserData(ownerData);
+        if (getEasterEggEffects(ownerData).activeName !== XIANYU_EASTER_EGG_NAME) return false;
+        const displayName = getDisplayNameForUser(e, ownerUserId);
+        return Boolean(displayName) && displayName !== String(ownerUserId);
+      })
+      .map(([ownerUserId, ownerData]) => ({
+        ownerUserId,
+        ownerData,
+        displayName: getDisplayNameForUser(e, ownerUserId) || ownerUserId
+      }))
+      .sort((left, right) => String(left.ownerUserId).localeCompare(String(right.ownerUserId)));
+
+    if (!candidates.length) return null;
+
+    const receiver = candidates[Math.floor(Math.random() * candidates.length)];
+    const reward = rollXianyuRecycleReward();
+    receiver.ownerData.coins = Number(receiver.ownerData.coins || 0) + reward;
+
+    return {
+      ownerUserId: receiver.ownerUserId,
+      ownerDisplay: receiver.displayName,
+      reward
+    };
+  }
+
+  applyTrashRecycleMessage(data, failResult, catcherUserId, groupId, e) {
+    if (!failResult || failResult.type !== 'trash') return null;
+    const recycleResult = this.applyXianyuTrashRecycle(data, groupId, catcherUserId, e);
+    if (!recycleResult) return null;
+    failResult.message += `\n[闲鱼回收] ${recycleResult.ownerDisplay} 的闲鱼顺手把这件杂物回收了，到账 ${recycleResult.reward} 鱼币。`;
+    return recycleResult;
+  }
+
   saveCaughtFish(userId, fish) {
     const data = this.loadData();
     const userData = this.getOrCreateUser(data, userId);
@@ -2389,6 +2436,7 @@ export class fishing extends plugin {
         if (rescuedCatch) summary.rescued += 1;
 
         if (missedCatch && !rescuedCatch) {
+          this.applyTrashRecycleMessage(data, failResult, userId, e.group_id, e);
           summary.misses += 1;
           summary.failTypes[failResult.type] = (summary.failTypes[failResult.type] || 0) + 1;
           recordEmptyCast(userData);
@@ -2504,6 +2552,7 @@ export class fishing extends plugin {
         await this.reply(`${userDisplay}\n${rescuedCatchFakeFailMessage}`);
       }
       if (missedCatch && !rescuedCatch) {
+        this.applyTrashRecycleMessage(settleData, failResult, userId, e.group_id, e);
         recordEmptyCast(settleUser);
         const unlocked = scanAchievements(settleUser, this.fishTypes);
         settleUser.achievementCatchRateBonus = getAchievementCatchRateBonus(settleUser);
