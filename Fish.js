@@ -28,7 +28,7 @@ import {
   SHOP_ITEMS,
   TANK_UPGRADE_EXTRA_CASTS
 } from './lib/constants.js';
-import { defaultLegendaryMessage, defaultMysteryMessage, emptyHookMessages, epicMessages, failProtectionFakeFailMessages, legendaryMessages, mysteryMessages } from './lib/messages.js';
+import { defaultLegendaryMessage, defaultMysteryMessage, emptyHookMessages, epicMessages, failProtectionFakeFailMessages, legendaryMessages, lostItemRecoverMessages, mysteryMessages, trashCatchMessages } from './lib/messages.js';
 import {
   ensureGeneratedDir,
   loadBaitData,
@@ -212,6 +212,14 @@ const MANAGEMENT_HELP_TEXT = MANAGEMENT_HELP_GROUPS.flatMap(group => [
 ]).slice(0, -1).join('\n');
 
 const EMPTY_HOOK_FAIL_RATE = 0.3;
+const FAIL_EVENT_RATE = 0.30;
+const FAIL_TRASH_RATE = 0.25;
+const FAIL_LOST_ITEM_RATE = 0.10;
+const FAIL_RANDOM_TRASH_RATE = 0.10;
+const POST_EMPTY_FAIL_RANGE = 1 - EMPTY_HOOK_FAIL_RATE;
+const FAIL_EVENT_POST_EMPTY_RATE = FAIL_EVENT_RATE / POST_EMPTY_FAIL_RANGE;
+const FAIL_TRASH_POST_EMPTY_RATE = FAIL_TRASH_RATE / POST_EMPTY_FAIL_RANGE;
+const FAIL_LOST_ITEM_POST_EMPTY_RATE = FAIL_LOST_ITEM_RATE / POST_EMPTY_FAIL_RANGE;
 const DAILY_TICKET_PURCHASE_LIMIT = 5;
 const FAST_FISHING_CATCH_RATE_PENALTY = 0.08;
 const FISHING_BUSY_MESSAGE = '你正在钓鱼，钓鱼就要戒骄戒躁，请稍后。';
@@ -220,9 +228,9 @@ const activeFishingBusyNotified = new Set();
 const FAIL_RESULT_LABELS = {
   empty_hook: '空钩',
   lost_item: '捞回失物',
-  trash: '杂物',
-  lost_event: '掉落事件',
-  random_event: '空军事件'
+  trash: '钓到垃圾',
+  lost_event: '物品落水',
+  random_event: '普通失手'
 };
 const COLLECTION_RARITY_THEMES = {
   common: {
@@ -932,7 +940,11 @@ function findFishTemplatesByName(name = '') {
 function rollXianyuRecycleReward() {
   return Math.random() < 0.01
     ? 200
-    : Math.floor(Math.random() * 41) + 10;
+    : Math.floor(Math.random() * 16) + 5;
+}
+
+function fillMessageTemplate(template = '', data = {}) {
+  return String(template || '').replace(/\{(\w+)\}/g, (_, key) => String(data?.[key] ?? ''));
 }
 
 function applyFishBodyBuffs(fish, modifiers = {}) {
@@ -1977,26 +1989,31 @@ export class fishing extends plugin {
       };
     }
 
-    if (Math.random() < 0.2 && lostItems[groupId] && lostItems[groupId].length > 0) {
-      const randomIndex = Math.floor(Math.random() * lostItems[groupId].length);
-      const foundItem = lostItems[groupId][randomIndex];
-      lostItems[groupId].splice(randomIndex, 1);
-      if (lostItems[groupId].length === 0) delete lostItems[groupId];
-      persistLostItems();
-      return {
-        type: 'lost_item',
-        message: `你捞到了一个 ${foundItem.itemName}。\n这好像是 ${foundItem.ownerName}(${foundItem.ownerId}) 之前掉进水里的。`
-      };
-    }
+    const failRoll = Math.random();
 
-    if (Math.random() < 0.4) {
+    if (failRoll < FAIL_TRASH_POST_EMPTY_RATE) {
+      const lostItemAvailable = FAIL_LOST_ITEM_POST_EMPTY_RATE > 0 && lostItems[groupId] && lostItems[groupId].length > 0;
+      if (lostItemAvailable && failRoll < FAIL_LOST_ITEM_POST_EMPTY_RATE) {
+        const randomIndex = Math.floor(Math.random() * lostItems[groupId].length);
+        const foundItem = lostItems[groupId][randomIndex];
+        lostItems[groupId].splice(randomIndex, 1);
+        if (lostItems[groupId].length === 0) delete lostItems[groupId];
+        persistLostItems();
+        const messageTemplate = lostItemRecoverMessages[Math.floor(Math.random() * lostItemRecoverMessages.length)];
+        return {
+          type: 'lost_item',
+          message: fillMessageTemplate(messageTemplate, foundItem)
+        };
+      }
+      const trashItem = this.trashItems[Math.floor(Math.random() * this.trashItems.length)];
+      const messageTemplate = trashCatchMessages[Math.floor(Math.random() * trashCatchMessages.length)];
       return {
         type: 'trash',
-        message: `很遗憾，你钓到了一件 ${this.trashItems[Math.floor(Math.random() * this.trashItems.length)]}。`
+        message: fillMessageTemplate(messageTemplate, { item: trashItem })
       };
     }
 
-    if (Math.random() < 0.1) {
+    if (failRoll < FAIL_TRASH_POST_EMPTY_RATE + FAIL_EVENT_POST_EMPTY_RATE) {
       const lostEvent = this.lostItemEvents[Math.floor(Math.random() * this.lostItemEvents.length)];
       if (!lostItems[groupId]) lostItems[groupId] = [];
       lostItems[groupId].push({
