@@ -222,6 +222,7 @@ const FAIL_LOST_EVENT_RATE = 0.15;
 const FAIL_LOST_ITEM_RATE = 0.10;
 const FAIL_TRASH_RATE = 0.15;
 const FAIL_RANDOM_EVENT_RATE = 0.30;
+const XIANYU_RANDOM_FAIL_TO_TRASH_RATE = 0.05;
 const POST_EMPTY_FAIL_RANGE = 1 - EMPTY_HOOK_FAIL_RATE;
 const FAIL_LOST_EVENT_POST_EMPTY_RATE = FAIL_LOST_EVENT_RATE / POST_EMPTY_FAIL_RANGE;
 const FAIL_LOST_ITEM_POST_EMPTY_RATE = FAIL_LOST_ITEM_RATE / POST_EMPTY_FAIL_RANGE;
@@ -239,6 +240,10 @@ const FAIL_RESULT_LABELS = {
   lost_event: '物品落水',
   random_event: '普通失手'
 };
+
+function hasActiveXianyuEffect(userData) {
+  return getEasterEggEffects(userData).activeName === XIANYU_EASTER_EGG_NAME;
+}
 const COLLECTION_RARITY_THEMES = {
   common: {
     accent: '#16a34a',
@@ -2320,7 +2325,8 @@ export class fishing extends plugin {
     const lostEventThreshold = FAIL_LOST_EVENT_POST_EMPTY_RATE;
     const lostItemThreshold = lostEventThreshold + FAIL_LOST_ITEM_POST_EMPTY_RATE;
     const trashThreshold = lostItemThreshold + FAIL_TRASH_POST_EMPTY_RATE;
-    const randomEventThreshold = trashThreshold + FAIL_RANDOM_EVENT_POST_EMPTY_RATE;
+    const xianyuTrashThreshold = trashThreshold + (hasActiveXianyuEffect(options.userData) ? XIANYU_RANDOM_FAIL_TO_TRASH_RATE / POST_EMPTY_FAIL_RANGE : 0);
+    const randomEventThreshold = xianyuTrashThreshold + FAIL_RANDOM_EVENT_POST_EMPTY_RATE;
 
     if (failRoll < lostEventThreshold) {
       const lostEvent = this.lostItemEvents[Math.floor(Math.random() * this.lostItemEvents.length)];
@@ -2359,6 +2365,12 @@ export class fishing extends plugin {
       return buildTrashFailResult();
     }
 
+    if (failRoll < xianyuTrashThreshold) {
+      const result = buildTrashFailResult();
+      result.xianyuConvertedFromRandomFail = true;
+      return result;
+    }
+
     if (failRoll < randomEventThreshold) {
       return {
         type: 'random_event',
@@ -2376,7 +2388,7 @@ export class fishing extends plugin {
     const catcherData = data?.[catcherUserId];
     if (!catcherData) return null;
     normalizeUserData(catcherData);
-    if (getEasterEggEffects(catcherData).activeName !== XIANYU_EASTER_EGG_NAME) return null;
+    if (!hasActiveXianyuEffect(catcherData)) return null;
     catcherData.coins = Number(catcherData.coins || 0) + reward;
 
     return {
@@ -2802,7 +2814,7 @@ export class fishing extends plugin {
         const catchRate = Math.max(0.05, getCatchRate(userData, manualBait.bonus + shopBait.bonus + hiddenPityBonus, rod.catchRateBonus || 0) - FAST_FISHING_CATCH_RATE_PENALTY);
         const failRescueChance = Math.max(0, Math.min(0.45, Number(rod.failProtection || 0) + easterEggEffect.failProtection));
         const missedCatch = Math.random() >= catchRate;
-        const failResult = missedCatch ? await this.getRandomFailResult(userId, e.group_id, e, null, { lostItemsData: lostItems, autoSaveLostItems: false }) : null;
+        const failResult = missedCatch ? await this.getRandomFailResult(userId, e.group_id, e, null, { lostItemsData: lostItems, autoSaveLostItems: false, userData }) : null;
         const rescuedCatch = failResult?.type === 'empty_hook' && Math.random() < failRescueChance;
 
         if (rescuedCatch) summary.rescued += 1;
@@ -2921,7 +2933,7 @@ export class fishing extends plugin {
       const easterEggMsg = easterEggEffect.descriptions.length ? `\n[彩蛋加成] ${easterEggEffect.descriptions.join('；')}` : '';
       const failRescueChance = Math.max(0, Math.min(0.45, Number(rod.failProtection || 0) + easterEggEffect.failProtection));
       const missedCatch = Math.random() >= catchRate;
-      const failResult = missedCatch ? await this.getRandomFailResult(userId, e.group_id, e) : null;
+      const failResult = missedCatch ? await this.getRandomFailResult(userId, e.group_id, e, null, { userData: settleUser }) : null;
       const rescuedCatch = failResult?.type === 'empty_hook' && Math.random() < failRescueChance;
       const rescuedCatchFakeFailMessage = rescuedCatch
         ? failProtectionFakeFailMessages[Math.floor(Math.random() * failProtectionFakeFailMessages.length)]
