@@ -390,7 +390,28 @@ function getBaitPackText(bait) {
   const packSize = Math.max(1, Number(bait?.packSize || 1));
   const unitPrice = Number(bait?.price || 0);
   const costPerUse = unitPrice / packSize;
+  if (bait?.lotteryOnly) return `祈愿限定，1包${packSize}份，库存按份消耗`;
   return `${unitPrice}鱼币/包，1包${packSize}份，约${costPerUse.toFixed(1)}鱼币/次`;
+}
+
+function getBaitAcquireText(bait) {
+  const packSize = Math.max(1, Number(bait?.packSize || 1));
+  if (bait?.isDefault) return '售价：不可购买';
+  if (bait?.lotteryOnly) return `获取：祈愿限定，1包${packSize}份，库存按份消耗`;
+  return `售价：${Number(bait?.price || 0)}鱼币 / 包，1包${packSize}份`;
+}
+
+function getLotteryRewardMetaText(reward) {
+  if (reward?.type !== 'bait') return '';
+  const bait = BAIT_CATALOG[reward.id];
+  if (!bait) return '';
+  const packSize = Math.max(1, Math.floor(Number(bait.packSize || 1)));
+  const packCount = Math.max(0, Math.floor(Number(reward.packCount || 0)));
+  if (packCount > 0) {
+    return `${packCount}包，每包${packSize}份，获得${packCount * packSize}份`;
+  }
+  const count = Math.max(1, Math.floor(Number(reward.count || 1)));
+  return `${count}份，库存按份消耗`;
 }
 
 function mergeRarityBias(...biasList) {
@@ -3869,13 +3890,14 @@ async checkEasterEggCollection(e) {
         group: '愿品明细',
         list: result.results.map((item, index) => {
           const reward = item.reward || {};
+          const baitMeta = getLotteryRewardMetaText(reward);
           return {
             badge: item.isGrandPrize ? (item.pityHit ? '金线' : '限定') : `愿${index + 1}`,
             title: reward.title || reward.type,
             desc: reward.desc || '已发放到背包',
             meta: item.isGrandPrize
               ? `限定愿品估值 ${Number(reward.value || 0)} 鱼币，不计入普通回报`
-              : reward.duplicate ? `重复补偿：${reward.compensationCoins} 鱼币` : `估值 ${Number(reward.value || 0)} 鱼币`,
+              : reward.duplicate ? `重复补偿：${reward.compensationCoins} 鱼币` : `${baitMeta ? `${baitMeta} | ` : ''}估值 ${Number(reward.value || 0)} 鱼币`,
             tone: item.isGrandPrize ? 'legendary' : reward.type === 'coins' ? 'gold' : reward.type === 'bait' ? 'sky' : reward.type === 'lottery_free_draw' ? 'active' : 'positive'
           };
         })
@@ -3917,11 +3939,12 @@ async checkEasterEggCollection(e) {
       : 0;
     const regularRewards = pool.regularRewards.map(reward => {
       const probability = getRegularProbability(reward);
+      const baitMeta = getLotteryRewardMetaText(reward);
       return {
         badge: reward.type === 'coins' ? '币' : reward.type === 'bait' ? '饵' : reward.type === 'ticket' ? '券' : reward.type === 'lottery_free_draw' ? '愿' : '品',
         title: reward.title || reward.id || reward.type,
         desc: reward.desc || '普通愿品',
-        meta: `概率 ${(probability * 100).toFixed(1)}% | 估值 ${Number(reward.value || 0)}鱼币`,
+        meta: `概率 ${(probability * 100).toFixed(1)}% | ${baitMeta ? `${baitMeta} | ` : ''}估值 ${Number(reward.value || 0)}鱼币`,
         tone: reward.type === 'coins' ? 'gold' : reward.type === 'bait' ? 'sky' : reward.type === 'lottery_free_draw' ? 'active' : 'positive'
       };
     });
@@ -3966,7 +3989,7 @@ async checkEasterEggCollection(e) {
       `普通愿品期望：${expected.expectedValue.toFixed(1)}鱼币/次，约 ${(expected.expectedRate * 100).toFixed(1)}%，不计限定愿品价值`,
       `金线进度：${Number(userData.lotteryPity || 0)}/${pool.config.grandPrize.pityDraws} | 免费祈愿：${Number(userData.lotteryFreeDraws || 0)}`,
       `限定愿品：${pool.grandPlugin?.name || '未挂载'}（${grandStatusText}）`,
-      ...pool.regularRewards.map(item => `${item.title || item.id || item.type} | 概率 ${(getRegularProbability(item) * 100).toFixed(1)}% | 估值 ${Number(item.value || 0)}鱼币`)
+      ...pool.regularRewards.map(item => `${item.title || item.id || item.type} | 概率 ${(getRegularProbability(item) * 100).toFixed(1)}% | ${getLotteryRewardMetaText(item) ? `${getLotteryRewardMetaText(item)} | ` : ''}估值 ${Number(item.value || 0)}鱼币`)
     ].join('\n');
     await replyWithPanel(this, {
       key: `fish-lottery-pool-${e.user_id}`,
@@ -4766,7 +4789,7 @@ async checkEasterEggCollection(e) {
     const sections = [
       `鱼饵：${bait.name}`,
       `状态：${bait.isDefault ? '默认鱼饵' : inventory > 0 ? `持有 ${inventory} 份` : '未持有'}${isEquipped ? ' | 当前装备' : ''}`,
-      bait.isDefault ? '售价：不可购买' : `售价：${bait.price}鱼币 / ${Math.max(1, Number(bait.packSize || 1))}份`,
+      getBaitAcquireText(bait),
       sourceText,
       `手感描述：${bait.description}`,
       { type: 'html-block', html: buildBaitTraitHtml(bait) }
@@ -4775,7 +4798,7 @@ async checkEasterEggCollection(e) {
       '鱼饵详情',
       `鱼饵：${bait.name}`,
       `状态：${bait.isDefault ? '默认鱼饵' : inventory > 0 ? `持有 ${inventory} 份` : '未持有'}${isEquipped ? ' | 当前装备' : ''}`,
-      bait.isDefault ? '售价：不可购买' : `售价：${bait.price}鱼币 / ${Math.max(1, Number(bait.packSize || 1))}份`,
+      getBaitAcquireText(bait),
       sourceText,
       `手感描述：${bait.description}`,
       ...traitLines
