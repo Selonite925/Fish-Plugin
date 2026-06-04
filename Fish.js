@@ -3860,7 +3860,7 @@ async checkEasterEggCollection(e) {
             badge: '限定',
             title: grandCount > 0 ? `相遇 ${grandCount} 次` : '擦肩而过',
             desc: result.grandPlugin?.name || '限定愿品暂未挂载',
-            meta: `${grandStatus} | 普通奖估值约 ${valueTotal} 鱼币`,
+            meta: `${grandStatus} | 普通愿品估值约 ${valueTotal} 鱼币`,
             tone: grandCount > 0 ? 'legendary' : 'neutral'
           }
         ]
