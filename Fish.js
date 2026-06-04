@@ -944,6 +944,10 @@ function rollXianyuRecycleReward() {
     : Math.floor(Math.random() * 16) + 5;
 }
 
+function rollXianyuLostItemRecycleReward() {
+  return Math.floor(Math.random() * 11) + 20;
+}
+
 function fillMessageTemplate(template = '', data = {}) {
   return String(template || '').replace(/\{(\w+)\}/g, (_, key) => String(data?.[key] ?? ''));
 }
@@ -2033,6 +2037,7 @@ export class fishing extends plugin {
       const messageTemplate = lostItemRecoverMessages[Math.floor(Math.random() * lostItemRecoverMessages.length)];
       return {
         type: 'lost_item',
+        itemName: foundItem.itemName,
         message: fillMessageTemplate(messageTemplate, foundItem)
       };
     }
@@ -2054,12 +2059,11 @@ export class fishing extends plugin {
     };
   }
 
-  applyXianyuTrashRecycle(data, catcherUserId, e) {
+  applyXianyuRecycle(data, catcherUserId, e, reward) {
     const catcherData = data?.[catcherUserId];
     if (!catcherData) return null;
     normalizeUserData(catcherData);
     if (getEasterEggEffects(catcherData).activeName !== XIANYU_EASTER_EGG_NAME) return null;
-    const reward = rollXianyuRecycleReward();
     catcherData.coins = Number(catcherData.coins || 0) + reward;
 
     return {
@@ -2069,11 +2073,17 @@ export class fishing extends plugin {
     };
   }
 
-  applyTrashRecycleMessage(data, failResult, catcherUserId, e) {
-    if (!failResult || failResult.type !== 'trash') return null;
-    const recycleResult = this.applyXianyuTrashRecycle(data, catcherUserId, e);
+  applyXianyuFailRecycleMessage(data, failResult, catcherUserId, e) {
+    if (!failResult || !['trash', 'lost_item'].includes(failResult.type)) return null;
+    const reward = failResult.type === 'lost_item'
+      ? rollXianyuLostItemRecycleReward()
+      : rollXianyuRecycleReward();
+    const recycleResult = this.applyXianyuRecycle(data, catcherUserId, e, reward);
     if (!recycleResult) return null;
-    failResult.message += `\n[闲鱼回收] 你装备的闲鱼顺手把这件杂物回收了，到账 ${recycleResult.reward} 鱼币。`;
+    const targetText = failResult.type === 'lost_item'
+      ? `捞到的${failResult.itemName || '失物'}`
+      : '这件杂物';
+    failResult.message += `\n[闲鱼回收] 你装备的闲鱼顺手把${targetText}回收了，到账 ${recycleResult.reward} 鱼币。`;
     return recycleResult;
   }
 
@@ -2455,7 +2465,7 @@ export class fishing extends plugin {
         if (rescuedCatch) summary.rescued += 1;
 
         if (missedCatch && !rescuedCatch) {
-          this.applyTrashRecycleMessage(data, failResult, userId, e);
+          this.applyXianyuFailRecycleMessage(data, failResult, userId, e);
           summary.misses += 1;
           summary.failTypes[failResult.type] = (summary.failTypes[failResult.type] || 0) + 1;
           recordEmptyCast(userData);
@@ -2571,7 +2581,7 @@ export class fishing extends plugin {
         await this.reply(`${userDisplay}\n${rescuedCatchFakeFailMessage}`);
       }
       if (missedCatch && !rescuedCatch) {
-        this.applyTrashRecycleMessage(settleData, failResult, userId, e);
+        this.applyXianyuFailRecycleMessage(settleData, failResult, userId, e);
         recordEmptyCast(settleUser);
         const unlocked = scanAchievements(settleUser, this.fishTypes);
         settleUser.achievementCatchRateBonus = getAchievementCatchRateBonus(settleUser);
