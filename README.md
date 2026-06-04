@@ -73,6 +73,17 @@ git -C ./plugins/Fish-plugin pull
 
 更新后重启机器人。
 
+如果服务器直连 GitHub 不稳定，主人可以在机器人内为 `#钓鱼更新` 设置代理：
+
+```text
+#钓鱼更新代理
+#钓鱼更新代理 https://gh-proxy.com/
+#钓鱼更新代理 https://gh-proxy.com/{url}
+#钓鱼更新代理关闭
+```
+
+未设置代理时仍然使用 GitHub 直连；设置后 `#钓鱼更新` 的 fetch 和安全重装都会通过代理地址拉取。
+
 ## 卸载
 
 停止机器人后删除插件目录：

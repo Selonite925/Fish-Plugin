@@ -108,6 +108,7 @@ import {
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const FISH_PLUGIN_REPO = 'https://github.com/Selonite925/Fish-Plugin.git';
+const FISH_PLUGIN_UPDATE_PROXY_CONFIG_KEY = 'updateProxy';
 const SELF_UPDATE_BACKUP_DIR = '.self-update-backups';
 const USER_BACKUP_DIR = 'user_backup';
 const USER_BACKUP_FILES = [
@@ -182,7 +183,8 @@ const MANAGEMENT_HELP_GROUPS = [
       { title: '#鱼币补偿 全体 *100', desc: '给已有数据的全部玩家统一补发鱼币。' },
       { title: '#补鱼 @某人 鳗鱼 / #补鱼 rare 鳗鱼 @某人 80 3.5', desc: '直接补发指定鱼，目标、稀有度、鱼名顺序更自由，长度和重量可省略。' },
       { title: '#强制刷新钓鱼日', desc: '强制刷新全服当天钓鱼状态。' },
-      { title: '#钓鱼更新', desc: '从远端仓库拉取 Fish-plugin 最新版本并重启。' }
+      { title: '#钓鱼更新', desc: '从远端仓库拉取 Fish-plugin 最新版本并重启。' },
+      { title: '#钓鱼更新代理 https://gh-proxy.com/', desc: '设置 GitHub 更新代理；#钓鱼更新代理关闭 可恢复直连。' }
     ]
   },
   {
@@ -1192,6 +1194,7 @@ export class fishing extends plugin {
         { reg: '^#补鱼.*$', fnc: 'compensateFish' },
         { reg: '^#强制刷新钓鱼日$', fnc: 'forceRefreshFishingDay' },
         { reg: '^#钓鱼更新$', fnc: 'updateFishPlugin' },
+        { reg: '^#钓鱼更新代理(?:\\s*.*)?$', fnc: 'setFishUpdateProxy' },
         { reg: '^#封竿$', fnc: 'sealFishingGroup' },
         { reg: '^#解封竿$', fnc: 'unsealFishingGroup' }
       ]
@@ -1342,6 +1345,33 @@ export class fishing extends plugin {
     return Bot.exec(['git', '-C', __dirname, ...args], options);
   }
 
+  normalizeUpdateProxyInput(input = '') {
+    const text = String(input || '').trim();
+    if (!text) return '';
+    if (/^(关闭|关|off|disable|disabled|none|null|clear|reset)$/i.test(text)) return '';
+    if (!/^https?:\/\//i.test(text)) return null;
+    return text.replace(/\s+/g, '').replace(/\/+$/, '/');
+  }
+
+  getFishUpdateProxy() {
+    const proxy = this.config?.[FISH_PLUGIN_UPDATE_PROXY_CONFIG_KEY];
+    return typeof proxy === 'string' ? proxy.trim() : '';
+  }
+
+  getFishUpdateRepoUrl(repoUrl = FISH_PLUGIN_REPO) {
+    const proxy = this.getFishUpdateProxy();
+    if (!proxy) return repoUrl;
+    if (proxy.includes('{url}')) return proxy.replaceAll('{url}', repoUrl);
+    if (proxy.includes('{repo}')) return proxy.replaceAll('{repo}', repoUrl);
+    if (/github\.com[/:].*Fish-Plugin(?:\.git)?/i.test(proxy)) return proxy.replace(/\/+$/, '');
+    return `${proxy.replace(/\/+$/, '')}/${repoUrl}`;
+  }
+
+  getFishUpdateProxyText() {
+    const proxy = this.getFishUpdateProxy();
+    return proxy ? `当前更新代理：${proxy}` : '当前更新代理：未启用，使用 GitHub 直连。';
+  }
+
   async getCurrentBranch(repoDir = __dirname) {
     const ret = await Bot.exec(['git', '-C', repoDir, 'branch', '--show-current'], { quiet: true });
     if (ret.error) return '';
@@ -1362,8 +1392,19 @@ export class fishing extends plugin {
     return `${remote}/${branch}`;
   }
 
+  async getDefaultRemoteName(repoDir = __dirname) {
+    const branch = await this.getCurrentBranch(repoDir);
+    const trackingRemote = await this.getRemoteNameForBranch(repoDir, branch);
+    if (trackingRemote) return trackingRemote;
+    const ret = await Bot.exec(['git', '-C', repoDir, 'remote'], { quiet: true });
+    if (ret.error) return 'origin';
+    return ret.stdout.split(/\r?\n/).map(item => item.trim()).filter(Boolean)[0] || 'origin';
+  }
+
   async fetchRemote(repoDir = __dirname) {
-    return Bot.exec(['git', '-C', repoDir, 'fetch', '--all', '--prune'], { quiet: true });
+    const remote = await this.getDefaultRemoteName(repoDir);
+    const repoUrl = this.getFishUpdateRepoUrl();
+    return Bot.exec(['git', '-C', repoDir, '-c', `remote.${remote}.url=${repoUrl}`, 'fetch', remote, '--prune'], { quiet: true });
   }
 
   async getRemoteHead(repoDir = __dirname, short = true) {
@@ -1479,7 +1520,8 @@ export class fishing extends plugin {
   async reinstallFishPluginFromGithub() {
     const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'fish-plugin-'));
     try {
-      const cloneRet = await Bot.exec(['git', 'clone', '--depth=1', FISH_PLUGIN_REPO, tempDir]);
+      const repoUrl = this.getFishUpdateRepoUrl();
+      const cloneRet = await Bot.exec(['git', 'clone', '--depth=1', repoUrl, tempDir]);
       if (cloneRet.error) return cloneRet;
       const trackedFiles = await this.getGitTrackedFiles(tempDir);
       const currentTrackedFiles = await this.getGitTrackedFiles(__dirname).catch(() => []);
@@ -1500,7 +1542,7 @@ export class fishing extends plugin {
       const backupText = backupDir ? `\n已备份被覆盖的本地文件：${backupDir}` : '';
       const userBackupText = userBackupDir ? `\n已备份用户数据：${userBackupDir}` : '';
       return {
-        stdout: `已从 ${FISH_PLUGIN_REPO} 获取最新代码。\n${statusText}${backupText}${userBackupText}`,
+        stdout: `已从 ${repoUrl} 获取最新代码。\n${statusText}${backupText}${userBackupText}`,
         stderr: '',
         meta: {
           backupDir,
@@ -1549,7 +1591,10 @@ export class fishing extends plugin {
 
       if (dirtyFiles.length === 0 && hasRemoteUpdate) {
         await this.reply(`检测到新版本 ${currentHead || 'unknown'} -> ${remoteHead}，正在尝试标准更新。`);
-        const pullRet = await this.gitExec(['pull', '--ff-only']);
+        const trackingRef = await this.getRemoteTrackingRef(__dirname);
+        const pullRet = trackingRef
+          ? await this.gitExec(['merge', '--ff-only', trackingRef])
+          : { error: new Error('未找到当前分支的远端跟踪分支，无法标准更新。'), stdout: '', stderr: '' };
         const pullOutput = [pullRet.stdout, pullRet.stderr].filter(Boolean).join('\n').trim();
         if (!pullRet.error) {
           const userBackupDir = this.backupUserData();
@@ -1586,6 +1631,45 @@ export class fishing extends plugin {
     } finally {
       fishPluginUpdating = false;
     }
+  }
+
+  async setFishUpdateProxy(e) {
+    if (!e.isMaster) {
+      await this.reply('只有主人才能设置钓鱼更新代理。');
+      return false;
+    }
+
+    const raw = String(e.msg || '').replace(/^#钓鱼更新代理\s*/u, '').trim();
+    if (!raw) {
+      await this.reply(
+        `${this.getFishUpdateProxyText()}\n` +
+        '设置示例：#钓鱼更新代理 https://gh-proxy.com/\n' +
+        '也支持完整模板：#钓鱼更新代理 https://gh-proxy.com/{url}\n' +
+        '关闭代理：#钓鱼更新代理关闭'
+      );
+      return true;
+    }
+
+    const normalized = this.normalizeUpdateProxyInput(raw);
+    if (normalized === null) {
+      await this.reply('代理地址格式不正确，请使用 http:// 或 https:// 开头，例如：#钓鱼更新代理 https://gh-proxy.com/');
+      return false;
+    }
+
+    if (!normalized) {
+      delete this.config[FISH_PLUGIN_UPDATE_PROXY_CONFIG_KEY];
+      saveConfig(this.config);
+      await this.reply('已关闭 Fish-plugin 更新代理，后续 #钓鱼更新 将使用 GitHub 直连。');
+      return true;
+    }
+
+    this.config[FISH_PLUGIN_UPDATE_PROXY_CONFIG_KEY] = normalized;
+    saveConfig(this.config);
+    await this.reply(
+      `已设置 Fish-plugin 更新代理：${normalized}\n` +
+      `实际拉取地址示例：${this.getFishUpdateRepoUrl()}`
+    );
+    return true;
   }
 
   isFishCommand(msg = '') {
