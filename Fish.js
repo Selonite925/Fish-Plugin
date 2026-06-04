@@ -93,6 +93,7 @@ import { buildSellPreview, canSellFish, findShopItem, getFishSellValue, parseSel
 import { formatAchievementList, getAchievementCatchRateBonus, getAchievementDailyCastBonus, getCollectionStats, scanAchievements } from './lib/achievements.js';
 import { ensureDailySignal } from './lib/signals.js';
 import { ensureResourceDirs, replyWithPanel } from './lib/panel.js';
+import { getLotteryPoolSummary, parseLotteryCommand, performLotteryDraws } from './lib/lottery.js';
 import { findCustomBaitBySource, generateCustomBaitFromText } from './lib/custom-bait.js';
 import { getNowDateKey, getNowTimestamp, getTodayKey, getTimeRuntimeInfo } from './lib/time.js';
 import {
@@ -161,6 +162,8 @@ const HELP_GROUPS = [
       { title: '#限时鱼讯', desc: '查看当天高活跃鱼讯与命中奖励。' },
       { title: '#彩蛋收藏', desc: '查看已收集彩蛋、当前生效项和待切换项。' },
       { title: '#切换彩蛋 愿望锦鲤', desc: '安排彩蛋效果切换；每天只能安排一次，次日生效。' },
+      { title: '#钓鱼抽奖 / #钓鱼抽奖10 / #钓鱼抽奖奖池', desc: '100鱼币抽1次，长期回报约70%，大奖接口当前挂载金满而谦虚之竿。' },
+      { title: '#金谦指定 虹鳟 / #金谦目标 common 鲫鱼', desc: '拥有金满而谦虚之竿后，可指定目标鱼，让同稀有度命中时更容易翻到它。' },
       { title: '#钓鱼成就', desc: '查看成就进度和永久加成。' },
       { title: '#打窝 文本 / #打窝 @某人', desc: '生成自定义鱼饵，按文本倾向组合正负效果。' },
       { title: '#炼竿 1 / #炼竿预览 1', desc: '按鱼缸展示序号先预览 legendary 会炼成什么鱼竿，再决定是否正式炼制。' },
@@ -324,6 +327,7 @@ function getBuyableRodList() {
 
 function getRodRecycleValue(rod) {
   if (!rod || rod.id === DEFAULT_ROD_ID) return 0;
+  if (Number(rod.recycleValue || 0) > 0) return Math.floor(Number(rod.recycleValue || 0));
   if (rod.sourceLegendary) return 750;
   return Math.max(0, Math.floor(Number(rod.price || 0) / 2));
 }
@@ -334,15 +338,18 @@ function getVisibleCollectionRarities() {
 
 function getVisibleRodList(userData) {
   const owned = new Set(userData?.rodsOwned || []);
-  return Object.values(ROD_CATALOG).filter(rod => !rod.sourceLegendary || owned.has(rod.id));
+  return Object.values(ROD_CATALOG).filter(rod => {
+    if (rod.sourceLegendary || rod.sourceLottery) return owned.has(rod.id);
+    return true;
+  });
 }
 
 function getSwitchableRodList(userData) {
   const owned = new Set(userData?.rodsOwned || []);
   const buyable = getBuyableRodList();
-  const crafted = Object.values(ROD_CATALOG)
-    .filter(rod => rod.sourceLegendary && owned.has(rod.id));
-  return [...buyable, ...crafted];
+  const special = Object.values(ROD_CATALOG)
+    .filter(rod => (rod.sourceLegendary || rod.sourceLottery) && owned.has(rod.id));
+  return [...buyable, ...special];
 }
 
 function getRecyclableRodList(userData) {
@@ -357,7 +364,13 @@ function getRecyclableRodList(userData) {
 }
 
 function getBuiltinBuyableBaitList() {
-  return Object.values(BAIT_CATALOG).filter(item => !item.isDefault);
+  return Object.values(BAIT_CATALOG).filter(item => !item.isDefault && !item.lotteryOnly);
+}
+
+function getOwnedBuiltinBaitList(userData) {
+  return Object.values(BAIT_CATALOG)
+    .filter(item => !item.isDefault)
+    .filter(item => !item.lotteryOnly || Number(userData?.baitInventory?.[item.id] || 0) > 0);
 }
 
 function getCustomBaitList(userData) {
@@ -367,7 +380,7 @@ function getCustomBaitList(userData) {
 }
 
 function getSwitchableBaitList(userData) {
-  return [...getBuiltinBuyableBaitList(), ...getCustomBaitList(userData)];
+  return [...getOwnedBuiltinBaitList(userData), ...getCustomBaitList(userData)];
 }
 
 function getBaitPackText(bait) {
@@ -764,6 +777,9 @@ function buildRodTraitEntries(rod) {
   if (Number(rod?.signalBonusCoins || 0) > 0) entries.push({ text: '命中鱼讯时收成会更亮眼', tone: 'positive' });
   if (Number(rod?.permanentDailyCasts || 0) > 0) entries.push({ text: '装备后每日可抛竿次数会增加', tone: 'positive' });
   if (Number(rod?.ownedPermanentDailyCasts || 0) > 0) entries.push({ text: '只要拥有这根竿，每日可抛竿次数就会增加', tone: 'positive' });
+  if (rod?.targetFishEffect) entries.push({ text: '可指定目标鱼：同稀有度命中时会翻看候选，目标在其中就优先钓起', tone: 'positive' });
+  if (rod?.targetFishEffect?.rewardCoinsByRarity) entries.push({ text: '成功钓到指定目标时会获得额外鱼币奖励', tone: 'positive' });
+  if (rod?.suppressExtraCoinBonuses) entries.push({ text: '目标检索生效时，其它额外鱼币收益会被压下去', tone: 'negative' });
 
   return entries;
 }
@@ -888,6 +904,17 @@ function createFishFromTemplate(template, rarity) {
     length: getRandomBodyValue(template.size.min, template.size.max, 1),
     weight: getRandomBodyValue(template.weight.min, template.weight.max, 2)
   };
+}
+
+function resolveRodTarget(userData, rod) {
+  const target = userData?.rodTargets?.[rod?.id];
+  if (!target || typeof target !== 'object') return null;
+  const rarity = String(target.rarity || '').trim();
+  const name = normalizeFishTemplateName(target.name);
+  if (!rarity || !name) return null;
+  const template = fishTemplateByName?.[name];
+  if (!template || fishRarityByName?.[name] !== rarity) return null;
+  return { name, rarity, template };
 }
 
 function normalizeRarityKeyword(keyword = '') {
@@ -1034,6 +1061,8 @@ export class fishing extends plugin {
         { reg: '^#查看鱼缸$', fnc: 'checkFishTank' },
         { reg: '^#彩蛋收藏$', fnc: 'checkEasterEggCollection' },
         { reg: '^#切换彩蛋\\s+.+$', fnc: 'scheduleActiveEasterEgg' },
+        { reg: '^#钓鱼抽奖(?:\\s*\\d{0,2}|奖池|概率|说明)?$', fnc: 'handleFishingLottery' },
+        { reg: '^#(?:金谦指定|金谦目标)\\s*.*$', fnc: 'setGoldHumbleRodTarget' },
         { reg: '^#升级鱼缸\\s+(legendary|epic)\\s+.+', fnc: 'upgradeFishTank' },
         { reg: '^#放生鱼\\s+\\d+(?:\\s+.*)?$', fnc: 'releaseFish' },
         { reg: '^#(?:赠鱼|赠渔|送鱼)\\s*.+$', fnc: 'giftFish' },
@@ -1771,6 +1800,12 @@ export class fishing extends plugin {
   }
 
   catchFish(userData = null, extraBias = {}, bodyModifiers = {}) {
+    const rod = getEquippedRod(userData);
+    const rodTarget = resolveRodTarget(userData, rod);
+    const targetEffect = rod?.targetFishEffect && rodTarget ? {
+      ...rod.targetFishEffect,
+      target: rodTarget
+    } : null;
     let rarities = Object.keys(this.fishTypes);
     const weights = this.applyRarityBias(rarityWeights, extraBias);
     const ownedEggs = new Set(getOwnedEasterEggCollection(userData));
@@ -1780,11 +1815,42 @@ export class fishing extends plugin {
       rarities = rarities.filter(rarity => rarity !== EASTER_EGG_RARITY);
     }
     const rarity = this.getWeightedRandom(rarities, weights);
-    if (rarity === EASTER_EGG_RARITY && availableMysteryFish.length > 0) {
-      const template = availableMysteryFish[Math.floor(Math.random() * availableMysteryFish.length)];
-      return applyFishBodyBuffs(createFishFromTemplate(template, rarity), bodyModifiers);
+    let fish = null;
+    let targetHit = false;
+    let candidatesSeen = 0;
+    if (targetEffect && rarity === targetEffect.target.rarity) {
+      const pool = rarity === EASTER_EGG_RARITY ? availableMysteryFish : (this.fishTypes[rarity] || []);
+      const lookCount = Math.max(1, Math.min(pool.length, Math.floor(Number(targetEffect.lookCount || 1))));
+      const shuffled = [...pool].sort(() => Math.random() - 0.5);
+      const candidates = shuffled.slice(0, lookCount);
+      candidatesSeen = candidates.length;
+      const targetTemplate = candidates.find(item => item.name === targetEffect.target.name);
+      if (targetTemplate) {
+        fish = createFishFromTemplate(targetTemplate, rarity);
+        targetHit = true;
+      }
     }
-    return applyFishBodyBuffs(generateFish(rarity), bodyModifiers);
+    if (!fish && rarity === EASTER_EGG_RARITY && availableMysteryFish.length > 0) {
+      const template = availableMysteryFish[Math.floor(Math.random() * availableMysteryFish.length)];
+      fish = createFishFromTemplate(template, rarity);
+    } else if (!fish) {
+      fish = generateFish(rarity);
+    }
+    fish = applyFishBodyBuffs(fish, bodyModifiers);
+    if (targetEffect) {
+      fish.specialRodEffect = {
+        type: targetEffect.type || 'target_fish',
+        rodId: rod.id,
+        rodName: rod.name,
+        targetName: targetEffect.target.name,
+        targetRarity: targetEffect.target.rarity,
+        targetHit,
+        candidatesSeen,
+        rewardCoins: targetHit ? Number(targetEffect.rewardCoinsByRarity?.[rarity] || 0) : 0,
+        suppressExtraCoinBonuses: Boolean(rod.suppressExtraCoinBonuses && targetHit)
+      };
+    }
+    return fish;
   }
 
   consumeManualBait(userId, baitData, options = {}) {
@@ -2096,7 +2162,8 @@ export class fishing extends plugin {
   }
 
   addCaughtFishToUser(userData, fish) {
-    const fishWithTimestamp = { ...fish, timestamp: getNowTimestamp() };
+    const { specialRodEffect, ...fishData } = fish || {};
+    const fishWithTimestamp = { ...fishData, timestamp: getNowTimestamp() };
     ensureFishId(fishWithTimestamp);
     userData.today.fish.push(fishWithTimestamp);
     userData.today.catches = Number(userData.today.catches || 0) + 1;
@@ -2119,6 +2186,23 @@ export class fishing extends plugin {
     return { fishWithTimestamp, tankUpdateMsg, tankResult };
   }
 
+  applySpecialRodCatchEffect(userData, fish, options = {}) {
+    const effect = fish?.specialRodEffect;
+    if (!effect?.targetHit) return { message: '', rewardCoins: 0, suppressExtraCoinBonuses: false };
+    const rewardCoins = Math.max(0, Math.floor(Number(effect.rewardCoins || 0)));
+    if (rewardCoins > 0) {
+      userData.coins = Number(userData.coins || 0) + rewardCoins;
+    }
+    const message = options.compact
+      ? `${effect.rodName}：命中目标 ${effect.targetName}，+${rewardCoins}鱼币${effect.suppressExtraCoinBonuses ? '，其它额外鱼币不叠加' : ''}`
+      : `\n[${effect.rodName}] 翻看 ${effect.candidatesSeen || 0} 个 ${effect.targetRarity} 候选后命中指定目标 ${effect.targetName}，奖励 ${rewardCoins} 鱼币。`;
+    return {
+      message,
+      rewardCoins,
+      suppressExtraCoinBonuses: Boolean(effect.suppressExtraCoinBonuses)
+    };
+  }
+
   createFastFishingSummary(rod) {
     return {
       rodName: rod.name,
@@ -2129,6 +2213,7 @@ export class fishing extends plugin {
       ticketCasts: 0,
       coinGain: 0,
       signalHits: 0,
+      specialEffects: [],
       tankAdded: 0,
       tankReplaced: 0,
       autoSellCoins: 0,
@@ -2285,6 +2370,7 @@ export class fishing extends plugin {
       .sort((a, b) => b[1] - a[1])
       .map(([name, count]) => `${name}：生效${count}竿`);
     if (summary.manualBaitCasts > 0) baitLines.push(`打窝效果：生效${summary.manualBaitCasts}竿`);
+    const specialEffectLines = [...new Set(summary.specialEffects || [])].slice(0, 8);
 
     const extraLines = [
       summary.ticketCasts > 0 ? `本次消耗钓鱼券：${summary.ticketCasts}张` : null,
@@ -2367,6 +2453,15 @@ export class fishing extends plugin {
           tone: 'sky'
         }))
       }] : []),
+      ...(specialEffectLines.length ? [{
+        group: '特殊鱼竿',
+        list: specialEffectLines.map((line, index) => ({
+          badge: `竿${index + 1}`,
+          title: line.split('：')[0] || line,
+          desc: line.split('：').slice(1).join('：') || '本次触发特殊鱼竿效果',
+          tone: 'gold'
+        }))
+      }] : []),
       ...(summary.achievements.size ? [{
         group: '成就变化',
         list: [...summary.achievements].slice(0, 8).map((line, index) => ({
@@ -2396,6 +2491,7 @@ export class fishing extends plugin {
       ...(notableLines.length ? ['', '高稀有鱼获', ...notableLines] : []),
       ...(failLines.length ? ['', '空军统计', ...failLines] : []),
       ...(baitLines.length ? ['', '鱼饵消耗', ...baitLines] : []),
+      ...(specialEffectLines.length ? ['', '特殊鱼竿', ...specialEffectLines] : []),
       ...(summary.achievements.size ? ['', '成就变化', ...[...summary.achievements].slice(0, 8)] : [])
     ].join('\n');
 
@@ -2480,6 +2576,7 @@ export class fishing extends plugin {
 
         summary.catches += 1;
         const fish = this.catchFish(userData, mergedBias, bodyModifiers);
+        const specialRodEffect = this.applySpecialRodCatchEffect(userData, fish, { compact: true });
         const { fishWithTimestamp, tankResult } = this.addCaughtFishToUser(userData, fish);
         this.recordFastFish(summary, fishWithTimestamp);
         resetEmptyCastStreak(userData);
@@ -2488,17 +2585,22 @@ export class fishing extends plugin {
         if (tankResult?.replaced) summary.tankReplaced += 1;
         if (tankResult?.soldCoins > 0) summary.autoSellCoins += tankResult.soldCoins;
 
-        if (signal.targets.some(item => item.name === fishWithTimestamp.name)) {
+        if (specialRodEffect.message) {
+          summary.specialEffects.push(specialRodEffect.message);
+        }
+        const suppressExtraCoinBonuses = specialRodEffect.suppressExtraCoinBonuses;
+        const signalHit = signal.targets.some(item => item.name === fishWithTimestamp.name);
+        if (signalHit) {
           const equippedRod = getEquippedRod(userData);
           const signalCoins = signal.bonusCoins + getSignalRodBonusCoins(equippedRod, fishWithTimestamp);
-          userData.coins += signalCoins;
+          if (!suppressExtraCoinBonuses) userData.coins += signalCoins;
           userData.stats.signalFishCaught += 1;
           summary.signalHits += 1;
         }
         const rodCoinBonus = Number(getEquippedRod(userData)?.catchCoinBonus || 0);
-        if (rodCoinBonus > 0) userData.coins += rodCoinBonus;
-        if (easterEggEffect.catchCoinBonus > 0) userData.coins += easterEggEffect.catchCoinBonus;
-        if (easterEggEffect.catchCoinBonusRate > 0) {
+        if (!suppressExtraCoinBonuses && rodCoinBonus > 0) userData.coins += rodCoinBonus;
+        if (!suppressExtraCoinBonuses && easterEggEffect.catchCoinBonus > 0) userData.coins += easterEggEffect.catchCoinBonus;
+        if (!suppressExtraCoinBonuses && easterEggEffect.catchCoinBonusRate > 0) {
           userData.coins += Math.floor(getFishSellValue(fishWithTimestamp) * easterEggEffect.catchCoinBonusRate);
         }
 
@@ -2593,6 +2695,8 @@ export class fishing extends plugin {
 
       const signal = this.getDailySignal();
       const fish = this.catchFish(settleUser, mergedBias, bodyModifiers);
+      const specialRodEffect = this.applySpecialRodCatchEffect(settleUser, fish);
+      const suppressExtraCoinBonuses = specialRodEffect.suppressExtraCoinBonuses;
       const { fishWithTimestamp, tankUpdateMsg } = this.addCaughtFishToUser(settleUser, fish);
       resetEmptyCastStreak(settleUser);
       settleUser.stats.lastCatchRarity = fishWithTimestamp.rarity;
@@ -2601,25 +2705,32 @@ export class fishing extends plugin {
         ? '但你猛的一提，看似空钩的一口被稳住了，鱼钩重新咬牢，成功上鱼。\n'
         : '';
       let signalMsg = '';
-      if (signal.targets.some(item => item.name === fishWithTimestamp.name)) {
+      const signalHit = signal.targets.some(item => item.name === fishWithTimestamp.name);
+      if (signalHit) {
         const equippedRod = getEquippedRod(settleUser);
         const signalCoins = signal.bonusCoins + getSignalRodBonusCoins(equippedRod, fishWithTimestamp);
-        settleUser.coins += signalCoins;
+        if (!suppressExtraCoinBonuses) settleUser.coins += signalCoins;
         settleUser.stats.signalFishCaught += 1;
-        signalMsg += `\n[限时鱼讯] 命中今日目标鱼，额外获得 ${signalCoins} 鱼币。`;
+        signalMsg += suppressExtraCoinBonuses
+          ? '\n[限时鱼讯] 命中今日目标鱼，但本次金谦限制压制了额外鱼币。'
+          : `\n[限时鱼讯] 命中今日目标鱼，额外获得 ${signalCoins} 鱼币。`;
       }
       const rodCoinBonus = Number(getEquippedRod(settleUser)?.catchCoinBonus || 0);
-      if (rodCoinBonus > 0) {
+      if (!suppressExtraCoinBonuses && rodCoinBonus > 0) {
         settleUser.coins += rodCoinBonus;
         signalMsg += `\n[鱼竿效果] 本次额外收获 ${rodCoinBonus} 鱼币。`;
       }
-      if (easterEggEffect.catchCoinBonus > 0) {
+      if (!suppressExtraCoinBonuses && easterEggEffect.catchCoinBonus > 0) {
         settleUser.coins += easterEggEffect.catchCoinBonus;
         signalMsg += '\n[彩蛋加成] 本次收获被悄悄抬高了一截。';
       }
-      if (easterEggEffect.catchCoinBonusRate > 0) {
+      if (!suppressExtraCoinBonuses && easterEggEffect.catchCoinBonusRate > 0) {
         settleUser.coins += Math.floor(getFishSellValue(fishWithTimestamp) * easterEggEffect.catchCoinBonusRate);
         signalMsg += '\n[彩蛋加成] 本次收获被悄悄抬高了一截。';
+      }
+      if (specialRodEffect.message) {
+        signalMsg += specialRodEffect.message;
+        if (suppressExtraCoinBonuses) signalMsg += '\n[金谦限制] 本次已命中指定目标，其它额外鱼币收益不再叠加。';
       }
       const unlocked = scanAchievements(settleUser, this.fishTypes);
       settleUser.achievementCatchRateBonus = getAchievementCatchRateBonus(settleUser);
@@ -2805,6 +2916,10 @@ export class fishing extends plugin {
     const parsed = this.parseGiftFishCommand(e);
     if (parsed.error) {
       await this.reply(`${userDisplay}\n${parsed.error}`);
+      return;
+    }
+    if (parsed.rarity === EASTER_EGG_RARITY && getOwnedEasterEggCollection(userData).includes(parsed.name)) {
+      await this.reply(`${userDisplay}\n${parsed.name} 已经在彩蛋收藏里，彩蛋鱼不会重复获得，建议换一个还没收集到的目标。`);
       return;
     }
     const { targetUserId, selector } = parsed;
@@ -3126,6 +3241,76 @@ async checkEasterEggCollection(e) {
     await this.reply(`${userDisplay}\n已安排明天切换为 ${targetName}。\n当前生效：${currentText}\n明日生效后将改为：${nextText}`);
   }
 
+  parseGoldHumbleTargetCommand(msg = '') {
+    const body = String(msg || '').replace(/^#(?:金谦指定|金谦目标)\s*/i, '').trim();
+    if (!body || /^(?:取消|清除|重置|无|none)$/i.test(body)) {
+      return { clear: true };
+    }
+    const tokens = body.split(/\s+/).filter(Boolean);
+    let rarity = null;
+    let fishName = body;
+    if (tokens.length >= 2) {
+      const parsedRarity = normalizeRarityKeyword(tokens[0]);
+      if (parsedRarity) {
+        rarity = parsedRarity;
+        fishName = tokens.slice(1).join(' ');
+      }
+    }
+    fishName = normalizeFishTemplateName(fishName);
+    const candidates = findFishTemplatesByName(fishName);
+    if (!candidates.length) {
+      return { error: `鱼池里没有找到 ${fishName || body}。示例：#金谦指定 虹鳟 / #金谦目标 rare 金龙鱼` };
+    }
+    if (!rarity) {
+      if (candidates.length === 1) {
+        rarity = candidates[0].rarity;
+      } else {
+        return { error: `${fishName} 有多个稀有度版本，请补充 common / rare 等稀有度。` };
+      }
+    }
+    const template = (this.fishTypes[rarity] || []).find(item => item.name === fishName);
+    if (!template) {
+      return { error: `${fishName} 不属于 ${rarity}，可用稀有度：${candidates.map(item => item.rarity).join(' / ')}` };
+    }
+    return { name: fishName, rarity, template };
+  }
+
+  async setGoldHumbleRodTarget(e) {
+    const data = this.loadData();
+    const { userId, text: userDisplay } = getUserDisplay(e);
+    const userData = this.getOrCreateUser(data, userId);
+    const rod = Object.values(ROD_CATALOG).find(item => item.targetFishEffect?.type === 'gold_humble');
+    if (!rod || !userData.rodsOwned?.includes(rod.id)) {
+      await this.reply(`${userDisplay}\n你还没有金满而谦虚之竿，无法指定目标鱼。`);
+      return;
+    }
+
+    const parsed = this.parseGoldHumbleTargetCommand(e.msg);
+    if (parsed.error) {
+      await this.reply(`${userDisplay}\n${parsed.error}`);
+      return;
+    }
+    if (!userData.rodTargets || typeof userData.rodTargets !== 'object') userData.rodTargets = {};
+    if (parsed.clear) {
+      delete userData.rodTargets[rod.id];
+      saveFishData(data);
+      await this.reply(`${userDisplay}\n已清除 ${rod.name} 的指定目标。`);
+      return;
+    }
+
+    userData.rodTargets[rod.id] = {
+      name: parsed.name,
+      rarity: parsed.rarity,
+      updatedAt: getNowTimestamp()
+    };
+    saveFishData(data);
+    const reward = Number(rod.targetFishEffect?.rewardCoinsByRarity?.[parsed.rarity] || 0);
+    await this.reply(
+      `${userDisplay}\n${rod.name} 已指定目标：${parsed.name}（${parsed.rarity}）。\n` +
+      `效果：钓到 ${parsed.rarity} 稀有度时翻看 ${rod.targetFishEffect.lookCount} 个候选，若其中有 ${parsed.name} 就优先钓起；命中后奖励 ${reward} 鱼币。`
+    );
+  }
+
   async checkFishTank(e) {
     const data = this.loadData();
     const userData = this.getOrCreateUser(data, String(e.user_id));
@@ -3399,6 +3584,165 @@ async checkEasterEggCollection(e) {
     }, fallback);
   }
 
+  buildLotteryResultPanel(userDisplay, userData, result) {
+    const grandCount = result.results.filter(item => item.isGrandPrize).length;
+    const valueTotal = result.results.reduce((sum, item) => sum + Number(item.reward?.value || 0), 0);
+    const rewardLines = result.results.map((item, index) => {
+      const reward = item.reward || {};
+      const prefix = item.isGrandPrize ? '大奖' : `奖${index + 1}`;
+      return `${prefix} | ${reward.title || reward.type} | ${reward.desc || ''}`;
+    });
+    const groups = applyGroupThemes([
+      {
+        group: '抽奖结算',
+        list: [
+          {
+            badge: '次数',
+            title: `${result.drawCount} 抽`,
+            desc: `消耗 ${result.totalCost} 鱼币`,
+            meta: `${userDisplay} 当前鱼币 ${userData.coins}`,
+            tone: 'active'
+          },
+          {
+            badge: '大奖',
+            title: grandCount > 0 ? `命中 ${grandCount} 次` : '未命中',
+            desc: result.grandPlugin?.name || '大奖接口未挂载',
+            meta: `本次奖品估值约 ${valueTotal} 鱼币`,
+            tone: grandCount > 0 ? 'legendary' : 'neutral'
+          }
+        ]
+      },
+      {
+        group: '奖品明细',
+        list: result.results.map((item, index) => {
+          const reward = item.reward || {};
+          return {
+            badge: item.isGrandPrize ? '大奖' : `奖${index + 1}`,
+            title: reward.title || reward.type,
+            desc: reward.desc || '已发放到背包',
+            meta: reward.duplicate ? `重复补偿：${reward.compensationCoins} 鱼币` : `估值 ${Number(reward.value || 0)} 鱼币`,
+            tone: item.isGrandPrize ? 'legendary' : reward.type === 'coins' ? 'gold' : reward.type === 'bait' ? 'sky' : 'positive'
+          };
+        })
+      }
+    ], ['gold', 'lake']);
+    const fallback = [
+      '钓鱼抽奖结果',
+      `${userDisplay} 抽奖 ${result.drawCount} 次，消耗 ${result.totalCost} 鱼币。`,
+      ...rewardLines,
+      `当前鱼币：${userData.coins}`
+    ].join('\n');
+    return {
+      panel: {
+        key: `fish-lottery-${getNowTimestamp()}`,
+        title: '钓鱼抽奖结果',
+        subtitle: grandCount > 0 ? '金光已经压不住了' : '奖池轻轻晃了一下',
+        sections: buildCardGridSections(groups, { badgePrefix: '抽' }),
+        footer: '继续使用：#钓鱼抽奖 / #钓鱼抽奖10 / #钓鱼抽奖奖池'
+      },
+      fallback
+    };
+  }
+
+  async showFishingLotteryPool(e) {
+    const data = this.loadData();
+    const userData = this.getOrCreateUser(data, String(e.user_id));
+    const pool = getLotteryPoolSummary();
+    const expected = pool.expected;
+    const grandRateText = `${(pool.config.grandPrize.rate * 100).toFixed(1)}%`;
+    const regularWeightTotal = pool.regularRewards
+      .reduce((sum, item) => sum + Math.max(0, Number(item.weight || 0)), 0);
+    const getRegularProbability = reward => regularWeightTotal > 0
+      ? Math.max(0, Number(reward.weight || 0)) / regularWeightTotal * (1 - pool.config.grandPrize.rate)
+      : 0;
+    const regularRewards = pool.regularRewards.map(reward => {
+      const probability = getRegularProbability(reward);
+      return {
+        badge: reward.type === 'coins' ? '币' : reward.type === 'bait' ? '饵' : reward.type === 'ticket' ? '券' : '奖',
+        title: reward.title || reward.id || reward.type,
+        desc: reward.desc || '普通奖品',
+        meta: `概率 ${(probability * 100).toFixed(1)}% | 估值 ${Number(reward.value || 0)}鱼币`,
+        tone: reward.type === 'coins' ? 'gold' : reward.type === 'bait' ? 'sky' : 'positive'
+      };
+    });
+    const groups = applyGroupThemes([
+      {
+        group: '奖池规则',
+        list: [
+          {
+            badge: '费用',
+            title: `${pool.config.cost} 鱼币 / 抽`,
+            desc: `单次最多 ${pool.config.maxDrawsPerCommand} 抽`,
+            meta: `你当前有 ${userData.coins} 鱼币`,
+            tone: 'active'
+          },
+          {
+            badge: '期望',
+            title: `${(expected.expectedRate * 100).toFixed(1)}% 长线回报`,
+            desc: `单抽期望约 ${expected.expectedValue.toFixed(1)} 鱼币`,
+            meta: `大奖贡献 ${expected.grandExpected.toFixed(1)}，普通奖贡献 ${expected.regularExpected.toFixed(1)}`,
+            tone: 'gold'
+          },
+          {
+            badge: '大奖',
+            title: pool.grandPlugin?.name || '未挂载',
+            desc: pool.grandPlugin?.description || '大奖插件接口为空',
+            meta: `概率 ${grandRateText} | 估值 ${pool.grandPlugin?.reward?.value || 0} 鱼币`,
+            tone: 'legendary',
+            fullWidth: true
+          }
+        ]
+      },
+      {
+        group: '普通奖品',
+        list: regularRewards
+      }
+    ], ['gold', 'sky']);
+    const fallback = [
+      '钓鱼抽奖奖池',
+      `${pool.config.cost}鱼币/抽，大奖概率 ${grandRateText}`,
+      `长期期望：${expected.expectedValue.toFixed(1)}鱼币/抽，约 ${(expected.expectedRate * 100).toFixed(1)}%`,
+      `大奖：${pool.grandPlugin?.name || '未挂载'}`,
+      ...pool.regularRewards.map(item => `${item.title || item.id || item.type} | 概率 ${(getRegularProbability(item) * 100).toFixed(1)}% | 估值 ${Number(item.value || 0)}鱼币`)
+    ].join('\n');
+    await replyWithPanel(this, {
+      key: `fish-lottery-pool-${e.user_id}`,
+      title: '钓鱼抽奖奖池',
+      subtitle: '100鱼币一次，大奖接口可替换',
+      sections: buildCardGridSections(groups, { badgePrefix: '池' }),
+      footer: '抽奖：#钓鱼抽奖 / #钓鱼抽奖10'
+    }, fallback);
+  }
+
+  async handleFishingLottery(e) {
+    const parsed = parseLotteryCommand(e.msg);
+    if (!parsed) {
+      await this.reply('格式：#钓鱼抽奖 / #钓鱼抽奖10 / #钓鱼抽奖奖池');
+      return;
+    }
+    if (parsed.mode === 'pool') {
+      await this.showFishingLotteryPool(e);
+      return;
+    }
+    const data = this.loadData();
+    const { userId, text: userDisplay } = getUserDisplay(e);
+    const userData = this.getOrCreateUser(data, userId);
+    const result = performLotteryDraws(userData, parsed.count);
+    if (!result.ok) {
+      await this.reply(`${userDisplay}\n鱼币不足，${result.drawCount} 抽需要 ${result.totalCost} 鱼币，当前只有 ${userData.coins}。`);
+      return;
+    }
+    const unlocked = this.refreshAchievements(data, userId);
+    saveFishData(data);
+    const view = this.buildLotteryResultPanel(userDisplay, userData, result);
+    const achievementText = this.formatAchievementUnlocks(unlocked).replace(/^\n/, '');
+    if (achievementText) {
+      view.panel.footer = `${view.panel.footer} | ${achievementText}`;
+      view.fallback += `\n${achievementText}`;
+    }
+    await replyWithPanel(this, view.panel, view.fallback);
+  }
+
   // #售鱼 默认卖“今日渔获”，这样不会和鱼缸序号命令混在一起；
   // 如果用户明确写“鱼缸”，才去卖鱼缸里的鱼。
   pickFishForSale(userData, target) {
@@ -3609,7 +3953,9 @@ async checkEasterEggCollection(e) {
         return;
       }
       const lines = recyclableRods.map((rod, index) => {
-        const extra = rod.sourceLegendary ? ` | 炼成来源:${rod.sourceLegendary}` : '';
+        const extra = rod.sourceLegendary
+          ? ` | 炼成来源:${rod.sourceLegendary}`
+          : rod.sourceLottery ? ` | 抽奖限定:估值${rod.lotteryValue || 0}` : '';
         const equipMark = rod.id === equippedRod.id ? ' | 当前装备' : '';
         return `鱼竿${index + 1} | ${rod.name} - 回收价 ${getRodRecycleValue(rod)} 鱼币${extra}${equipMark}`;
       });
@@ -3852,6 +4198,11 @@ async checkEasterEggCollection(e) {
         await this.reply(`${userDisplay}\n${item.name} 不能直接购买，需要用对应的 legendary 鱼执行 #炼竿。`);
         return;
       }
+      if (item.sourceLottery) {
+        userData.coins += totalPrice;
+        await this.reply(`${userDisplay}\n${item.name} 是抽奖限定鱼竿，不能在鱼市直接购买。`);
+        return;
+      }
       userData.rodsOwned.push(item.id);
       const unlocked = this.refreshAchievements(data, userId);
       await this.reply(`${userDisplay}\n已购买鱼竿 ${item.name}。当前鱼币：${userData.coins}${this.formatAchievementUnlocks(unlocked)}`);
@@ -3890,7 +4241,8 @@ async checkEasterEggCollection(e) {
         rod.id === equipped.id ? '已装备' : null,
         owned.has(rod.id) ? '已拥有' : `${rod.price}鱼币`,
         owned.has(rod.id) && rod.id !== DEFAULT_ROD_ID ? `回收价:${getRodRecycleValue(rod)}鱼币` : null,
-        rod.sourceLegendary ? `炼成来源:${rod.sourceLegendary}` : null
+        rod.sourceLegendary ? `炼成来源:${rod.sourceLegendary}` : null,
+        rod.sourceLottery ? `抽奖限定:估值${rod.lotteryValue || 0}` : null
       ].filter(Boolean).join(' | ');
       return `鱼竿${index + 1} | ${rod.name} - ${marks} - ${rod.description}`;
     });
@@ -3917,9 +4269,10 @@ async checkEasterEggCollection(e) {
             rod.id === equipped.id ? '当前装备' : '',
             owned.has(rod.id) ? '已拥有' : `${rod.price}鱼币`,
             owned.has(rod.id) && rod.id !== DEFAULT_ROD_ID ? `回收价 ${getRodRecycleValue(rod)}鱼币` : '',
-            rod.sourceLegendary ? `炼成来源 ${rod.sourceLegendary}` : ''
+            rod.sourceLegendary ? `炼成来源 ${rod.sourceLegendary}` : '',
+            rod.sourceLottery ? `抽奖限定 估值${rod.lotteryValue || 0}` : ''
           ]),
-          tone: rod.id === equipped.id ? 'active' : owned.has(rod.id) ? 'positive' : rod.sourceLegendary ? 'legendary' : 'plum'
+          tone: rod.id === equipped.id ? 'active' : owned.has(rod.id) ? 'positive' : rod.sourceLegendary || rod.sourceLottery ? 'legendary' : 'plum'
         }))
       }
     ], ['lake', 'plum']), { badgePrefix: '竿' });
@@ -3958,21 +4311,32 @@ async checkEasterEggCollection(e) {
 
     const owned = userData.rodsOwned.includes(rod.id);
     const traitLines = buildRodTraitLines(rod);
+    const rodTarget = resolveRodTarget(userData, rod);
+    const sourceLine = rod.sourceLottery
+      ? `来源：抽奖限定（估值 ${rod.lotteryValue || 0} 鱼币）`
+      : rod.sourceLegendary
+        ? `炼成来源：${rod.sourceLegendary}`
+        : `售价：${rod.price}鱼币`;
+    const targetLine = rod.targetFishEffect
+      ? `指定目标：${rodTarget ? `${rodTarget.name}（${rodTarget.rarity}）` : '未指定，可用 #金谦指定 鱼名'}`
+      : null;
     const sections = [
       `鱼竿：${rod.name}`,
       `状态：${owned ? '已拥有' : '未拥有'}${rod.id === getEquippedRod(userData).id ? ' | 当前装备' : ''}`,
-      rod.sourceLegendary ? `炼成来源：${rod.sourceLegendary}` : `售价：${rod.price}鱼币`,
+      sourceLine,
+      targetLine,
       `手感描述：${rod.description}`,
       { type: 'html-block', html: buildRodTraitHtml(rod) }
-    ];
+    ].filter(Boolean);
     const fallback = [
       '鱼竿详情',
       `鱼竿：${rod.name}`,
       `状态：${owned ? '已拥有' : '未拥有'}${rod.id === getEquippedRod(userData).id ? ' | 当前装备' : ''}`,
-      rod.sourceLegendary ? `炼成来源：${rod.sourceLegendary}` : `售价：${rod.price}鱼币`,
+      sourceLine,
+      targetLine,
       `手感描述：${rod.description}`,
       ...traitLines
-    ].join('\n');
+    ].filter(Boolean).join('\n');
 
     await replyWithPanel(this, {
       key: `rod-details-${e.user_id}`,
@@ -4031,7 +4395,7 @@ async checkEasterEggCollection(e) {
     const equipped = getEquippedBait(userData);
     const ownedBaitsSummary = getOwnedBaitsSummary(userData) || '暂无可消耗鱼饵';
     const ownedRodsSummary = getOwnedRodsSummary(userData) || '暂无已购鱼竿';
-    const builtinBaits = getBuiltinBuyableBaitList();
+    const builtinBaits = getOwnedBuiltinBaitList(userData);
     const builtinLines = builtinBaits.map((bait, index) => {
       const count = userData.baitInventory?.[bait.id] || 0;
       const state = bait.id === equipped.id ? '当前使用' : count > 0 ? '可切换' : '未持有';
@@ -4056,7 +4420,7 @@ async checkEasterEggCollection(e) {
         }]
       },
       {
-        group: '商店鱼饵',
+        group: '可用鱼饵',
         list: builtinBaits.map((bait, index) => {
           const count = Number(userData.baitInventory?.[bait.id] || 0);
           return {
@@ -4066,6 +4430,7 @@ async checkEasterEggCollection(e) {
             meta: joinTextParts([
               bait.id === equipped.id ? '当前使用' : '',
               count > 0 ? `库存 ${count} 份` : '未持有',
+              bait.lotteryOnly ? '抽奖限定' : '',
               getBaitPackText(bait)
             ]),
             tone: bait.id === equipped.id ? 'active' : count > 0 ? 'positive' : 'sky'
