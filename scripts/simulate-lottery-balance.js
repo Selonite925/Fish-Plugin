@@ -32,6 +32,48 @@ function applyRarityBias(baseWeights, bias = {}) {
   return adjusted;
 }
 
+function mergeRarityBias(...biasList) {
+  const merged = {};
+  for (const bias of biasList) {
+    for (const [rarity, value] of Object.entries(bias || {})) {
+      merged[rarity] = (merged[rarity] || 0) + Number(value || 0);
+    }
+  }
+  return merged;
+}
+
+function getGoldHumbleTargetRewardMultiplier(targetName = '') {
+  const chars = [...String(targetName || '')];
+  if (!chars.length) return 1;
+  const hash = chars.reduce((sum, char) => ((sum * 131) + (char.codePointAt(0) || 0)) >>> 0, 0);
+  return 0.96 + (hash % 9) * 0.01;
+}
+
+function getGoldHumbleDistractorCount(effect, rarity, poolSize = 0) {
+  const legacyCount = effect?.distractorCountByRarity?.[rarity];
+  if (Number.isFinite(Number(legacyCount))) {
+    return Math.max(0, Math.floor(Number(legacyCount)));
+  }
+  const rules = effect?.distractorPoolSizeRules || {};
+  const min = Math.max(0, Math.floor(Number(rules.min ?? 1)));
+  const max = Math.max(min, Math.floor(Number(rules.max ?? 4)));
+  const size = Math.max(0, Math.floor(Number(poolSize || 0)));
+  const thresholds = Array.isArray(rules.thresholds) ? rules.thresholds : [];
+  const matched = [...thresholds]
+    .sort((left, right) => Number(right.minPoolSize || 0) - Number(left.minPoolSize || 0))
+    .find(rule => size >= Number(rule.minPoolSize || 0));
+  const count = matched ? Math.floor(Number(matched.count || min)) : min;
+  return Math.max(min, Math.min(max, count));
+}
+
+function getGoldHumbleTargetProfile(effect, rarity, targetName = '', poolSize = 0) {
+  const revealChance = clamp(Number(effect?.revealChanceByRarity?.[rarity] ?? 0), 0, 1);
+  const distractorCount = getGoldHumbleDistractorCount(effect, rarity, poolSize);
+  const baseReward = Math.max(0, Math.floor(Number(effect?.rewardCoinsByRarity?.[rarity] || 0)));
+  const rewardCoins = Math.max(0, Math.floor(baseReward * getGoldHumbleTargetRewardMultiplier(targetName)));
+  return { revealChance, distractorCount, rewardCoins };
+}
+
 function randomBodyValue(min, max, decimals) {
   const value = Math.random() * (max - min) + min;
   const rounded = Number(value.toFixed(decimals));
@@ -63,12 +105,15 @@ function fishSellLikeValue(fish) {
 }
 
 function simulateRod(rod, options = {}) {
-  const counts = { catches: 0, targetHits: 0, value: 0, targetReward: 0 };
+  const counts = { catches: 0, targetRarityCatches: 0, targetReveals: 0, targetHits: 0, fishValue: 0, targetReward: 0 };
   const catchRate = clamp(BASE_CATCH_RATE + Number(rod.catchRateBonus || 0), 0.05, 0.95);
   const failProtection = clamp(Number(rod.failProtection || 0), 0, 0.45);
-  const weights = applyRarityBias(rarityWeights, rod.rarityBias || {});
-  const rarities = Object.keys(fishTypes);
   const target = options.target;
+  const targetBias = target && rod.targetFishEffect?.type === 'gold_humble'
+    ? rod.targetFishEffect.rarityBiasByTargetRarity?.[target.rarity] || {}
+    : {};
+  const weights = applyRarityBias(rarityWeights, mergeRarityBias(rod.rarityBias || {}, targetBias));
+  const rarities = Object.keys(fishTypes);
 
   for (let i = 0; i < CASTS; i += 1) {
     const missed = Math.random() >= catchRate;
@@ -82,20 +127,35 @@ function simulateRod(rod, options = {}) {
     const pool = fishTypes[rarity];
     let template = pool[Math.floor(Math.random() * pool.length)];
     if (target && rod.targetFishEffect && rarity === target.rarity) {
-      const lookCount = Math.max(1, Math.min(pool.length, Number(rod.targetFishEffect.lookCount || 1)));
-      const candidates = [...pool].sort(() => Math.random() - 0.5).slice(0, lookCount);
-      const targetTemplate = candidates.find(item => item.name === target.name);
-      if (targetTemplate) {
-        template = targetTemplate;
-        counts.targetHits += 1;
-        const reward = Number(rod.targetFishEffect.rewardCoinsByRarity?.[rarity] || 0);
-        counts.targetReward += reward;
-        counts.value += reward;
+      counts.targetRarityCatches += 1;
+      const profile = getGoldHumbleTargetProfile(rod.targetFishEffect, rarity, target.name, pool.length);
+      const candidateCount = Math.max(1, Math.min(pool.length, 1 + profile.distractorCount));
+      const revealTriggered = Math.random() < profile.revealChance;
+      if (revealTriggered) {
+        counts.targetReveals += 1;
+        const candidateIndex = Math.floor(Math.random() * candidateCount);
+        if (candidateIndex === 0) {
+          template = pool.find(item => item.name === target.name) || template;
+          counts.targetHits += 1;
+          counts.targetReward += profile.rewardCoins;
+        } else {
+          template = pool.find(item => item.name !== target.name) || template;
+        }
+      } else {
+        const fallbackPool = pool.filter(item => item.name !== target.name);
+        if (fallbackPool.length) template = fallbackPool[Math.floor(Math.random() * fallbackPool.length)];
+      }
+      if (template.name === target.name && !revealTriggered) {
+        const fallbackPool = pool.filter(item => item.name !== target.name);
+        if (fallbackPool.length) template = fallbackPool[Math.floor(Math.random() * fallbackPool.length)];
+      }
+      if (template.name === target.name && revealTriggered) {
+        // Already counted above. This branch documents that natural target rolls are intentionally excluded.
       }
     }
     const fish = createFish(template, rarity);
     counts.catches += 1;
-    counts.value += fishSellLikeValue(fish);
+    counts.fishValue += fishSellLikeValue(fish);
   }
 
   return {
@@ -103,10 +163,16 @@ function simulateRod(rod, options = {}) {
     casts: CASTS,
     catches: counts.catches,
     catchRate: counts.catches / CASTS,
+    targetRarityCatches: counts.targetRarityCatches,
+    targetRarityRate: counts.targetRarityCatches / CASTS,
+    targetReveals: counts.targetReveals,
+    targetRevealRate: counts.targetRarityCatches ? counts.targetReveals / counts.targetRarityCatches : 0,
     targetHits: counts.targetHits,
     targetHitRate: counts.targetHits / CASTS,
+    targetConditionalHitRate: counts.targetRarityCatches ? counts.targetHits / counts.targetRarityCatches : 0,
     targetRewardPerCast: counts.targetReward / CASTS,
-    valuePerCast: counts.value / CASTS
+    fishValuePerCast: counts.fishValue / CASTS,
+    valuePerCast: (counts.fishValue + counts.targetReward) / CASTS
   };
 }
 
@@ -135,13 +201,15 @@ if (goldHumbleRod) {
   ];
   for (const target of targets) {
     const row = simulateRod(goldHumbleRod, { target });
-    console.log(`${target.rarity} ${target.name}\t${row.valuePerCast.toFixed(2)} 鱼币/杆\t目标命中 ${(row.targetHitRate * 100).toFixed(3)}%\t目标奖励EV ${row.targetRewardPerCast.toFixed(2)}`);
+    console.log(`${target.rarity} ${target.name}\t鱼本身 ${row.fishValuePerCast.toFixed(2)} 鱼币/杆\t含目标奖励 ${row.valuePerCast.toFixed(2)}\t目标稀有度 ${(row.targetRarityRate * 100).toFixed(3)}%\t条件目标 ${(row.targetConditionalHitRate * 100).toFixed(2)}%\t目标奖励EV ${row.targetRewardPerCast.toFixed(2)}\t干扰数 ${getGoldHumbleDistractorCount(goldHumbleRod.targetFishEffect, target.rarity, fishTypes[target.rarity].length)}`);
   }
 }
 
 const lotteryExpected = getLotteryExpectedValue();
-console.log('\n=== 抽奖期望 ===');
-console.log(`单抽成本：${LOTTERY_CONFIG.cost}`);
-console.log(`单抽期望：${lotteryExpected.expectedValue.toFixed(2)} 鱼币`);
-console.log(`长期回报率：${(lotteryExpected.expectedRate * 100).toFixed(2)}%`);
-console.log(`大奖贡献：${lotteryExpected.grandExpected.toFixed(2)} | 普通奖贡献：${lotteryExpected.regularExpected.toFixed(2)}`);
+const lotteryExpectedAfterGrand = getLotteryExpectedValue({ grandAvailable: false });
+console.log('\n=== 祈愿期望 ===');
+console.log(`单次成本：${LOTTERY_CONFIG.cost}`);
+console.log('限定愿品价值不计入收入期望。');
+console.log(`限定愿品仍可遇见：普通愿品期望 ${lotteryExpected.expectedValue.toFixed(2)} 鱼币，回报率 ${(lotteryExpected.expectedRate * 100).toFixed(2)}%`);
+console.log(`限定愿品已获得后：普通愿品期望 ${lotteryExpectedAfterGrand.expectedValue.toFixed(2)} 鱼币，回报率 ${(lotteryExpectedAfterGrand.expectedRate * 100).toFixed(2)}%`);
+console.log(`免费祈愿递延期望：每次约 ${lotteryExpected.freeDrawExpectedCount.toFixed(3)} 次免费祈愿`);
