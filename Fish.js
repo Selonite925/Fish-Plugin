@@ -730,10 +730,21 @@ function getRarityBiasTone(rarity, value) {
   return numeric > 0 ? 'positive' : 'negative';
 }
 
-function buildRodTraitEntries(rod) {
+function getRodWithTargetBias(rod, rodTarget = null) {
+  if (!rodTarget || rod?.targetFishEffect?.type !== 'gold_humble') return rod;
+  const targetBias = getGoldHumbleRarityBias(rod, rodTarget);
+  if (!Object.keys(targetBias).length) return rod;
+  return {
+    ...rod,
+    rarityBias: mergeRarityBias(rod.rarityBias || {}, targetBias)
+  };
+}
+
+function buildRodTraitEntries(rod, options = {}) {
+  const effectiveRod = getRodWithTargetBias(rod, options.rodTarget);
   const entries = [];
 
-  const catchRateTrend = describeTrend(rod?.catchRateBonus || 0, [0.003, 0.008, 0.018, 0.04, 0.07]);
+  const catchRateTrend = describeTrend(effectiveRod?.catchRateBonus || 0, [0.003, 0.008, 0.018, 0.04, 0.07]);
   entries.push(catchRateTrend
     ? {
       text: `上鱼率${catchRateTrend.level}${catchRateTrend.positive ? '上升' : '下降'}`,
@@ -741,7 +752,7 @@ function buildRodTraitEntries(rod) {
     }
     : { text: '上鱼率基本不变', tone: 'neutral' });
 
-  const failProtectionTrend = describeTrend(rod?.failProtection || 0, [0.03, 0.08, 0.15, 0.25, 0.35]);
+  const failProtectionTrend = describeTrend(effectiveRod?.failProtection || 0, [0.03, 0.08, 0.15, 0.25, 0.35]);
   if (failProtectionTrend) {
     entries.push({
       text: `护钩率${failProtectionTrend.level}${failProtectionTrend.positive ? '上升' : '下降'}`,
@@ -749,7 +760,7 @@ function buildRodTraitEntries(rod) {
     });
   }
 
-  const waitTrend = describeMultiplierDirection(rod?.waitMultiplier || 1, [0.03, 0.08, 0.16, 0.26, 0.38]);
+  const waitTrend = describeMultiplierDirection(effectiveRod?.waitMultiplier || 1, [0.03, 0.08, 0.16, 0.26, 0.38]);
   if (waitTrend) {
     entries.push({
       text: `等口时间${waitTrend.level}${waitTrend.positive ? '变长' : '缩短'}`,
@@ -758,9 +769,9 @@ function buildRodTraitEntries(rod) {
   }
 
   const rarityBiasEntries = RARITY_ORDER
-    .filter(rarity => Object.prototype.hasOwnProperty.call(rod?.rarityBias || {}, rarity))
+    .filter(rarity => Object.prototype.hasOwnProperty.call(effectiveRod?.rarityBias || {}, rarity))
     .map(rarity => {
-      const value = Number(rod?.rarityBias?.[rarity] || 0);
+      const value = Number(effectiveRod?.rarityBias?.[rarity] || 0);
       const arrow = rarityBiasArrow(value);
       return {
         label: `${getRarityBiasLabel(rarity)}几率`,
@@ -777,7 +788,7 @@ function buildRodTraitEntries(rod) {
     });
   }
 
-  const sizeTrend = describeMultiplierDirection(rod?.sizeMultiplier || 1, [0.008, 0.02, 0.05, 0.09, 0.14]);
+  const sizeTrend = describeMultiplierDirection(effectiveRod?.sizeMultiplier || 1, [0.008, 0.02, 0.05, 0.09, 0.14]);
   if (sizeTrend) {
     entries.push({
       text: `尺寸表现${sizeTrend.level}${sizeTrend.positive ? '上升' : '下降'}`,
@@ -785,7 +796,7 @@ function buildRodTraitEntries(rod) {
     });
   }
 
-  const weightTrend = describeMultiplierDirection(rod?.weightMultiplier || 1, [0.01, 0.03, 0.07, 0.12, 0.18]);
+  const weightTrend = describeMultiplierDirection(effectiveRod?.weightMultiplier || 1, [0.01, 0.03, 0.07, 0.12, 0.18]);
   if (weightTrend) {
     entries.push({
       text: `重量表现${weightTrend.level}${weightTrend.positive ? '上升' : '下降'}`,
@@ -793,20 +804,20 @@ function buildRodTraitEntries(rod) {
     });
   }
 
-  if (Number(rod?.minSizeRatio || 0) > 0 || Number(rod?.minWeightRatio || 0) > 0) {
+  if (Number(effectiveRod?.minSizeRatio || 0) > 0 || Number(effectiveRod?.minWeightRatio || 0) > 0) {
     entries.push({ text: '巨物下限更稳，不容易出太小的个体', tone: 'positive' });
   }
-  if (Number(rod?.baitPreserveChance || 0) > 0) {
-    const preserveTrend = describeTrend(rod.baitPreserveChance, [0.03, 0.08, 0.15, 0.24, 0.34]);
+  if (Number(effectiveRod?.baitPreserveChance || 0) > 0) {
+    const preserveTrend = describeTrend(effectiveRod.baitPreserveChance, [0.03, 0.08, 0.15, 0.24, 0.34]);
     entries.push({
       text: `保饵能力${preserveTrend?.level || '微小幅度'}上升`,
       tone: 'positive'
     });
   }
-  if (Number(rod?.catchCoinBonus || 0) > 0) entries.push({ text: '每次成功上鱼会顺带多捞一点鱼币', tone: 'positive' });
-  if (Number(rod?.signalBonusCoins || 0) > 0) entries.push({ text: '命中鱼讯时收成会更亮眼', tone: 'positive' });
-  if (Number(rod?.permanentDailyCasts || 0) > 0) entries.push({ text: '装备后每日可抛竿次数会增加', tone: 'positive' });
-  if (Number(rod?.ownedPermanentDailyCasts || 0) > 0) entries.push({ text: '只要拥有这根竿，每日可抛竿次数就会增加', tone: 'positive' });
+  if (Number(effectiveRod?.catchCoinBonus || 0) > 0) entries.push({ text: '每次成功上鱼会顺带多捞一点鱼币', tone: 'positive' });
+  if (Number(effectiveRod?.signalBonusCoins || 0) > 0) entries.push({ text: '命中鱼讯时收成会更亮眼', tone: 'positive' });
+  if (Number(effectiveRod?.permanentDailyCasts || 0) > 0) entries.push({ text: '装备后每日可抛竿次数会增加', tone: 'positive' });
+  if (Number(effectiveRod?.ownedPermanentDailyCasts || 0) > 0) entries.push({ text: '只要拥有这根竿，每日可抛竿次数就会增加', tone: 'positive' });
   if (rod?.targetFishEffect) entries.push({ text: '可指定目标鱼：目标鱼在同稀有度中的出现感会明显增强，偶尔会有鱼影意外闯入', tone: 'positive' });
   if (rod?.targetFishEffect?.rewardCoinsByRarity) entries.push({ text: '成功钓到指定目标时会获得额外鱼币奖励', tone: 'positive' });
   if (rod?.suppressExtraCoinBonuses) entries.push({ text: '目标检索生效时，其它额外鱼币收益会被压下去', tone: 'negative' });
@@ -814,12 +825,12 @@ function buildRodTraitEntries(rod) {
   return entries;
 }
 
-function buildRodTraitLines(rod) {
-  return buildRodTraitEntries(rod).map(entry => entry.text);
+function buildRodTraitLines(rod, options = {}) {
+  return buildRodTraitEntries(rod, options).map(entry => entry.text);
 }
 
-function buildRodTraitHtml(rod) {
-  const entries = buildRodTraitEntries(rod);
+function buildRodTraitHtml(rod, options = {}) {
+  const entries = buildRodTraitEntries(rod, options);
   if (!entries.length) return '';
 
   const html = entries.map(entry => {
@@ -4596,8 +4607,8 @@ async checkEasterEggCollection(e) {
     }
 
     const owned = userData.rodsOwned.includes(rod.id);
-    const traitLines = buildRodTraitLines(rod);
     const rodTarget = resolveRodTarget(userData, rod);
+    const traitLines = buildRodTraitLines(rod, { rodTarget });
     const sourceLine = rod.sourceLottery
       ? `来源：祈愿限定（估值 ${rod.lotteryValue || 0} 鱼币）`
       : rod.sourceLegendary
@@ -4606,7 +4617,7 @@ async checkEasterEggCollection(e) {
     let targetLine = null;
     if (rod.targetFishEffect) {
       if (rodTarget) {
-        targetLine = `指定目标：${rodTarget.name}（${rodTarget.rarity}） | 同稀有度出现感已大大增加，偶尔会有鱼影意外闯入`;
+        targetLine = `指定目标：${rodTarget.name}（${rodTarget.rarity}） | 下方词条已按当前目标修正，同稀有度出现感已大大增加`;
       } else {
         targetLine = '指定目标：未指定，可用 #金谦指定 鱼名';
       }
@@ -4617,7 +4628,7 @@ async checkEasterEggCollection(e) {
       sourceLine,
       targetLine,
       `手感描述：${rod.description}`,
-      { type: 'html-block', html: buildRodTraitHtml(rod) }
+      { type: 'html-block', html: buildRodTraitHtml(rod, { rodTarget }) }
     ].filter(Boolean);
     const fallback = [
       '鱼竿详情',
