@@ -5,6 +5,7 @@
   "type": "module",
   "description": "TRSS-Yunzai / Yunzai-Bot fishing plugin",
   "optionalDependencies": {
-    "luxon": "^3.7.2"
+    "luxon": "^3.7.2",
+    "node-fetch": "^3.3.2"
   }
 }
