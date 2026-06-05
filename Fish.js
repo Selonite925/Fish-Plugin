@@ -419,6 +419,29 @@ function getLotteryRewardMetaText(reward) {
   return `${count}份，库存按份消耗`;
 }
 
+function getLotteryRewardPreviewMetaText(reward) {
+  if (!reward) return '愿品内容以实际入账为准';
+  if (reward.type === 'bait') return getLotteryRewardMetaText(reward) || '鱼饵会直接加入库存';
+  if (reward.type === 'ticket') return `额外钓鱼券 +${Math.max(1, Math.floor(Number(reward.count || 1)))}`;
+  if (reward.type === 'lottery_free_draw') return `免费祈愿 +${Math.max(1, Math.floor(Number(reward.count || 1)))}`;
+  if (reward.type === 'coins') return '鱼币愿品，获得后会直接到账';
+  return '愿品内容以实际入账为准';
+}
+
+function getLotteryRewardResultMetaText(reward, item = {}) {
+  if (!reward) return '已完成本次祈愿';
+  if (item.isGrandPrize) {
+    if (reward.duplicate) return `你已经拥有它，这次折成 ${reward.compensationCoins || 0} 鱼币`;
+    return reward.type === 'rod' ? '已加入鱼竿收藏' : '限定愿品已入账';
+  }
+  if (reward.duplicate) return `重复愿品折成 ${reward.compensationCoins || 0} 鱼币`;
+  if (reward.type === 'coins') return `到账 ${Number(reward.amount || 0)} 鱼币`;
+  if (reward.type === 'bait') return getLotteryRewardMetaText(reward) || '鱼饵已加入库存';
+  if (reward.type === 'ticket') return `钓鱼券 +${Math.max(1, Math.floor(Number(reward.count || 1)))}`;
+  if (reward.type === 'lottery_free_draw') return `免费祈愿 +${Math.max(1, Math.floor(Number(reward.count || 1)))}`;
+  return '已发放到背包';
+}
+
 function mergeRarityBias(...biasList) {
   const merged = {};
   for (const bias of biasList) {
@@ -3893,16 +3916,13 @@ async checkEasterEggCollection(e) {
 
   buildLotteryResultPanel(userDisplay, userData, result) {
     const grandCount = result.results.filter(item => item.isGrandPrize).length;
-    const valueTotal = result.results
-      .filter(item => !item.isGrandPrize)
-      .reduce((sum, item) => sum + Number(item.reward?.value || 0), 0);
     const grandStatus = result.grandAvailableAfter
-      ? `金线进度 ${result.pityAfter}/${result.pityLimit || 100}`
+      ? '金线仍在水下轻轻发亮'
       : '当前限定愿品已获得，留些机会给没遇见它的钓友吧';
     const rewardLines = result.results.map((item, index) => {
       const reward = item.reward || {};
       const prefix = item.isGrandPrize ? (item.pityHit ? '金线牵引' : '限定愿品') : `愿${index + 1}`;
-      return `${prefix} | ${reward.title || reward.type} | ${reward.desc || ''}`;
+      return `${prefix} | ${reward.title || reward.type} | ${reward.desc || ''} | ${getLotteryRewardResultMetaText(reward, item)}`;
     });
     const groups = applyGroupThemes([
       {
@@ -3919,7 +3939,7 @@ async checkEasterEggCollection(e) {
             badge: '限定',
             title: grandCount > 0 ? `相遇 ${grandCount} 次` : '擦肩而过',
             desc: result.grandPlugin?.name || '限定愿品暂未挂载',
-            meta: `${grandStatus} | 普通愿品估值约 ${valueTotal} 鱼币`,
+            meta: grandStatus,
             tone: grandCount > 0 ? 'legendary' : 'neutral'
           }
         ]
@@ -3928,14 +3948,11 @@ async checkEasterEggCollection(e) {
         group: '愿品明细',
         list: result.results.map((item, index) => {
           const reward = item.reward || {};
-          const baitMeta = getLotteryRewardMetaText(reward);
           return {
             badge: item.isGrandPrize ? (item.pityHit ? '金线' : '限定') : `愿${index + 1}`,
             title: reward.title || reward.type,
             desc: reward.desc || '已发放到背包',
-            meta: item.isGrandPrize
-              ? `限定愿品估值 ${Number(reward.value || 0)} 鱼币，不计入普通回报`
-              : reward.duplicate ? `重复补偿：${reward.compensationCoins} 鱼币` : `${baitMeta ? `${baitMeta} | ` : ''}估值 ${Number(reward.value || 0)} 鱼币`,
+            meta: getLotteryRewardResultMetaText(reward, item),
             tone: item.isGrandPrize ? 'legendary' : reward.type === 'coins' ? 'gold' : reward.type === 'bait' ? 'sky' : reward.type === 'lottery_free_draw' ? 'active' : 'positive'
           };
         })
@@ -3967,22 +3984,13 @@ async checkEasterEggCollection(e) {
     const grandPlugin = getLotteryPoolSummary().grandPlugin;
     const grandAvailable = isLotteryGrandPrizeAvailable(userData, grandPlugin);
     const pool = getLotteryPoolSummary({ grandAvailable });
-    const expected = pool.expected;
-    const grandStatusText = grandAvailable ? '仍在与你隔水相望' : '当前限定愿品已获得';
-    const regularRateTotal = grandAvailable ? (1 - pool.config.grandPrize.rate) : 1;
-    const regularWeightTotal = pool.regularRewards
-      .reduce((sum, item) => sum + Math.max(0, Number(item.weight || 0)), 0);
-    const getRegularProbability = reward => regularWeightTotal > 0
-      ? Math.max(0, Number(reward.weight || 0)) / regularWeightTotal * regularRateTotal
-      : 0;
+    const grandStatusText = grandAvailable ? '仍在与你隔水相望' : '当前限定愿品已获得，留些机会给没遇见它的钓友吧';
     const regularRewards = pool.regularRewards.map(reward => {
-      const probability = getRegularProbability(reward);
-      const baitMeta = getLotteryRewardMetaText(reward);
       return {
         badge: reward.type === 'coins' ? '币' : reward.type === 'bait' ? '饵' : reward.type === 'ticket' ? '券' : reward.type === 'lottery_free_draw' ? '愿' : '品',
         title: reward.title || reward.id || reward.type,
         desc: reward.desc || '普通愿品',
-        meta: `概率 ${(probability * 100).toFixed(1)}% | ${baitMeta ? `${baitMeta} | ` : ''}估值 ${Number(reward.value || 0)}鱼币`,
+        meta: getLotteryRewardPreviewMetaText(reward),
         tone: reward.type === 'coins' ? 'gold' : reward.type === 'bait' ? 'sky' : reward.type === 'lottery_free_draw' ? 'active' : 'positive'
       };
     });
@@ -3998,10 +4006,10 @@ async checkEasterEggCollection(e) {
             tone: 'active'
           },
           {
-            badge: '期望',
-            title: `${(expected.expectedRate * 100).toFixed(1)}% 普通回报`,
-            desc: `不计限定愿品价值，单次普通愿品期望约 ${expected.expectedValue.toFixed(1)} 鱼币`,
-            meta: `免费祈愿递延已折算，限定愿品价值不计入收入期望`,
+            badge: '提示',
+            title: '愿品会直接入账',
+            desc: '鱼币、鱼饵、钓鱼券和免费祈愿都会在结算后自动加入',
+            meta: '清单仅作愿池预览，实际获得以结算为准',
             tone: 'gold'
           },
           {
@@ -4010,7 +4018,7 @@ async checkEasterEggCollection(e) {
             desc: grandAvailable
               ? `${pool.grandPlugin?.description || '限定愿品接口为空'}`
               : '你已经获得过当前限定愿品，留些机会给没遇见它的钓友吧。',
-            meta: `${grandStatusText} | 金线进度 ${Number(userData.lotteryPity || 0)}/${pool.config.grandPrize.pityDraws} | 估值 ${pool.grandPlugin?.reward?.value || 0} 鱼币`,
+            meta: grandStatusText,
             tone: 'legendary',
             fullWidth: true
           }
@@ -4024,15 +4032,14 @@ async checkEasterEggCollection(e) {
     const fallback = [
       '钓鱼祈愿清单',
       `${pool.config.cost}鱼币/次，单次最多 ${pool.config.maxDrawsPerCommand} 连`,
-      `普通愿品期望：${expected.expectedValue.toFixed(1)}鱼币/次，约 ${(expected.expectedRate * 100).toFixed(1)}%，不计限定愿品价值`,
-      `金线进度：${Number(userData.lotteryPity || 0)}/${pool.config.grandPrize.pityDraws} | 免费祈愿：${Number(userData.lotteryFreeDraws || 0)}`,
+      `免费祈愿：${Number(userData.lotteryFreeDraws || 0)}`,
       `限定愿品：${pool.grandPlugin?.name || '未挂载'}（${grandStatusText}）`,
-      ...pool.regularRewards.map(item => `${item.title || item.id || item.type} | 概率 ${(getRegularProbability(item) * 100).toFixed(1)}% | ${getLotteryRewardMetaText(item) ? `${getLotteryRewardMetaText(item)} | ` : ''}估值 ${Number(item.value || 0)}鱼币`)
+      ...pool.regularRewards.map(item => `${item.title || item.id || item.type} | ${getLotteryRewardPreviewMetaText(item)}`)
     ].join('\n');
     await replyWithPanel(this, {
       key: `fish-lottery-pool-${e.user_id}`,
       title: '钓鱼祈愿清单',
-      subtitle: '100鱼币一次，限定愿品不计入收入期望',
+      subtitle: '100鱼币一次，愿品会在结算后直接入账',
       sections: buildCardGridSections(groups, { badgePrefix: '愿' }),
       footer: '祈愿：#钓鱼祈愿 / #钓鱼祈愿10 / #钓鱼十连'
     }, fallback);
@@ -4279,7 +4286,7 @@ async checkEasterEggCollection(e) {
       const lines = recyclableRods.map((rod, index) => {
         const extra = rod.sourceLegendary
           ? ` | 炼成来源:${rod.sourceLegendary}`
-          : rod.sourceLottery ? ` | 祈愿限定:估值${rod.lotteryValue || 0}` : '';
+          : rod.sourceLottery ? ' | 祈愿限定' : '';
         const equipMark = rod.id === equippedRod.id ? ' | 当前装备' : '';
         return `鱼竿${index + 1} | ${rod.name} - 回收价 ${getRodRecycleValue(rod)} 鱼币${extra}${equipMark}`;
       });
@@ -4566,7 +4573,7 @@ async checkEasterEggCollection(e) {
         owned.has(rod.id) ? '已拥有' : `${rod.price}鱼币`,
         owned.has(rod.id) && rod.id !== DEFAULT_ROD_ID ? `回收价:${getRodRecycleValue(rod)}鱼币` : null,
         rod.sourceLegendary ? `炼成来源:${rod.sourceLegendary}` : null,
-        rod.sourceLottery ? `祈愿限定:估值${rod.lotteryValue || 0}` : null
+        rod.sourceLottery ? '祈愿限定' : null
       ].filter(Boolean).join(' | ');
       return `鱼竿${index + 1} | ${rod.name} - ${marks} - ${rod.description}`;
     });
@@ -4594,7 +4601,7 @@ async checkEasterEggCollection(e) {
             owned.has(rod.id) ? '已拥有' : `${rod.price}鱼币`,
             owned.has(rod.id) && rod.id !== DEFAULT_ROD_ID ? `回收价 ${getRodRecycleValue(rod)}鱼币` : '',
             rod.sourceLegendary ? `炼成来源 ${rod.sourceLegendary}` : '',
-            rod.sourceLottery ? `祈愿限定 估值${rod.lotteryValue || 0}` : ''
+            rod.sourceLottery ? '祈愿限定' : ''
           ]),
           tone: rod.id === equipped.id ? 'active' : owned.has(rod.id) ? 'positive' : rod.sourceLegendary || rod.sourceLottery ? 'legendary' : 'plum'
         }))
@@ -4637,7 +4644,7 @@ async checkEasterEggCollection(e) {
     const rodTarget = resolveRodTarget(userData, rod);
     const traitLines = buildRodTraitLines(rod, { rodTarget });
     const sourceLine = rod.sourceLottery
-      ? `来源：祈愿限定（估值 ${rod.lotteryValue || 0} 鱼币）`
+      ? `来源：祈愿限定`
       : rod.sourceLegendary
         ? `炼成来源：${rod.sourceLegendary}`
         : `售价：${rod.price}鱼币`;
