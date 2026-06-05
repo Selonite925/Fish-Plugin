@@ -720,6 +720,21 @@ function rarityBiasArrow(value) {
   return arrow;
 }
 
+function getAdjustedRarityWeights(bias = {}) {
+  const adjusted = {};
+  for (const [rarity, weight] of Object.entries(rarityWeights)) {
+    adjusted[rarity] = Math.max(0.0001, Number(weight || 0) + Number(bias?.[rarity] || 0));
+  }
+  const total = Object.values(adjusted).reduce((sum, weight) => sum + weight, 0);
+  if (total <= 0) return {};
+  return Object.fromEntries(Object.entries(adjusted).map(([rarity, weight]) => [rarity, weight / total]));
+}
+
+function rarityProbabilityDelta(rarity, bias = {}) {
+  const adjusted = getAdjustedRarityWeights(bias);
+  return Number(adjusted?.[rarity] || 0) - Number(rarityWeights?.[rarity] || 0);
+}
+
 function describeMultiplierDirection(value, thresholds = [0.015, 0.04, 0.08]) {
   const numeric = Number(value || 1) - 1;
   return describeTrend(numeric, thresholds);
@@ -776,7 +791,7 @@ function buildRodTraitEntries(rod, options = {}) {
   const rarityBiasEntries = RARITY_ORDER
     .filter(rarity => Object.prototype.hasOwnProperty.call(effectiveRod?.rarityBias || {}, rarity))
     .map(rarity => {
-      const value = Number(effectiveRod?.rarityBias?.[rarity] || 0);
+      const value = rarityProbabilityDelta(rarity, effectiveRod?.rarityBias || {});
       const arrow = rarityBiasArrow(value);
       return {
         label: `${getRarityBiasLabel(rarity)}几率`,
@@ -868,7 +883,7 @@ function buildBaitTraitEntries(bait) {
   const rarityBiasEntries = RARITY_ORDER
     .filter(rarity => Object.prototype.hasOwnProperty.call(bait?.rarityBias || {}, rarity))
     .map(rarity => {
-      const value = Number(bait?.rarityBias?.[rarity] || 0);
+      const value = rarityProbabilityDelta(rarity, bait?.rarityBias || {});
       const arrow = rarityBiasArrow(value);
       return {
         label: `${getRarityBiasLabel(rarity)}几率`,
