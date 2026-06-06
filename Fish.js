@@ -434,6 +434,35 @@ function getOwnedBaitsDisplaySummary(userData) {
   return entries.join('、');
 }
 
+function getSenderGroupDisplayName(e, fallback = '你') {
+  const card = String(e?.sender?.card || '').trim();
+  if (card) return card;
+  const nickname = String(e?.sender?.nickname || '').trim();
+  if (nickname) return nickname;
+  return fallback;
+}
+
+function getSafeGroupMemberDisplayName(e, targetUserId, fallback = '某位群友') {
+  const rawUserId = Array.isArray(targetUserId) ? targetUserId[0] : targetUserId;
+  const userId = String(rawUserId || '').trim();
+  if (!userId) return fallback;
+  const displayName = getDisplayNameForUser(e, userId);
+  if (displayName && displayName !== userId) return displayName;
+  return fallback;
+}
+
+function getSafeLostItemOwnerName(e, foundItem = {}) {
+  const ownerId = String(foundItem?.ownerId || '').trim();
+  if (ownerId) {
+    const displayName = getDisplayNameForUser(e, ownerId);
+    if (displayName && displayName !== ownerId) return displayName;
+  }
+
+  const storedName = String(foundItem?.ownerName || '').trim();
+  if (storedName && storedName !== ownerId && !/^\d{5,}$/.test(storedName)) return storedName;
+  return '某位钓友';
+}
+
 function getBaitAcquireText(bait) {
   const packSize = Math.max(1, Number(bait?.packSize || 1));
   if (bait?.isDefault) return '售价：不可购买';
@@ -839,7 +868,7 @@ function buildRarityBiasEntries(bias = {}) {
       tone: getRarityBiasTone(value, baseWeight),
       arrowTone: arrow === '-' ? 'flat' : value > 0 ? 'up' : 'down'
     };
-  });
+  }).filter(entry => !(entry.label === getRarityBiasLabel(EASTER_EGG_RARITY) && entry.arrow === '-'));
 }
 
 function getRodWithTargetBias(rod, rodTarget = null) {
@@ -2330,6 +2359,7 @@ export class fishing extends plugin {
 
   async addBait(e) {
     const userId = String(e.user_id);
+    const senderDisplay = getSenderGroupDisplayName(e);
     const baitData = loadBaitData();
     if (!baitData[userId]) {
       baitData[userId] = { todayUsed: false, remainingCasts: 0, bonusRate: 0 };
@@ -2342,11 +2372,15 @@ export class fishing extends plugin {
     let baitContent = '';
     let baitDisplayText = '一份窝料';
     let baitType = 'text';
+    let actionText = '';
     let bonusRate = 0;
     if (e.at) {
-      baitContent = `群友(${e.at})`;
-      baitDisplayText = '一位群友帮忙准备的窝料';
+      const targetUserId = Array.isArray(e.at) ? e.at[0] : e.at;
+      const targetDisplay = getSafeGroupMemberDisplayName(e, targetUserId);
+      baitContent = `群友(${targetDisplay})`;
+      baitDisplayText = `群友${targetDisplay}`;
       baitType = 'user';
+      actionText = `【${senderDisplay}】将群友【${targetDisplay}】丢下去打了窝`;
       bonusRate = (Math.random() * 30 - 15) / 100;
     } else {
       const match = e.msg.match(/#打窝\s+(.+)/);
@@ -2355,6 +2389,8 @@ export class fishing extends plugin {
         return;
       }
       baitContent = match[1].trim();
+      baitDisplayText = baitContent;
+      actionText = `【${senderDisplay}】将${baitContent}丢下去打了窝`;
       bonusRate = (Math.random() * 14 - 7) / 100;
     }
 
@@ -2374,7 +2410,7 @@ export class fishing extends plugin {
       : bonusRate < 0
         ? `这窝子味道有点怪，上鱼率降低${Math.abs(ratePercent)}%`
         : '效果一般，上鱼率没有变化';
-    await this.reply(`你把${baitDisplayText}扔下去打了窝。\n${effectMsg}\n效果将持续2竿钓鱼。`);
+    await this.reply(`${actionText}。\n${effectMsg}\n效果将持续2竿钓鱼。`);
   }
 
   async handleSpecialFishEvent(fish) {
@@ -2455,7 +2491,11 @@ export class fishing extends plugin {
       return {
         type: 'lost_item',
         itemName: foundItem.itemName,
-        message: fillMessageTemplate(messageTemplate, foundItem)
+        message: fillMessageTemplate(messageTemplate, {
+          ...foundItem,
+          ownerName: getSafeLostItemOwnerName(e, foundItem),
+          ownerId: ''
+        })
       };
     }
 
@@ -4603,7 +4643,8 @@ async checkEasterEggCollection(e) {
       const addedCount = item.packSize * quantity;
       userData.baitInventory[item.id] += addedCount;
       saveFishData(data);
-      await this.reply(`${userDisplay}\n已购买 ${item.name} ${quantity} 包，共 ${totalPrice} 鱼币；每包 ${item.packSize} 份，库存 +${addedCount} 次。可用 #换饵 ${item.name} 切换。当前鱼币：${userData.coins}`);
+      const baitName = getBaitDisplayName(item);
+      await this.reply(`${userDisplay}\n已购买 ${baitName} ${quantity} 包，共 ${totalPrice} 鱼币；每包 ${item.packSize} 份，库存 +${addedCount} 次。可用 #换饵 ${baitName} 切换。当前鱼币：${userData.coins}`);
       return;
     }
 
