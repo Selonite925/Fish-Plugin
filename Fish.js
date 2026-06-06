@@ -64,7 +64,6 @@ import {
   getTargetUserId,
   getDisplayNameForUser,
   getUserDisplay,
-  getOwnedBaitsSummary,
   getOwnedEasterEggCollection,
   getOwnedRodsSummary,
   isFishLocked,
@@ -397,6 +396,42 @@ function getBaitPackText(bait) {
   const costPerUse = unitPrice / packSize;
   if (bait?.lotteryOnly) return `祈愿限定，1包${packSize}份，库存按份消耗`;
   return `${unitPrice}鱼币/包，1包${packSize}份，约${costPerUse.toFixed(1)}鱼币/次`;
+}
+
+function getStableDisplayCode(seedText = '') {
+  const source = String(seedText || 'custom');
+  let hash = 0;
+  for (const char of source) {
+    hash = (hash * 131 + char.codePointAt(0)) % 1679616;
+  }
+  return hash.toString(36).toUpperCase().padStart(4, '0').slice(-4);
+}
+
+function isCustomBait(bait) {
+  return Boolean(bait?.isCustom || bait?.sourceText || String(bait?.id || '').startsWith('custom_'));
+}
+
+function getBaitDisplayName(bait) {
+  if (!bait) return '未知鱼饵';
+  if (!isCustomBait(bait)) return bait.name || bait.id || '未知鱼饵';
+  const code = bait.displayCode || getStableDisplayCode(bait.id || bait.sourceText || bait.name);
+  return bait.displayName || `手作鱼饵-${code}`;
+}
+
+function getBaitDisplayDescription(bait) {
+  if (!bait) return '';
+  if (!isCustomBait(bait)) return bait.description || '';
+  return bait.displayDescription || '一份按私人配方拌出的定制鱼饵，气味层次复杂，适合试试不同手感。';
+}
+
+function getOwnedBaitsDisplaySummary(userData) {
+  const entries = Object.entries(userData?.baitInventory || {})
+    .filter(([, count]) => Number(count || 0) > 0)
+    .map(([id, count]) => {
+      const bait = userData?.customBaits?.[id] || BAIT_CATALOG[id] || SHOP_ITEMS[id] || { id, name: id };
+      return `${getBaitDisplayName(bait)}x${count}`;
+    });
+  return entries.join('、');
 }
 
 function getBaitAcquireText(bait) {
@@ -1668,12 +1703,12 @@ export class fishing extends plugin {
       const hasRemoteUpdate = Boolean(currentHead && remoteHead && currentHead !== remoteHead);
 
       if (!hasRemoteUpdate && dirtyFiles.length === 0) {
-        await this.reply(`Fish-plugin 已是最新版。\n当前版本：${currentHead || remoteHead || 'unknown'}`);
+        await this.reply(`Fish-plugin 已是最新版。\n当前版本：${currentHead || remoteHead || '未知版本'}`);
         return true;
       }
 
       if (dirtyFiles.length === 0 && hasRemoteUpdate) {
-        await this.reply(`检测到新版本 ${currentHead || 'unknown'} -> ${remoteHead}，正在尝试标准更新。`);
+        await this.reply(`检测到新版本 ${currentHead || '未知版本'} -> ${remoteHead}，正在尝试标准更新。`);
         const trackingRef = await this.getRemoteTrackingRef(__dirname);
         const pullRet = trackingRef
           ? await this.gitExec(['merge', '--ff-only', trackingRef])
@@ -1913,7 +1948,13 @@ export class fishing extends plugin {
   getBaitByKeyword(userData, keyword) {
     const text = String(keyword || '').trim();
     return userData?.customBaits?.[text] ||
-      Object.values(userData?.customBaits || {}).find(item => item.name === text || item.sourceText === text) ||
+      Object.values(userData?.customBaits || {}).find(item =>
+        item.id === text ||
+        item.name === text ||
+        item.displayName === text ||
+        getBaitDisplayName(item) === text ||
+        item.sourceText === text
+      ) ||
       Object.values(BAIT_CATALOG).find(item => item.id === text || item.name === text || item.aliases?.includes(text)) ||
       null;
   }
@@ -2184,11 +2225,12 @@ export class fishing extends plugin {
     const beforeCount = Number(userData.baitInventory[bait.id] || 0);
     if (!preserved) userData.baitInventory[bait.id] -= 1;
     const afterCount = Number(userData.baitInventory[bait.id] || 0);
+    const baitName = getBaitDisplayName(bait);
     const message = preserved
-      ? `\n[当前鱼饵] ${bait.name} 这次被稳稳留住了，剩余 ${beforeCount} 份。`
+      ? `\n[当前鱼饵] ${baitName} 这次被稳稳留住了，剩余 ${beforeCount} 份。`
       : afterCount > 0
-        ? `\n[当前鱼饵] 已消耗 1 份 ${bait.name}，剩余 ${afterCount} 份。`
-        : `\n[当前鱼饵] 已消耗最后 1 份 ${bait.name}，下次将自动换回清水团饵。`;
+        ? `\n[当前鱼饵] 已消耗 1 份 ${baitName}，剩余 ${afterCount} 份。`
+        : `\n[当前鱼饵] 已消耗最后 1 份 ${baitName}，下次将自动换回清水团饵。`;
     const rarityBias = bait.rarityBias || {};
     if (userData.baitInventory[bait.id] <= 0) userData.equippedBait = 'plain';
     return {
@@ -2294,9 +2336,13 @@ export class fishing extends plugin {
     }
 
     let baitContent = '';
+    let baitDisplayText = '一份窝料';
+    let baitType = 'text';
     let bonusRate = 0;
     if (e.at) {
       baitContent = `群友(${e.at})`;
+      baitDisplayText = '一位群友帮忙准备的窝料';
+      baitType = 'user';
       bonusRate = (Math.random() * 30 - 15) / 100;
     } else {
       const match = e.msg.match(/#打窝\s+(.+)/);
@@ -2312,7 +2358,9 @@ export class fishing extends plugin {
       todayUsed: true,
       remainingCasts: 2,
       bonusRate,
-      baitContent
+      baitContent,
+      baitDisplayText,
+      baitType
     };
     saveBaitData(baitData);
 
@@ -2322,7 +2370,7 @@ export class fishing extends plugin {
       : bonusRate < 0
         ? `这窝子味道有点怪，上鱼率降低${Math.abs(ratePercent)}%`
         : '效果一般，上鱼率没有变化';
-    await this.reply(`你把${baitContent}扔下去打了窝。\n${effectMsg}\n效果将持续2竿钓鱼。`);
+    await this.reply(`你把${baitDisplayText}扔下去打了窝。\n${effectMsg}\n效果将持续2竿钓鱼。`);
   }
 
   async handleSpecialFishEvent(fish) {
@@ -2601,17 +2649,17 @@ export class fishing extends plugin {
       });
     }
 
-    const missingPreview = [];
+    let missingCount = 0;
     for (const rarity of [...visibleRarities].reverse()) {
       for (const fish of this.fishTypes[rarity] || []) {
         if (!collectedNames.has(fish.name)) {
-          missingPreview.push(`${fish.name}(${rarityLabel(rarity)})`);
+          missingCount += 1;
         }
       }
     }
 
-    const footer = missingPreview.length > 0
-      ? `还缺 ${missingPreview.length} 种 | 优先补位：${missingPreview.slice(0, 6).join('、')}`
+    const footer = missingCount > 0
+      ? `还缺 ${missingCount} 种 | 继续钓鱼，新的鱼影会慢慢亮起来。`
       : '你已经集齐当前所有可展示鱼种。';
 
     const fallbackLines = [
@@ -2844,7 +2892,10 @@ export class fishing extends plugin {
         const bait = getEquippedBait(userData);
         const shopBait = this.consumeShopBait(userData, bait);
         const shopBaitActive = bait.id !== 'plain' && (shopBait.bonus !== 0 || Object.keys(shopBait.rarityBias || {}).length > 0 || Object.keys(shopBait.bodyModifiers || {}).length > 0);
-        if (shopBaitActive) summary.baitUses[bait.name] = (summary.baitUses[bait.name] || 0) + 1;
+        if (shopBaitActive) {
+          const baitName = getBaitDisplayName(bait);
+          summary.baitUses[baitName] = (summary.baitUses[baitName] || 0) + 1;
+        }
 
         const manualBait = this.consumeManualBait(userId, baitData, { persist: false });
         if (manualBait.message) summary.manualBaitCasts += 1;
@@ -2954,7 +3005,7 @@ export class fishing extends plugin {
       saveFishData(data);
 
       const easterEggEffect = getEasterEggEffects(userData);
-      await this.reply(`${userDisplay}\n已抛竿，当前鱼竿：${rod.name}\n当前鱼饵：${bait.name}\n请稍等片刻...`);
+      await this.reply(`${userDisplay}\n已抛竿，当前鱼竿：${rod.name}\n当前鱼饵：${getBaitDisplayName(bait)}\n请稍等片刻...`);
 
       const minDelay = 1000;
       const maxDelay = 15000;
@@ -3459,21 +3510,22 @@ async checkEasterEggCollection(e) {
     const status = getEasterEggStatusSummary(userData);
     const ownedText = status.owned.length ? status.owned.join('、') : '暂无';
     const pendingText = status.pendingName ? `${status.pendingName}（明日生效）` : '无';
-    const effectItems = Object.entries(EASTER_EGG_EFFECTS).map(([name, effect]) => {
-      const owned = status.owned.includes(name);
+    const hiddenCount = Math.max(0, Object.keys(EASTER_EGG_EFFECTS).length - status.owned.length);
+    const effectItems = status.owned.map(name => {
+      const effect = EASTER_EGG_EFFECTS[name] || {};
       const isActive = status.activeName === name;
       const isPending = status.pendingName === name;
       const badges = [
-        owned ? '已收集' : '未收集',
+        '已收集',
         isActive ? '当前生效' : null,
         isPending ? '待切换' : null
       ].filter(Boolean).join(' | ');
       return {
-        badge: isActive ? '生效' : isPending ? '待切' : owned ? '已收' : '未收',
+        badge: isActive ? '生效' : isPending ? '待切' : '已收',
         title: name,
-        desc: effect.description || '隐藏效果',
+        desc: effect.description || '效果已记录',
         meta: badges,
-        tone: isActive ? 'active' : isPending ? 'warning' : owned ? 'positive' : 'neutral'
+        tone: isActive ? 'active' : isPending ? 'warning' : 'positive'
       };
     });
     const statusGroups = [{
@@ -3486,7 +3538,22 @@ async checkEasterEggCollection(e) {
       ]
     }, {
       group: '彩蛋条目',
-      list: effectItems
+      list: [
+        ...(effectItems.length ? effectItems : [{
+          badge: '暂无',
+          title: '还没有收集到彩蛋',
+          desc: '继续钓鱼，特别的鱼影会在遇见后记录到这里。',
+          tone: 'neutral',
+          fullWidth: true
+        }]),
+        ...(hiddenCount > 0 ? [{
+          badge: '未揭',
+          title: `还有 ${hiddenCount} 条彩蛋未揭晓`,
+          desc: '未遇见前不会提前显示名称和效果。',
+          tone: 'neutral',
+          fullWidth: true
+        }] : [])
+      ]
     }];
     const fallback = [
       '彩蛋收藏',
@@ -3660,10 +3727,7 @@ async checkEasterEggCollection(e) {
     const easterEggStatus = getEasterEggStatusSummary(userData);
     const easterEggOwnedText = easterEggStatus.owned.length ? easterEggStatus.owned.join('、') : '暂无';
     const easterEggPendingText = easterEggStatus.pendingName ? `${easterEggStatus.pendingName}（明日生效）` : '无';
-    const baitInventoryText = Object.entries(userData.baitInventory || {})
-      .filter(([, count]) => count > 0)
-      .map(([id, count]) => `${userData.customBaits?.[id]?.name || BAIT_CATALOG[id]?.name || id}x${count}`)
-      .join('、') || '无';
+    const baitInventoryText = getOwnedBaitsDisplaySummary(userData) || '无';
     const sections = buildCardGridSections(applyGroupThemes([
       {
         group: '鱼缸状态',
@@ -3695,7 +3759,7 @@ async checkEasterEggCollection(e) {
           },
           {
             badge: '鱼饵',
-            title: getEquippedBait(userData).name,
+            title: getBaitDisplayName(getEquippedBait(userData)),
             desc: `鱼饵库存：${baitInventoryText}`,
             tone: 'sky'
           }
@@ -3766,7 +3830,7 @@ async checkEasterEggCollection(e) {
     await replyWithPanel(this, {
       key: `tank-${e.user_id}`,
       title: '鱼缸总览',
-      subtitle: `当前鱼竿：${rod.name} | 当前鱼饵：${getEquippedBait(userData).name} | 鱼币 ${userData.coins}`,
+      subtitle: `当前鱼竿：${rod.name} | 当前鱼饵：${getBaitDisplayName(getEquippedBait(userData))} | 鱼币 ${userData.coins}`,
       sections,
       footer: `总钓鱼次数：${userData.total || 0} | 彩蛋加成：${describeEasterEggEffects(userData)}`
     }, fallbackText);
@@ -3839,7 +3903,7 @@ async checkEasterEggCollection(e) {
           buildEquipCardItem({
             badge: '装备',
             title: getEquippedRod(userData).name,
-            desc: `当前鱼饵：${getEquippedBait(userData).name}`,
+            desc: `当前鱼饵：${getBaitDisplayName(getEquippedBait(userData))}`,
             meta: `鱼缸现有 ${tank.length} 条鱼`,
             tone: 'positive'
           })
@@ -3868,8 +3932,8 @@ async checkEasterEggCollection(e) {
         group: '鱼饵区',
         list: baitList.map((bait, index) => ({
           badge: `饵${index + 1}`,
-          title: bait.name,
-          desc: bait.description,
+          title: getBaitDisplayName(bait),
+          desc: getBaitDisplayDescription(bait),
           meta: getBaitPackText(bait),
           tone: userData.baitInventory?.[bait.id] > 0 ? 'positive' : 'sky'
         }))
@@ -3901,10 +3965,10 @@ async checkEasterEggCollection(e) {
       '鱼市',
       `鱼币：${userData.coins} | 钓鱼券：${userData.tickets}`,
       `当前鱼竿：${getEquippedRod(userData).name}`,
-      `当前鱼饵：${getEquippedBait(userData).name}`,
+      `当前鱼饵：${getBaitDisplayName(getEquippedBait(userData))}`,
       '',
       '鱼饵区：',
-      ...baitList.map((bait, index) => `鱼饵${index + 1} | ${bait.name} - ${getBaitPackText(bait)} - ${bait.description}`),
+      ...baitList.map((bait, index) => `鱼饵${index + 1} | ${getBaitDisplayName(bait)} - ${getBaitPackText(bait)} - ${getBaitDisplayDescription(bait)}`),
       '',
       '鱼竿区：',
       ...rodList.map((rod, index) => `鱼竿${index + 1} | ${rod.name} - ${rod.price}鱼币 - ${rod.description}`),
@@ -3918,7 +3982,7 @@ async checkEasterEggCollection(e) {
       title: '鱼市',
       subtitle: '卖多余鱼换鱼币，再购入鱼饵、额外钓鱼券和鱼竿。',
       sections,
-      footer: '购买格式：#鱼市购买 鱼饵1 / #鱼市购买 鱼饵1*5 / #鱼市购买 鱼竿1 / #鱼市购买 自定义鱼饵 桂花酒糟；回收格式：#鱼市回收 鱼竿1；炼竿预览：#炼竿预览 1'
+      footer: '购买格式：#鱼市购买 鱼饵1 / #鱼市购买 鱼饵1*5 / #鱼市购买 鱼竿1 / #鱼市购买 自定义鱼饵 清香窝料；回收格式：#鱼市回收 鱼竿1；炼竿预览：#炼竿预览 1'
     }, fallback);
   }
 
@@ -3946,7 +4010,7 @@ async checkEasterEggCollection(e) {
           {
             badge: '限定',
             title: grandCount > 0 ? `相遇 ${grandCount} 次` : '擦肩而过',
-            desc: result.grandPlugin?.name || '限定愿品暂未挂载',
+            desc: result.grandPlugin?.name || '限定愿品暂未开放',
             meta: grandStatus,
             tone: grandCount > 0 ? 'legendary' : 'neutral'
           }
@@ -4034,9 +4098,9 @@ async checkEasterEggCollection(e) {
           },
           {
             badge: '限定',
-            title: pool.grandPlugin?.name || '未挂载',
+            title: pool.grandPlugin?.name || '暂未开放',
             desc: grandAvailable
-              ? `${pool.grandPlugin?.description || '限定愿品接口为空'}`
+              ? `${pool.grandPlugin?.description || '限定愿品正在水面下等待'}`
               : '你已经获得过当前限定愿品，留些机会给没遇见它的钓友吧。',
             meta: grandAvailable ? `${grandStatusText} | 概率约 ${formatLotteryProbability(grandRate)}` : grandStatusText,
             tone: 'legendary',
@@ -4053,7 +4117,7 @@ async checkEasterEggCollection(e) {
       '钓鱼祈愿清单',
       `${pool.config.cost}鱼币/次，单次最多 ${pool.config.maxDrawsPerCommand} 连`,
       `免费祈愿：${Number(userData.lotteryFreeDraws || 0)}`,
-      `限定愿品：${pool.grandPlugin?.name || '未挂载'}（${grandStatusText}）`,
+      `限定愿品：${pool.grandPlugin?.name || '暂未开放'}（${grandStatusText}）`,
       ...pool.regularRewards.map(item => `${item.title || item.id || item.type} | 概率约 ${formatLotteryProbability(getRegularProbability(item))} | ${getLotteryRewardPreviewMetaText(item)}`)
     ].join('\n');
     await replyWithPanel(this, {
@@ -4467,7 +4531,8 @@ async checkEasterEggCollection(e) {
       if (!userData.baitInventory[bait.id]) userData.baitInventory[bait.id] = 0;
       userData.baitInventory[bait.id] += bait.packSize;
       saveFishData(data);
-      await this.reply(`${userDisplay}\n已定制 ${bait.name}，花费 ${customPrice} 鱼币，库存 +${bait.packSize} 次。\n特点：${bait.description}\n可用 #换饵 ${bait.name} 切换。当前鱼币：${userData.coins}`);
+      const baitName = getBaitDisplayName(bait);
+      await this.reply(`${userDisplay}\n已定制 ${baitName}，花费 ${customPrice} 鱼币，库存 +${bait.packSize} 次。\n特点：${getBaitDisplayDescription(bait)}\n可用 #换饵 ${baitName} 切换。当前鱼币：${userData.coins}`);
       return;
     }
 
@@ -4699,7 +4764,7 @@ async checkEasterEggCollection(e) {
       title: '鱼竿详情',
       subtitle: rod.name,
       sections,
-      footer: '这里只展示词条倾向，不直接公开具体数值。'
+      footer: '词条以倾向展示，实际手感以抛竿为准。'
     }, fallback);
   }
 
@@ -4739,7 +4804,7 @@ async checkEasterEggCollection(e) {
     const keyword = (e.msg.match(/^#鱼饵(?:详情|属性)\s*(.+)$/)?.[1] || '').trim();
     const { text: userDisplay } = getUserDisplay(e);
     if (!keyword) {
-      await this.reply(`${userDisplay}\n请输入鱼饵编号或鱼饵名，例如：#鱼饵详情 鱼饵1 / #鱼饵属性 沉流鱼饵 / #鱼饵详情 桂花酒糟特调饵`);
+      await this.reply(`${userDisplay}\n请输入鱼饵编号或鱼饵名，例如：#鱼饵详情 鱼饵1 / #鱼饵属性 沉流鱼饵 / #鱼饵详情 手作鱼饵-AB12`);
       return;
     }
     await this.showBaitDetails(e, keyword);
@@ -4749,26 +4814,27 @@ async checkEasterEggCollection(e) {
     const data = this.loadData();
     const userData = this.getOrCreateUser(data, String(e.user_id));
     const equipped = getEquippedBait(userData);
-    const ownedBaitsSummary = getOwnedBaitsSummary(userData) || '暂无可消耗鱼饵';
+    const equippedName = getBaitDisplayName(equipped);
+    const ownedBaitsSummary = getOwnedBaitsDisplaySummary(userData) || '暂无可消耗鱼饵';
     const ownedRodsSummary = getOwnedRodsSummary(userData) || '暂无已购鱼竿';
     const builtinBaits = getOwnedBuiltinBaitList(userData);
     const builtinLines = builtinBaits.map((bait, index) => {
       const count = userData.baitInventory?.[bait.id] || 0;
       const state = bait.id === equipped.id ? '当前使用' : count > 0 ? '可切换' : '未持有';
-      return `鱼饵${index + 1} | ${bait.name} - ${state} - ${bait.description}`;
+      return `鱼饵${index + 1} | ${getBaitDisplayName(bait)} - ${state} - ${getBaitDisplayDescription(bait)}`;
     });
     const customLines = getCustomBaitList(userData)
       .map((bait, index) => {
         const count = userData.baitInventory?.[bait.id] || 0;
         const state = bait.id === equipped.id ? '当前使用' : count > 0 ? '可切换' : '已用完';
-        return `鱼饵${builtinBaits.length + index + 1} | ${bait.name} - ${state} - ${bait.description}`;
+        return `鱼饵${builtinBaits.length + index + 1} | ${getBaitDisplayName(bait)} - ${state} - ${getBaitDisplayDescription(bait)}`;
       });
     const sections = buildCardGridSections(applyGroupThemes([
       {
         group: '当前配置',
         list: [{
           badge: '当前',
-          title: equipped.name,
+          title: equippedName,
           desc: `持有鱼饵：${ownedBaitsSummary}`,
           meta: `已购鱼竿：${ownedRodsSummary} | 默认鱼饵：${BAIT_CATALOG.plain.name}`,
           tone: 'active',
@@ -4781,8 +4847,8 @@ async checkEasterEggCollection(e) {
           const count = Number(userData.baitInventory?.[bait.id] || 0);
           return {
             badge: `饵${index + 1}`,
-            title: bait.name,
-            desc: bait.description,
+            title: getBaitDisplayName(bait),
+            desc: getBaitDisplayDescription(bait),
             meta: joinTextParts([
               bait.id === equipped.id ? '当前使用' : '',
               count > 0 ? `库存 ${count} 份` : '未持有',
@@ -4799,12 +4865,11 @@ async checkEasterEggCollection(e) {
           const count = Number(userData.baitInventory?.[bait.id] || 0);
           return {
             badge: `定${index + 1}`,
-            title: bait.name,
-            desc: bait.description,
+            title: getBaitDisplayName(bait),
+            desc: getBaitDisplayDescription(bait),
             meta: joinTextParts([
               bait.id === equipped.id ? '当前使用' : '',
-              count > 0 ? `库存 ${count} 份` : '已用完',
-              bait.sourceText ? `来源：${bait.sourceText}` : ''
+              count > 0 ? `库存 ${count} 份` : '已用完'
             ]),
             tone: bait.id === equipped.id ? 'active' : count > 0 ? 'amber' : 'slate'
           };
@@ -4813,7 +4878,7 @@ async checkEasterEggCollection(e) {
     ], ['lake', 'sky', 'amber']), { badgePrefix: '饵' });
     const fallback = [
       '鱼饵',
-      `当前鱼饵：${equipped.name}`,
+      `当前鱼饵：${equippedName}`,
       `持有鱼饵：${ownedBaitsSummary}`,
       `已购鱼竿：${ownedRodsSummary}`,
       `默认鱼饵：${BAIT_CATALOG.plain.name} - 可用 #换饵 0 / #换饵 默认`,
@@ -4824,7 +4889,7 @@ async checkEasterEggCollection(e) {
     await replyWithPanel(this, {
       key: `baits-${e.user_id}`,
       title: '鱼饵',
-      subtitle: `当前使用：${equipped.name}`,
+      subtitle: `当前使用：${equippedName}`,
       sections,
       footer: '使用：#换饵 1 / #换饵 沉流鱼饵 / #鱼饵详情 1 / #鱼饵属性 自定义鱼饵名'
     }, fallback);
@@ -4850,31 +4915,33 @@ async checkEasterEggCollection(e) {
     const inventory = Number(userData.baitInventory?.[bait.id] || 0);
     const isEquipped = bait.id === getEquippedBait(userData).id;
     const traitLines = buildBaitTraitLines(bait);
-    const sourceText = bait.isCustom && bait.sourceText ? `定制来源：${bait.sourceText}` : null;
+    const baitName = getBaitDisplayName(bait);
+    const baitDescription = getBaitDisplayDescription(bait);
+    const sourceText = isCustomBait(bait) ? '定制来源：私人配方' : null;
     const sections = [
-      `鱼饵：${bait.name}`,
+      `鱼饵：${baitName}`,
       `状态：${bait.isDefault ? '默认鱼饵' : inventory > 0 ? `持有 ${inventory} 份` : '未持有'}${isEquipped ? ' | 当前装备' : ''}`,
       getBaitAcquireText(bait),
       sourceText,
-      `手感描述：${bait.description}`,
+      `手感描述：${baitDescription}`,
       { type: 'html-block', html: buildBaitTraitHtml(bait) }
     ].filter(Boolean);
     const fallback = [
       '鱼饵详情',
-      `鱼饵：${bait.name}`,
+      `鱼饵：${baitName}`,
       `状态：${bait.isDefault ? '默认鱼饵' : inventory > 0 ? `持有 ${inventory} 份` : '未持有'}${isEquipped ? ' | 当前装备' : ''}`,
       getBaitAcquireText(bait),
       sourceText,
-      `手感描述：${bait.description}`,
+      `手感描述：${baitDescription}`,
       ...traitLines
     ].filter(Boolean).join('\n');
 
     await replyWithPanel(this, {
       key: `bait-details-${e.user_id}`,
       title: '鱼饵详情',
-      subtitle: bait.name,
+      subtitle: baitName,
       sections,
-      footer: '这里只展示词条倾向，不直接公开具体数值。'
+      footer: '词条以倾向展示，实际手感以抛竿为准。'
     }, fallback);
   }
 
@@ -4893,12 +4960,12 @@ async checkEasterEggCollection(e) {
       return;
     }
     if (!bait.isDefault && !(userData.baitInventory?.[bait.id] > 0)) {
-      await this.reply(`${userDisplay}\n你还没有 ${bait.name}，先去鱼市购买。`);
+      await this.reply(`${userDisplay}\n你还没有 ${getBaitDisplayName(bait)}，先去鱼市购买。`);
       return;
     }
     userData.equippedBait = bait.id;
     saveFishData(data);
-    await this.reply(`${userDisplay}\n已换上 ${bait.name}。\n手感：${bait.description}`);
+    await this.reply(`${userDisplay}\n已换上 ${getBaitDisplayName(bait)}。\n手感：${getBaitDisplayDescription(bait)}`);
   }
 
   async showDailySignal() {
@@ -4940,7 +5007,7 @@ async showAchievements(e) {
       title: '钓鱼成就',
       subtitle: `已完成 ${list.filter(item => item.unlocked).length}/${ACHIEVEMENT_DEFS.length}`,
       sections,
-      footer: unlocked.length ? `本次自动点亮：${unlocked.map(item => item.name).join('、')}` : '如有已达成但未触发的钓鱼成就，进入此页会自动补点亮。'
+      footer: unlocked.length ? `本次点亮：${unlocked.map(item => item.name).join('、')}` : '继续钓鱼、售鱼和升级鱼缸，可以点亮更多成就。'
     }, fallback);
   }
 
