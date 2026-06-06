@@ -776,14 +776,22 @@ function describeTrend(value, thresholds = [0.004, 0.012, 0.03, 0.06, 0.1]) {
   return { positive: numeric > 0, level };
 }
 
-function rarityBiasArrow(value) {
+function getRarityDeltaLevel(value, baseWeight = 0) {
   const numeric = Number(value || 0);
   const abs = Math.abs(numeric);
-  if (abs < 0.004) return '-';
-  const arrow = numeric > 0 ? '↑' : '↓';
-  if (abs >= 0.04) return `${arrow}${arrow}${arrow}`;
-  if (abs >= 0.02) return `${arrow}${arrow}`;
-  return arrow;
+  if (abs < 0.0001) return 0;
+
+  const base = Math.max(Math.abs(Number(baseWeight || 0)), 0.0001);
+  const relative = abs / base;
+  const absoluteLevel = abs >= 0.04 ? 3 : abs >= 0.02 ? 2 : abs >= 0.004 ? 1 : 0;
+  const relativeLevel = relative >= 1 ? 3 : relative >= 0.2 ? 2 : relative >= 0.02 ? 1 : 0;
+  return Math.max(absoluteLevel, relativeLevel);
+}
+
+function rarityBiasArrow(value, baseWeight = 0) {
+  const level = getRarityDeltaLevel(value, baseWeight);
+  if (!level) return '-';
+  return (Number(value || 0) > 0 ? '↑' : '↓').repeat(level);
 }
 
 function getAdjustedRarityWeights(bias = {}) {
@@ -810,10 +818,28 @@ function getRarityBiasLabel(rarity) {
   return rarity === EASTER_EGG_RARITY ? '彩蛋鱼比例' : `${rarity}鱼比例`;
 }
 
-function getRarityBiasTone(rarity, value) {
-  const numeric = Number(value || 0);
-  if (Math.abs(numeric) < 0.004) return 'neutral';
-  return numeric > 0 ? 'positive' : 'negative';
+function getRarityBiasTone(value, baseWeight = 0) {
+  if (!getRarityDeltaLevel(value, baseWeight)) return 'neutral';
+  return Number(value || 0) > 0 ? 'positive' : 'negative';
+}
+
+function hasRarityBiasValue(bias = {}) {
+  return RARITY_ORDER.some(rarity => Number(bias?.[rarity] || 0) !== 0);
+}
+
+function buildRarityBiasEntries(bias = {}) {
+  if (!hasRarityBiasValue(bias)) return [];
+  return RARITY_ORDER.map(rarity => {
+    const value = rarityProbabilityDelta(rarity, bias);
+    const baseWeight = rarityWeights?.[rarity] || 0;
+    const arrow = rarityBiasArrow(value, baseWeight);
+    return {
+      label: getRarityBiasLabel(rarity),
+      arrow,
+      tone: getRarityBiasTone(value, baseWeight),
+      arrowTone: arrow === '-' ? 'flat' : value > 0 ? 'up' : 'down'
+    };
+  });
 }
 
 function getRodWithTargetBias(rod, rodTarget = null) {
@@ -854,19 +880,8 @@ function buildRodTraitEntries(rod, options = {}) {
     });
   }
 
-  const rarityBiasEntries = RARITY_ORDER
-    .filter(rarity => Object.prototype.hasOwnProperty.call(effectiveRod?.rarityBias || {}, rarity))
-    .map(rarity => {
-      const value = rarityProbabilityDelta(rarity, effectiveRod?.rarityBias || {});
-      const arrow = rarityBiasArrow(value);
-      return {
-        label: `${getRarityBiasLabel(rarity)}几率`,
-        arrow,
-        tone: getRarityBiasTone(rarity, value),
-        arrowTone: arrow === '-' ? 'flat' : value > 0 ? 'up' : 'down'
-      };
-    });
-  if (rarityBiasEntries.some(entry => entry.arrow !== '-')) {
+  const rarityBiasEntries = buildRarityBiasEntries(effectiveRod?.rarityBias || {});
+  if (rarityBiasEntries.length) {
     entries.push({
       text: rarityBiasEntries.map(entry => `${entry.label}${entry.arrow}`).join(' '),
       tone: 'mixed',
@@ -946,19 +961,8 @@ function buildBaitTraitEntries(bait) {
     }
     : { text: '上鱼率基本不变', tone: 'neutral' });
 
-  const rarityBiasEntries = RARITY_ORDER
-    .filter(rarity => Object.prototype.hasOwnProperty.call(bait?.rarityBias || {}, rarity))
-    .map(rarity => {
-      const value = rarityProbabilityDelta(rarity, bait?.rarityBias || {});
-      const arrow = rarityBiasArrow(value);
-      return {
-        label: `${getRarityBiasLabel(rarity)}几率`,
-        arrow,
-        tone: getRarityBiasTone(rarity, value),
-        arrowTone: arrow === '-' ? 'flat' : value > 0 ? 'up' : 'down'
-      };
-    });
-  if (rarityBiasEntries.some(entry => entry.arrow !== '-')) {
+  const rarityBiasEntries = buildRarityBiasEntries(bait?.rarityBias || {});
+  if (rarityBiasEntries.length) {
     entries.push({
       text: rarityBiasEntries.map(entry => `${entry.label}${entry.arrow}`).join(' '),
       tone: 'mixed',
