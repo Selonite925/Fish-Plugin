@@ -442,20 +442,49 @@ function getSenderGroupDisplayName(e, fallback = '你') {
   return fallback;
 }
 
-function getSafeGroupMemberDisplayName(e, targetUserId, fallback = '某位群友') {
+function extractSafeDisplayName(member, userId = '') {
+  const card = String(member?.card || '').trim();
+  if (card) return card;
+  const nickname = String(member?.nickname || member?.name || '').trim();
+  if (nickname && nickname !== String(userId || '').trim()) return nickname;
+  return '';
+}
+
+function getPickedGroupMember(e, targetUserId) {
+  const userId = String(targetUserId || '').trim();
+  if (!userId) return null;
+  return e?.group?.pickMember?.(userId) || e?.bot?.pickMember?.(e?.group_id, userId) || null;
+}
+
+async function getSafeGroupMemberDisplayNameAsync(e, targetUserId, fallback = '某位群友') {
   const rawUserId = Array.isArray(targetUserId) ? targetUserId[0] : targetUserId;
   const userId = String(rawUserId || '').trim();
   if (!userId) return fallback;
+
+  const pickedMember = getPickedGroupMember(e, userId);
+  const cachedName = extractSafeDisplayName(pickedMember, userId);
+  if (cachedName) return cachedName;
+
+  if (typeof pickedMember?.getInfo === 'function') {
+    try {
+      const memberInfo = await pickedMember.getInfo();
+      const memberName = extractSafeDisplayName(memberInfo, userId);
+      if (memberName) return memberName;
+    } catch {
+      // 群成员资料读取失败时继续使用安全兜底，避免把 QQ 当昵称展示。
+    }
+  }
+
   const displayName = getDisplayNameForUser(e, userId);
   if (displayName && displayName !== userId) return displayName;
   return fallback;
 }
 
-function getSafeLostItemOwnerName(e, foundItem = {}) {
+async function getSafeLostItemOwnerNameAsync(e, foundItem = {}) {
   const ownerId = String(foundItem?.ownerId || '').trim();
   if (ownerId) {
-    const displayName = getDisplayNameForUser(e, ownerId);
-    if (displayName && displayName !== ownerId) return displayName;
+    const displayName = await getSafeGroupMemberDisplayNameAsync(e, ownerId, '');
+    if (displayName) return displayName;
   }
 
   const storedName = String(foundItem?.ownerName || '').trim();
@@ -2376,7 +2405,7 @@ export class fishing extends plugin {
     let bonusRate = 0;
     if (e.at) {
       const targetUserId = Array.isArray(e.at) ? e.at[0] : e.at;
-      const targetDisplay = getSafeGroupMemberDisplayName(e, targetUserId);
+      const targetDisplay = await getSafeGroupMemberDisplayNameAsync(e, targetUserId);
       baitContent = `群友(${targetDisplay})`;
       baitDisplayText = `群友${targetDisplay}`;
       baitType = 'user';
@@ -2493,7 +2522,7 @@ export class fishing extends plugin {
         itemName: foundItem.itemName,
         message: fillMessageTemplate(messageTemplate, {
           ...foundItem,
-          ownerName: getSafeLostItemOwnerName(e, foundItem),
+          ownerName: await getSafeLostItemOwnerNameAsync(e, foundItem),
           ownerId: ''
         })
       };
