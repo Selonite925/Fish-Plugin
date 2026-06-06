@@ -166,7 +166,7 @@ const HELP_GROUPS = [
       { title: '#钓鱼祈愿 / #钓鱼祈愿10 / #钓鱼十连 / #钓鱼祈愿清单', desc: '100鱼币祈愿1次，可获得限定鱼竿、限定鱼饵和免费祈愿。' },
       { title: '#金谦指定 虹鳟 / #金谦目标 common 鲫鱼', desc: '拥有金满而谦虚之竿后，每天可指定1次目标鱼；同一目标也可用于刷新闯入鱼影。' },
       { title: '#钓鱼成就', desc: '查看成就进度和永久加成。' },
-      { title: '#打窝 文本 / #打窝 @某人', desc: '生成自定义鱼饵，按文本倾向组合正负效果。' },
+      { title: '#打窝 文本 / #打窝 @某人', desc: '投放临时窝料，效果持续2竿。' },
       { title: '#炼竿 1 / #炼竿预览 1', desc: '按鱼缸展示序号先预览 legendary 会炼成什么鱼竿，再决定是否正式炼制。' },
       { title: '#钓鱼管理', desc: '查看主人和群管理维护命令。' }
     ]
@@ -398,30 +398,28 @@ function getBaitPackText(bait) {
   return `${unitPrice}鱼币/包，1包${packSize}份，约${costPerUse.toFixed(1)}鱼币/次`;
 }
 
-function getStableDisplayCode(seedText = '') {
-  const source = String(seedText || 'custom');
-  let hash = 0;
-  for (const char of source) {
-    hash = (hash * 131 + char.codePointAt(0)) % 1679616;
-  }
-  return hash.toString(36).toUpperCase().padStart(4, '0').slice(-4);
-}
-
 function isCustomBait(bait) {
   return Boolean(bait?.isCustom || bait?.sourceText || String(bait?.id || '').startsWith('custom_'));
+}
+
+function getLegacyCustomBaitName(bait) {
+  const source = String(bait?.sourceText || '').trim();
+  if (source) return `${source.slice(0, 8)}特调饵`;
+  return bait?.name || bait?.id || '自定义鱼饵';
 }
 
 function getBaitDisplayName(bait) {
   if (!bait) return '未知鱼饵';
   if (!isCustomBait(bait)) return bait.name || bait.id || '未知鱼饵';
-  const code = bait.displayCode || getStableDisplayCode(bait.id || bait.sourceText || bait.name);
-  return bait.displayName || `手作鱼饵-${code}`;
+  const name = String(bait.name || '').trim();
+  if (!name || /^手作鱼饵-[0-9A-Z]{4}$/i.test(name)) return getLegacyCustomBaitName(bait);
+  return name;
 }
 
 function getBaitDisplayDescription(bait) {
   if (!bait) return '';
   if (!isCustomBait(bait)) return bait.description || '';
-  return bait.displayDescription || '一份按私人配方拌出的定制鱼饵，气味层次复杂，适合试试不同手感。';
+  return bait.description || '一份按私人配方拌出的定制鱼饵，气味层次复杂，适合试试不同手感。';
 }
 
 function getOwnedBaitsDisplaySummary(userData) {
@@ -4878,7 +4876,7 @@ async checkEasterEggCollection(e) {
     const keyword = (e.msg.match(/^#鱼饵(?:详情|属性)\s*(.+)$/)?.[1] || '').trim();
     const { text: userDisplay } = getUserDisplay(e);
     if (!keyword) {
-      await this.reply(`${userDisplay}\n请输入鱼饵编号或鱼饵名，例如：#鱼饵详情 鱼饵1 / #鱼饵属性 沉流鱼饵 / #鱼饵详情 手作鱼饵-AB12`);
+      await this.reply(`${userDisplay}\n请输入鱼饵编号或鱼饵名，例如：#鱼饵详情 鱼饵1 / #鱼饵属性 沉流鱼饵 / #鱼饵详情 桂花酒糟特调饵`);
       return;
     }
     await this.showBaitDetails(e, keyword);
