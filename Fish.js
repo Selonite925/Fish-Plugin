@@ -317,6 +317,73 @@ function formatTodayFishRecordLine(fish, index = null) {
   return `${prefix} ${fish.name}(${fish.rarity}) 长度：${fish.length}cm，重量：${fish.weight}kg${lockMark}`;
 }
 
+function getRarityCountSummary(fishList = []) {
+  const counts = new Map();
+  for (const fish of fishList) {
+    const rarity = String(fish?.rarity || '未知');
+    counts.set(rarity, (counts.get(rarity) || 0) + 1);
+  }
+  const order = [...RARITY_ORDER, ...[...counts.keys()].filter(rarity => !RARITY_ORDER.includes(rarity))];
+  return order
+    .filter(rarity => counts.has(rarity))
+    .map(rarity => `${rarityLabel(rarity)} ${counts.get(rarity)}条`)
+    .join('、') || '暂无';
+}
+
+function buildTodayFishRecordPanel(config, userData, ownerDisplay = '你', options = {}) {
+  const displayName = String(ownerDisplay || '你').trim() || '你';
+  const today = userData?.today || {};
+  const rod = userData ? getEquippedRod(userData) : null;
+  const fishList = Array.isArray(today.fish) ? today.fish : [];
+  const annotatedFish = userData ? fishList.map(fish => annotateFishLock(userData, fish)) : [];
+  const todayCount = Number(today.count || 0);
+  const todayCatchCount = Number(today.catches || 0);
+  const currentFishCount = annotatedFish.length;
+  const totalCount = Number(userData?.total || 0);
+  const limitText = userData ? getFishingLimitText(config, userData, rod) : '0/0';
+  const emptyText = userData
+    ? todayCatchCount > 0
+      ? '今天钓到的鱼已经不在当前鱼获列表里，可能已经出售或移入鱼缸。'
+      : todayCount > 0
+        ? `今天钓了 ${todayCount} 次，但一条鱼都没钓到，空军了。`
+        : '今天还没有钓过鱼。'
+    : '今天还没有钓鱼记录。';
+  const title = options.isSelf ? '今日鱼获' : `${displayName}的今日鱼获`;
+  const sections = [
+    '今日概况',
+    `今日钓鱼次数：${limitText}`,
+    `今日抛竿：${todayCount}次`,
+    `今日钓到鱼：${todayCatchCount}条`,
+    `当前剩余鱼获：${currentFishCount}条`,
+    `总共钓鱼次数：${totalCount}`,
+    `当前鱼竿：${rod?.name || '暂无'}`,
+    '',
+    '稀有度分布',
+    `当前鱼获：${getRarityCountSummary(annotatedFish)}`,
+    '',
+    '今日鱼获',
+    ...(annotatedFish.length
+      ? annotatedFish.map((fish, index) => formatTodayFishRecordLine(fish, index))
+      : [emptyText])
+  ];
+  const fallback = [
+    title,
+    ...sections
+  ].join('\n');
+  return {
+    panel: {
+      key: options.key || `today-fish-${options.userId || 'self'}`,
+      title,
+      subtitle: userData
+        ? `今日钓到 ${todayCatchCount} 条 | 当前剩余 ${currentFishCount} 条 | 次数 ${limitText}`
+        : emptyText,
+      sections,
+      footer: annotatedFish.length ? '鱼获编号可用于：#售鱼 1 / #售鱼 1 2 3' : '继续使用：#钓鱼 / #钓鱼极速版'
+    },
+    fallback
+  };
+}
+
 function getSignalRodBonusCoins(rod, fish) {
   if (!rod) return 0;
   if (rod.id === 'legend_poseidon') {
@@ -3540,28 +3607,17 @@ export class fishing extends plugin {
 
   async checkTodayFishRecord(e) {
     const data = this.loadData();
-    const userData = data[String(e.user_id)];
-    const todayCatchCount = Number(userData?.today?.catches || 0);
-    if (!userData || todayCatchCount === 0) {
-      await this.reply(userData && userData.today.count > 0
-        ? `今天你钓了 ${userData.today.count} 次，但一条鱼都没钓到，空军了。`
-        : '今天你还没有钓过鱼。');
-      return;
-    }
-
-    let replyMsg = `今日钓鱼次数：${getFishingLimitText(this.config, userData, getEquippedRod(userData))}\n今日钓到鱼：${todayCatchCount}条\n当前剩余鱼获：${userData.today.fish.length}条\n总共钓鱼次数：${userData.total}\n\n今日鱼获：\n`;
-    for (const [index, fish] of userData.today.fish.entries()) {
-      replyMsg += `${formatTodayFishRecordLine(annotateFishLock(userData, fish), index)}\n`;
-    }
-    await this.reply(replyMsg.trim());
+    const userData = data[String(e.user_id)] || null;
+    if (userData) normalizeUserData(userData);
+    const result = buildTodayFishRecordPanel(this.config, userData, '你', {
+      isSelf: true,
+      userId: String(e.user_id)
+    });
+    await replyWithPanel(this, result.panel, result.fallback);
   }
 
   async checkOthersFishRecord(e) {
-    let targetUserId = e.at ? String(e.at) : null;
-    if (!targetUserId) {
-      const match = e.msg.match(/#查看鱼获\s*(\d+)/);
-      if (match && match[1]) targetUserId = match[1];
-    }
+    const targetUserId = getTargetUserId(e);
     if (!targetUserId) {
       await this.reply('请@某人或输入QQ号来查看鱼获。\n例如：#查看鱼获 @某人\n或：#查看鱼获 123456789');
       return;
@@ -3569,20 +3625,14 @@ export class fishing extends plugin {
 
     const data = this.loadData();
     const userFish = data[targetUserId];
-    const targetDisplay = getDisplayNameForUser(e, targetUserId);
-    const todayCatchCount = Number(userFish?.today?.catches || 0);
-    if (!userFish || todayCatchCount === 0) {
-      await this.reply(userFish && userFish.today.count > 0
-        ? `${targetDisplay}今天钓了${userFish.today.count}次，但一条鱼都没钓到，空军了。`
-        : `${targetDisplay}今天还没有钓过鱼。`);
-      return;
-    }
-
-    let replyMsg = `${targetDisplay}的鱼获记录：\n\n今日钓鱼次数：${getFishingLimitText(this.config, userFish, getEquippedRod(userFish))}\n今日钓到鱼：${todayCatchCount}条\n当前剩余鱼获：${userFish.today.fish.length}条\n总共钓鱼次数：${userFish.total}\n\n今日鱼获：\n`;
-    for (const [index, fish] of userFish.today.fish.entries()) {
-      replyMsg += `${formatTodayFishRecordLine(annotateFishLock(userFish, fish), index)}\n`;
-    }
-    await this.reply(replyMsg.trim());
+    if (userFish) normalizeUserData(userFish);
+    const targetDisplay = await getSafeGroupMemberDisplayNameAsync(e, targetUserId, '某位钓友');
+    const result = buildTodayFishRecordPanel(this.config, userFish || null, targetDisplay, {
+      isSelf: String(e.user_id) === targetUserId,
+      userId: targetUserId,
+      key: `today-fish-${targetUserId}`
+    });
+    await replyWithPanel(this, result.panel, result.fallback);
   }
 
   async checkFishCollection(e) {
