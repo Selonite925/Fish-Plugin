@@ -166,7 +166,7 @@ const HELP_GROUPS = [
       { title: '#鱼竿详情 鱼竿1 / #鱼竿详情全部', desc: '查看单根鱼竿详情，或缩略查看自己拥有的全部鱼竿。' },
       { title: '#鱼饵 / #换饵 0', desc: '查看鱼饵库存，并切回默认饵或切到指定鱼饵。' },
       { title: '#鱼饵详情 鱼饵1 / #鱼饵详情全部', desc: '查看单种鱼饵详情，或缩略查看自己拥有的全部鱼饵，自定义鱼饵也支持。' },
-      { title: '#自动续饵 开启 / #自动续饵 关闭', desc: '当前鱼饵用完后，按持有鱼饵列表顺序自动续到下一种。' }
+      { title: '#自动续饵开 / #续饵关 / #鱼饵自动续', desc: '当前鱼饵用完后，按持有鱼饵列表顺序自动续到下一种。' }
     ]
   },
   {
@@ -483,11 +483,24 @@ function getNextAutoRenewBait(userData, currentBaitId = '') {
 }
 
 function parseAutoRenewBaitToggle(keyword = '') {
-  const text = String(keyword || '').trim().toLowerCase();
-  if (!text) return null;
-  if (/^(?:on|open|true|1|开启|打开|启用|开|自动|续饵)$/.test(text)) return true;
-  if (/^(?:off|close|false|0|关闭|停用|关)$/.test(text)) return false;
+  const text = String(keyword || '')
+    .trim()
+    .toLowerCase()
+    .replace(/[\s　:：,，。.!！?？、_\-\\/]+/g, '');
+  if (!text || /^(?:状态|查看|查询|帮助|说明|怎么用|开关|当前|help)$/.test(text)) return null;
+  if (/^(?:off|close|closed|false|0|no|n|关|关闭|关掉|关了|停用|禁用|取消|停止|不要|不用|不开|不续)/.test(text)) return false;
+  if (/^(?:on|open|opened|true|1|yes|y|开|开启|打开|启用|启动|使用|要|需要|续|自动|自动续|自动续饵|续饵)/.test(text)) return true;
   return null;
+}
+
+function extractAutoRenewBaitKeyword(msg = '') {
+  const text = String(msg || '').trim();
+  const match = text.match(/^#\s*(?:自动\s*续\s*(?:鱼)?饵?|续\s*(?:鱼)?饵|(?:鱼饵|换饵)\s*自动\s*续(?:饵)?|自动\s*(?:换|补)\s*(?:鱼)?饵)\s*(.*)$/);
+  return match ? match[1].trim() : text.replace(/^#\s*/, '').trim();
+}
+
+function getAutoRenewBaitUsageText() {
+  return '格式：#自动续饵开 / #自动续饵关；也可用 #续饵 开 / #鱼饵自动续 关闭';
 }
 
 function getBaitPackText(bait) {
@@ -1618,7 +1631,7 @@ export class fishing extends plugin {
         { reg: '^#(鱼市|售鱼)(.*)$', fnc: 'handleMarketCommand' },
         { reg: '^#鱼竿(?:详情|属性)\\s*.+$', fnc: 'showRodDetailsCommand' },
         { reg: '^#鱼饵(?:详情|属性)\\s*.+$', fnc: 'showBaitDetailsCommand' },
-        { reg: '^#自动续饵\\s*.*$', fnc: 'toggleAutoRenewBait' },
+        { reg: '^#\\s*(?:自动\\s*续\\s*(?:鱼)?饵?|续\\s*(?:鱼)?饵|(?:鱼饵|换饵)\\s*自动\\s*续(?:饵)?|自动\\s*(?:换|补)\\s*(?:鱼)?饵)\\s*.*$', fnc: 'toggleAutoRenewBait' },
         { reg: '^#(鱼竿|换竿|换杆)(.*)$', fnc: 'handleRodCommand' },
         { reg: '^#(鱼饵|换饵)(.*)$', fnc: 'handleBaitCommand' },
         { reg: '^#限时鱼讯$', fnc: 'showDailySignal' },
@@ -2532,7 +2545,9 @@ export class fishing extends plugin {
       userData.equippedBait = nextBait?.id || 'plain';
       const message = nextBait
         ? `\n[自动续饵] ${getBaitDisplayName(bait)} 已用完，下次将自动改用 ${getBaitDisplayName(nextBait)}。`
-        : '\n[鱼饵] 备用鱼饵用完，已自动换回清水团饵。';
+        : userData.autoRenewBait
+          ? `\n[自动续饵] ${getBaitDisplayName(bait)} 已用完，但没有可续用的备用鱼饵，已换回清水团饵。`
+          : `\n[鱼饵] ${getBaitDisplayName(bait)} 已用完，已换回清水团饵。`;
       return { bonus: 0, message, rarityBias: {}, bodyModifiers: {} };
     }
     const rod = getEquippedRod(userData);
@@ -2549,14 +2564,16 @@ export class fishing extends plugin {
       ? `\n[当前鱼饵] ${baitName} 这次被稳稳留住了，剩余 ${beforeCount} 份。`
       : afterCount > 0
         ? `\n[当前鱼饵] 已消耗 1 份 ${baitName}，剩余 ${afterCount} 份。`
-        : `\n[当前鱼饵] 已消耗最后 1 份 ${baitName}，下次将自动换回清水团饵。`;
+        : `\n[当前鱼饵] 已消耗最后 1 份 ${baitName}，下次将换回清水团饵。`;
     const rarityBias = bait.rarityBias || {};
     if (userData.baitInventory[bait.id] <= 0) {
       const nextBait = userData.autoRenewBait ? getNextAutoRenewBait(userData, bait.id) : null;
       userData.equippedBait = nextBait?.id || 'plain';
       message = nextBait
         ? `\n[当前鱼饵] 已消耗最后 1 份 ${baitName}。\n[自动续饵] 下次将自动改用 ${getBaitDisplayName(nextBait)}，库存 ${Number(userData.baitInventory[nextBait.id] || 0)} 份。`
-        : message;
+        : userData.autoRenewBait
+          ? `\n[当前鱼饵] 已消耗最后 1 份 ${baitName}。\n[自动续饵] 没有可续用的备用鱼饵，下次将换回清水团饵。`
+          : message;
     }
     return {
       bonus: bait.catchRateBonus || 0,
@@ -5256,11 +5273,11 @@ async checkEasterEggCollection(e) {
     const data = this.loadData();
     const { userId, text: userDisplay } = getUserDisplay(e);
     const userData = this.getOrCreateUser(data, userId);
-    const keyword = String(e.msg || '').replace(/^#自动续饵\s*/, '').trim();
+    const keyword = extractAutoRenewBaitKeyword(e.msg);
     const nextValue = parseAutoRenewBaitToggle(keyword);
     if (nextValue === null) {
       const status = userData.autoRenewBait ? '开启' : '关闭';
-      await this.reply(`${userDisplay}\n自动续饵当前：${status}\n格式：#自动续饵 开启 / #自动续饵 关闭`);
+      await this.reply(`${userDisplay}\n自动续饵当前：${status}\n${getAutoRenewBaitUsageText()}`);
       return;
     }
 
@@ -5268,7 +5285,11 @@ async checkEasterEggCollection(e) {
     saveFishData(data);
     const status = nextValue ? '开启' : '关闭';
     const nextBait = nextValue ? getNextAutoRenewBait(userData, getEquippedBait(userData).id) : null;
-    const nextText = nextBait ? `\n当前鱼饵用完后，将按顺序续到：${getBaitDisplayName(nextBait)}。` : '';
+    const nextText = nextValue
+      ? nextBait
+        ? `\n当前鱼饵用完后，将按顺序续到：${getBaitDisplayName(nextBait)}。`
+        : '\n当前没有可续用的备用鱼饵；之后获得鱼饵后，会按持有列表顺序接上。'
+      : '\n已停止自动续用备用鱼饵，用完后会回到清水团饵。';
     await this.reply(`${userDisplay}\n自动续饵已${status}。${nextText}`);
   }
 
@@ -5294,6 +5315,12 @@ async checkEasterEggCollection(e) {
     const ownedBaitsSummary = getOwnedBaitsDisplaySummary(userData) || '暂无可消耗鱼饵';
     const ownedRodsSummary = getOwnedRodsSummary(userData) || '暂无已购鱼竿';
     const autoRenewStatus = userData.autoRenewBait ? '开启' : '关闭';
+    const nextAutoRenewBait = userData.autoRenewBait ? getNextAutoRenewBait(userData, equipped.id) : null;
+    const autoRenewHint = userData.autoRenewBait
+      ? nextAutoRenewBait
+        ? `下一种可续用：${getBaitDisplayName(nextAutoRenewBait)}`
+        : '暂无可续用备用鱼饵，用完后会回到清水团饵'
+      : '关闭后，鱼饵用完会回到清水团饵';
     const builtinBaits = getOwnedBuiltinBaitList(userData);
     const builtinLines = builtinBaits.map((bait, index) => {
       const count = userData.baitInventory?.[bait.id] || 0;
@@ -5315,6 +5342,13 @@ async checkEasterEggCollection(e) {
           desc: `持有鱼饵：${ownedBaitsSummary}`,
           meta: `自动续饵：${autoRenewStatus} | 已购鱼竿：${ownedRodsSummary} | 默认鱼饵：${BAIT_CATALOG.plain.name}`,
           tone: 'active',
+          fullWidth: true
+        }, {
+          badge: '续饵',
+          title: `自动续饵：${autoRenewStatus}`,
+          desc: autoRenewHint,
+          meta: '指令：#自动续饵开 / #续饵关 / #鱼饵自动续 关闭',
+          tone: userData.autoRenewBait ? 'positive' : 'sky',
           fullWidth: true
         }]
       },
@@ -5356,20 +5390,20 @@ async checkEasterEggCollection(e) {
     const fallback = [
       '鱼饵',
       `当前鱼饵：${equippedName}`,
-      `自动续饵：${autoRenewStatus}`,
+      `自动续饵：${autoRenewStatus} - ${autoRenewHint}`,
       `持有鱼饵：${ownedBaitsSummary}`,
       `已购鱼竿：${ownedRodsSummary}`,
       `默认鱼饵：${BAIT_CATALOG.plain.name} - 可用 #换饵 0 / #换饵 默认`,
       ...builtinLines,
       ...customLines,
-      '使用：#换饵 编号 或 #换饵 鱼饵名 / #鱼饵详情 鱼饵1'
+      '使用：#换饵 编号 或 #换饵 鱼饵名 / #自动续饵开 / #续饵关 / #鱼饵详情 鱼饵1'
     ].join('\n');
     await replyWithPanel(this, {
       key: `baits-${e.user_id}`,
       title: '鱼饵',
       subtitle: `当前使用：${equippedName}`,
       sections,
-      footer: '使用：#换饵 1 / #换饵 沉流鱼饵 / #自动续饵 开启 / #鱼饵详情 1 / #鱼饵属性 自定义鱼饵名'
+      footer: '使用：#换饵 1 / #换饵 沉流鱼饵 / #自动续饵开 / #续饵关 / #鱼饵详情 1 / #鱼饵属性 自定义鱼饵名'
     }, fallback);
   }
 
