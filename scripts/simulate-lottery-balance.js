@@ -176,8 +176,8 @@ function simulateRod(rod, options = {}) {
   };
 }
 
-console.log(`=== 大量垂钓模拟：${CASTS} 杆，清水团饵，无额外灵石加成 ===`);
-console.log('legendary / 彩蛋鱼按1500灵石计；其它鱼按现有售鱼价格规则计。');
+console.log(`=== 大量垂钓模拟：${CASTS} 杆，清水团饵，无额外鱼蛋加成 ===`);
+console.log('legendary / 彩蛋鱼按1500鱼蛋计；其它鱼按现有售鱼价格规则计。');
 
 const baselineRows = Object.values(ROD_CATALOG)
   .filter(rod => !rod.sourceLottery)
@@ -185,7 +185,7 @@ const baselineRows = Object.values(ROD_CATALOG)
   .sort((left, right) => right.valuePerCast - left.valuePerCast);
 
 for (const row of baselineRows.slice(0, 12)) {
-  console.log(`${row.name}\t${row.valuePerCast.toFixed(2)} 灵石/杆\t上鱼率 ${(row.catchRate * 100).toFixed(2)}%`);
+  console.log(`${row.name}\t${row.valuePerCast.toFixed(2)} 鱼蛋/杆\t上鱼率 ${(row.catchRate * 100).toFixed(2)}%`);
 }
 
 const goldHumbleRod = Object.values(ROD_CATALOG).find(rod => rod.targetFishEffect?.type === 'gold_humble');
@@ -201,7 +201,7 @@ if (goldHumbleRod) {
   ];
   for (const target of targets) {
     const row = simulateRod(goldHumbleRod, { target });
-    console.log(`${target.rarity} ${target.name}\t鱼本身 ${row.fishValuePerCast.toFixed(2)} 灵石/杆\t含目标奖励 ${row.valuePerCast.toFixed(2)}\t目标稀有度 ${(row.targetRarityRate * 100).toFixed(3)}%\t条件目标 ${(row.targetConditionalHitRate * 100).toFixed(2)}%\t目标奖励EV ${row.targetRewardPerCast.toFixed(2)}\t干扰数 ${getGoldHumbleDistractorCount(goldHumbleRod.targetFishEffect, target.rarity, fishTypes[target.rarity].length)}`);
+    console.log(`${target.rarity} ${target.name}\t鱼本身 ${row.fishValuePerCast.toFixed(2)} 鱼蛋/杆\t含目标奖励 ${row.valuePerCast.toFixed(2)}\t目标稀有度 ${(row.targetRarityRate * 100).toFixed(3)}%\t条件目标 ${(row.targetConditionalHitRate * 100).toFixed(2)}%\t目标奖励EV ${row.targetRewardPerCast.toFixed(2)}\t干扰数 ${getGoldHumbleDistractorCount(goldHumbleRod.targetFishEffect, target.rarity, fishTypes[target.rarity].length)}`);
   }
 }
 
@@ -210,6 +210,6 @@ const lotteryExpectedAfterGrand = getLotteryExpectedValue({ grandAvailable: fals
 console.log('\n=== 祈愿期望 ===');
 console.log(`单次成本：${LOTTERY_CONFIG.cost}`);
 console.log('限定愿品价值不计入收入期望。');
-console.log(`限定愿品仍可遇见：普通愿品期望 ${lotteryExpected.expectedValue.toFixed(2)} 灵石，回报率 ${(lotteryExpected.expectedRate * 100).toFixed(2)}%`);
-console.log(`限定愿品已获得后：普通愿品期望 ${lotteryExpectedAfterGrand.expectedValue.toFixed(2)} 灵石，回报率 ${(lotteryExpectedAfterGrand.expectedRate * 100).toFixed(2)}%`);
+console.log(`限定愿品仍可遇见：普通愿品期望 ${lotteryExpected.expectedValue.toFixed(2)} 鱼蛋，回报率 ${(lotteryExpected.expectedRate * 100).toFixed(2)}%`);
+console.log(`限定愿品已获得后：普通愿品期望 ${lotteryExpectedAfterGrand.expectedValue.toFixed(2)} 鱼蛋，回报率 ${(lotteryExpectedAfterGrand.expectedRate * 100).toFixed(2)}%`);
 console.log(`免费祈愿递延期望：每次约 ${lotteryExpected.freeDrawExpectedCount.toFixed(3)} 次免费祈愿`);
