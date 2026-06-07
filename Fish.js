@@ -123,6 +123,8 @@ let fishPluginUpdating = false;
 const GIFT_COMMAND_FILLER_TOKENS = new Set(['给', '给到', '送给', '发给', '转给', '把']);
 const COMPENSATE_COMMAND_FILLER_TOKENS = new Set(['给', '给到', '补给', '补到', '发给', '来条', '来个', '来一条']);
 const XIANYU_EASTER_EGG_NAME = '闲鱼';
+const CUSTOM_BAIT_PURCHASE_PATTERN = '(?:自定义鱼饵|定制鱼饵|手作鱼饵)';
+const ALL_DETAILS_KEYWORD_REG = /^(?:全部|所有|全量|一览|all)$/i;
 
 const HELP_GROUPS = [
   {
@@ -137,7 +139,7 @@ const HELP_GROUPS = [
   {
     group: '鱼缸与鱼获',
     list: [
-      { title: '#查看鱼缸', desc: '查看鱼缸容量、升级进度、库存和当前收藏。' },
+      { title: '#查看鱼缸 / #查看鱼缸 @某人', desc: '查看自己或群友的鱼缸容量、升级进度、库存和当前收藏。' },
       { title: '#升级鱼缸 legendary 1 / #升级鱼缸 epic 1 2 3', desc: '按鱼缸展示序号提交材料，支持分次提交；legendary 模式只收传说鱼，epic 模式只收史诗鱼。' },
       { title: '#放生鱼 1', desc: '从鱼缸放生指定鱼。彩蛋鱼属于收藏，不在鱼缸里。' },
       { title: '#赠鱼 @某人 1 / #赠鱼 1 @某人', desc: '把指定鱼送给别人，支持按鱼缸序号或鱼名赠送。' },
@@ -149,12 +151,12 @@ const HELP_GROUPS = [
     list: [
       { title: '#鱼市 / #售鱼 1 / #售鱼 common / #售鱼 全部', desc: '卖鱼、看鱼市，也可以按今日鱼获编号、稀有度或批量处理。' },
       { title: '#售鱼 鱼缸3 / #售鱼 鱼缸 2 3 4 5 / #售鱼 鱼缸虹鳟 / #售鱼 鱼缸 uncommon', desc: '支持按鱼缸序号、同名鱼顺序、鱼缸稀有度或全部出售。' },
-      { title: '#鱼市购买 鱼饵1*5 / #鱼市购买 钓鱼券*3', desc: '批量购买鱼饵和钓鱼券。' },
+      { title: '#鱼市购买 鱼饵1*5 / #鱼市购买 3*自定义鱼饵清香窝料', desc: '批量购买鱼饵、钓鱼券和自定义鱼饵。' },
       { title: '#鱼市购买 鱼竿1 / #鱼市回收 鱼竿1', desc: '购买普通鱼竿，或按回收列表序号回收已拥有鱼竿；普通竿半价，legendary 竿回收价 750。' },
       { title: '#鱼竿 / #换竿 0', desc: '查看鱼竿库存，并切换到默认竿或指定鱼竿。' },
-      { title: '#鱼竿详情 鱼竿1 / #鱼竿属性 疾风短竿', desc: '查看已有或可见鱼竿的属性值概览。' },
+      { title: '#鱼竿详情 鱼竿1 / #鱼竿详情全部', desc: '查看单根鱼竿详情，或缩略查看自己拥有的全部鱼竿。' },
       { title: '#鱼饵 / #换饵 0', desc: '查看鱼饵库存，并切回默认饵或切到指定鱼饵。' },
-      { title: '#鱼饵详情 鱼饵1 / #鱼饵属性 自定义鱼饵名', desc: '查看已有或可见鱼饵的属性值概览，自定义鱼饵也支持。' }
+      { title: '#鱼饵详情 鱼饵1 / #鱼饵详情全部', desc: '查看单种鱼饵详情，或缩略查看自己拥有的全部鱼饵，自定义鱼饵也支持。' }
     ]
   },
   {
@@ -1238,6 +1240,90 @@ function escapeRegExp(text = '') {
   return String(text).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
+function normalizeCommandText(text = '') {
+  return String(text || '').trim().replace(/\s+/g, ' ');
+}
+
+function parsePositiveQuantity(value, fallback = 1) {
+  const quantity = Number(value || fallback);
+  if (!Number.isInteger(quantity) || quantity < 1) return null;
+  return quantity;
+}
+
+function stripTrailingCustomBaitQuantity(text = '') {
+  const normalized = normalizeCommandText(text);
+  const patterns = [
+    /^(.*?)\s*[*xX×]\s*(\d{1,3})(?:包|份|个|组)?$/,
+    /^(.*?)\s+(\d{1,3})(?:包|份|个|组)$/,
+    /^(.*?)\s+(?:包|份|个|组)(\d{1,3})$/
+  ];
+  for (const pattern of patterns) {
+    const match = normalized.match(pattern);
+    if (!match) continue;
+    const sourceText = normalizeCommandText(match[1]);
+    const quantity = parsePositiveQuantity(match[2]);
+    if (sourceText && quantity) return { sourceText, quantity };
+  }
+  return { sourceText: normalized, quantity: 1 };
+}
+
+function parseCustomBaitPurchaseKeyword(keyword = '') {
+  const text = normalizeCommandText(keyword);
+  if (!text) return null;
+  const pattern = CUSTOM_BAIT_PURCHASE_PATTERN;
+  const prefixPattern = new RegExp(`^(\\d{1,3})\\s*(?:包|份|个|组)?\\s*(?:[*xX×]\\s*)?${pattern}\\s*(.+)$`);
+  const compactPrefixPattern = new RegExp(`^(\\d{1,3})\\s*[*xX×]\\s*${pattern}\\s*(.+)$`);
+  const suffixPatterns = [
+    new RegExp(`^${pattern}\\s*[*xX×]\\s*(\\d{1,3})\\s*(?:包|份|个|组)?\\s*(.+)$`),
+    new RegExp(`^${pattern}\\s*(\\d{1,3})\\s*(?:包|份|个|组)\\s*(.+)$`)
+  ];
+  const normalPattern = new RegExp(`^${pattern}\\s*(.+)$`);
+  const matches = [
+    text.match(prefixPattern),
+    text.match(compactPrefixPattern),
+    ...suffixPatterns.map(pattern => text.match(pattern))
+  ];
+
+  for (const match of matches) {
+    if (!match) continue;
+    const quantity = parsePositiveQuantity(match[1]);
+    const sourceText = normalizeCommandText(match[2]);
+    if (!quantity || !sourceText) return null;
+    return { sourceText, quantity };
+  }
+
+  const normalMatch = text.match(normalPattern);
+  if (!normalMatch) return null;
+  const trailing = stripTrailingCustomBaitQuantity(normalMatch[1]);
+  if (!trailing.sourceText || !trailing.quantity) return null;
+  return trailing;
+}
+
+function isAllDetailsKeyword(keyword = '') {
+  return ALL_DETAILS_KEYWORD_REG.test(String(keyword || '').trim());
+}
+
+function getOwnedRodDetailsList(userData) {
+  const owned = new Set(userData?.rodsOwned || []);
+  const rods = Object.values(ROD_CATALOG)
+    .filter(Boolean)
+    .filter(rod => rod.id === DEFAULT_ROD_ID || owned.has(rod.id));
+  return rods;
+}
+
+function getOwnedBaitDetailsList(userData) {
+  const ownedBuiltinBaits = Object.values(BAIT_CATALOG)
+    .filter(item => !item.isDefault)
+    .filter(item => Number(userData?.baitInventory?.[item.id] || 0) > 0);
+  return [BAIT_CATALOG.plain, ...ownedBuiltinBaits, ...getCustomBaitList(userData)]
+    .filter(Boolean)
+    .filter((bait, index, arr) => arr.findIndex(item => item.id === bait.id) === index);
+}
+
+function buildTraitSummary(lines = [], fallback = '暂无明显词条') {
+  return lines.filter(Boolean).slice(0, 3).join('；') || fallback;
+}
+
 function normalizeFishTemplateName(name = '') {
   const text = String(name || '').trim();
   if (!text) return '';
@@ -1346,7 +1432,7 @@ export class fishing extends plugin {
         { reg: '^#设置钓鱼次数(\\d+)$', fnc: 'setFishingLimit' },
         { reg: '^#重置钓鱼次数\\s*(全体|全部|@?.*)?$', fnc: 'resetFishingCount' },
         { reg: '^#钓鱼次数$', fnc: 'checkFishingLimit' },
-        { reg: '^#查看鱼缸$', fnc: 'checkFishTank' },
+        { reg: '^#查看鱼缸(?:\\s*.*)?$', fnc: 'checkFishTank' },
         { reg: '^#彩蛋收藏$', fnc: 'checkEasterEggCollection' },
         { reg: '^#切换彩蛋\\s+.+$', fnc: 'scheduleActiveEasterEgg' },
         { reg: '^#钓鱼(?:祈愿(?:\\s*\\d{0,2}|\\s*(?:十|\\d{1,2})连|清单|列表|概率|说明)?|(?:十|\\d{1,2})连)$', fnc: 'handleFishingLottery' },
@@ -3789,8 +3875,15 @@ async checkEasterEggCollection(e) {
 
   async checkFishTank(e) {
     const data = this.loadData();
-    const userData = this.getOrCreateUser(data, String(e.user_id));
+    const selfUserId = String(e.user_id);
+    const targetUserId = getTargetUserId(e) || selfUserId;
+    const isSelf = targetUserId === selfUserId;
+    const userData = this.getOrCreateUser(data, targetUserId);
     normalizeUserData(userData);
+    const ownerDisplay = isSelf
+      ? '你'
+      : await getSafeGroupMemberDisplayNameAsync(e, targetUserId, '某位钓友');
+    const ownerTitle = isSelf ? '你的鱼缸' : `${ownerDisplay}的鱼缸`;
     const sortedEntries = getSortedTankEntries(userData);
     const sortedFish = sortedEntries.map(item => annotateFishLock(userData, item.fish));
     const rod = getEquippedRod(userData);
@@ -3884,7 +3977,7 @@ async checkEasterEggCollection(e) {
     ], ['lake', 'plum', 'amber', 'sky']), { badgePrefix: '缸' });
 
     const fallbackText = [
-      '你的鱼缸',
+      ownerTitle,
       `当前收藏 ${sortedFish.length} 条鱼`,
       ...sortedFish.map((fish, index) => formatFishLine(fish, index)),
       `鱼缸容量：${userData.fishTank.length}/${userData.tankCapacity}`,
@@ -3899,8 +3992,8 @@ async checkEasterEggCollection(e) {
     ].join('\n');
 
     await replyWithPanel(this, {
-      key: `tank-${e.user_id}`,
-      title: '鱼缸总览',
+      key: `tank-${targetUserId}`,
+      title: ownerTitle,
       subtitle: `当前鱼竿：${rod.name} | 当前鱼饵：${getBaitDisplayName(getEquippedBait(userData))} | 鱼币 ${userData.coins}`,
       sections,
       footer: `总钓鱼次数：${userData.total || 0} | 彩蛋加成：${describeEasterEggEffects(userData)}`
@@ -4053,7 +4146,7 @@ async checkEasterEggCollection(e) {
       title: '鱼市',
       subtitle: '卖多余鱼换鱼币，再购入鱼饵、额外钓鱼券和鱼竿。',
       sections,
-      footer: '购买格式：#鱼市购买 鱼饵1 / #鱼市购买 鱼饵1*5 / #鱼市购买 鱼竿1 / #鱼市购买 自定义鱼饵 清香窝料；回收格式：#鱼市回收 鱼竿1；炼竿预览：#炼竿预览 1'
+      footer: '购买格式：#鱼市购买 鱼饵1 / #鱼市购买 鱼饵1*5 / #鱼市购买 鱼竿1 / #鱼市购买 3*自定义鱼饵清香窝料；回收格式：#鱼市回收 鱼竿1；炼竿预览：#炼竿预览 1'
     }, fallback);
   }
 
@@ -4586,24 +4679,31 @@ async checkEasterEggCollection(e) {
     const { userId, text: userDisplay } = getUserDisplay(e);
     const userData = this.getOrCreateUser(data, userId);
     const rawKeyword = String(keyword || '').trim();
-    const customMatch = rawKeyword.match(/^自定义鱼饵\s+(.+)$/);
-    if (customMatch) {
-      const sourceText = customMatch[1].trim();
+    const customPurchase = parseCustomBaitPurchaseKeyword(rawKeyword);
+    if (customPurchase) {
+      const { sourceText, quantity } = customPurchase;
       const customPrice = SHOP_ITEMS.custom_bait.price;
-      if (userData.coins < customPrice) {
-        await this.reply(`${userDisplay}\n鱼币不足，当前只有 ${userData.coins}。`);
+      const totalPrice = customPrice * quantity;
+      if (userData.coins < totalPrice) {
+        await this.reply(`${userDisplay}\n鱼币不足，需要 ${totalPrice}，当前只有 ${userData.coins}。`);
         return;
       }
       const bait = findCustomBaitBySource(userData.customBaits, sourceText) || generateCustomBaitFromText(sourceText);
       bait.price = customPrice;
       bait.packSize = 3;
-      userData.coins -= customPrice;
+      const addedCount = bait.packSize * quantity;
+      userData.coins -= totalPrice;
       userData.customBaits[bait.id] = bait;
       if (!userData.baitInventory[bait.id]) userData.baitInventory[bait.id] = 0;
-      userData.baitInventory[bait.id] += bait.packSize;
+      userData.baitInventory[bait.id] += addedCount;
       saveFishData(data);
       const baitName = getBaitDisplayName(bait);
-      await this.reply(`${userDisplay}\n已定制 ${baitName}，花费 ${customPrice} 鱼币，库存 +${bait.packSize} 次。\n特点：${getBaitDisplayDescription(bait)}\n可用 #换饵 ${baitName} 切换。当前鱼币：${userData.coins}`);
+      await this.reply(`${userDisplay}\n已定制 ${baitName} ${quantity} 包，花费 ${totalPrice} 鱼币，库存 +${addedCount} 次。\n特点：${getBaitDisplayDescription(bait)}\n可用 #换饵 ${baitName} 切换，#鱼饵详情 ${baitName} 查看效果。当前鱼币：${userData.coins}`);
+      return;
+    }
+
+    if (new RegExp(`^${CUSTOM_BAIT_PURCHASE_PATTERN}$`).test(rawKeyword)) {
+      await this.reply(`${userDisplay}\n请在自定义鱼饵后面写上配方名，例如：#鱼市购买 自定义鱼饵 清香窝料；批量可用：#鱼市购买 3*自定义鱼饵清香窝料。`);
       return;
     }
 
@@ -4712,6 +4812,10 @@ async checkEasterEggCollection(e) {
     const { text: userDisplay } = getUserDisplay(e);
     if (!keyword) {
       await this.reply(`${userDisplay}\n请输入鱼竿编号或鱼竿名，例如：#鱼竿详情 鱼竿1 / #鱼竿属性 疾风短竿`);
+      return;
+    }
+    if (isAllDetailsKeyword(keyword)) {
+      await this.showAllRodDetails(e);
       return;
     }
     await this.showRodDetails(e, keyword);
@@ -4840,6 +4944,72 @@ async checkEasterEggCollection(e) {
     }, fallback);
   }
 
+  async showAllRodDetails(e) {
+    const data = this.loadData();
+    const { userId, text: userDisplay } = getUserDisplay(e);
+    const userData = this.getOrCreateUser(data, userId);
+    const equipped = getEquippedRod(userData);
+    const rods = getOwnedRodDetailsList(userData);
+    const switchableRods = getSwitchableRodList(userData);
+
+    if (!rods.length) {
+      await this.reply(`${userDisplay}\n你还没有可展示的鱼竿。`);
+      return;
+    }
+
+    const list = rods.map((rod, index) => {
+      const rodTarget = resolveRodTarget(userData, rod);
+      const detailIndex = switchableRods.findIndex(item => item.id === rod.id);
+      const indexText = rod.id === DEFAULT_ROD_ID
+        ? '默认鱼竿'
+        : detailIndex >= 0
+          ? `详情编号 鱼竿${detailIndex + 1}`
+          : '';
+      const sourceText = rod.sourceLottery
+        ? '来源 祈愿限定'
+        : rod.sourceLegendary
+          ? `炼成来源 ${rod.sourceLegendary}`
+          : rod.id === DEFAULT_ROD_ID
+            ? '默认鱼竿'
+            : `回收价 ${getRodRecycleValue(rod)}鱼币`;
+      return {
+        badge: rod.id === equipped.id ? '当前' : rod.id === DEFAULT_ROD_ID ? '默认' : `竿${detailIndex >= 0 ? detailIndex + 1 : index + 1}`,
+        title: rod.name,
+        desc: buildTraitSummary(buildRodTraitLines(rod, { rodTarget }), rod.description),
+        meta: joinTextParts([
+          rod.id === equipped.id ? '当前装备' : '',
+          indexText,
+          sourceText,
+          rodTarget ? `目标 ${rodTarget.name}` : ''
+        ]),
+        tone: rod.id === equipped.id ? 'active' : rod.sourceLegendary || rod.sourceLottery ? 'legendary' : 'plum'
+      };
+    });
+
+    const sections = buildCardGridSections(applyGroupThemes([{
+      group: '已拥有鱼竿缩略详情',
+      list
+    }], ['plum']), { badgePrefix: '竿' });
+    const fallback = [
+      '鱼竿详情总览',
+      `当前鱼竿：${equipped.name}`,
+      ...rods.map((rod, index) => {
+        const rodTarget = resolveRodTarget(userData, rod);
+        const detailIndex = switchableRods.findIndex(item => item.id === rod.id);
+        const indexText = rod.id === DEFAULT_ROD_ID ? '默认鱼竿' : detailIndex >= 0 ? `鱼竿${detailIndex + 1}` : `鱼竿${index + 1}`;
+        return `${indexText} | ${rod.name}${rod.id === equipped.id ? ' | 当前装备' : ''} | ${buildTraitSummary(buildRodTraitLines(rod, { rodTarget }), rod.description)}`;
+      })
+    ].join('\n');
+
+    await replyWithPanel(this, {
+      key: `rod-details-all-${e.user_id}`,
+      title: '鱼竿详情总览',
+      subtitle: `已拥有 ${rods.length} 根 | 当前：${equipped.name}`,
+      sections,
+      footer: '查看完整单项：#鱼竿详情 鱼竿1 / #鱼竿详情 鱼竿名'
+    }, fallback);
+  }
+
   async equipRod(e, keyword) {
     const data = this.loadData();
     const { userId, text: userDisplay } = getUserDisplay(e);
@@ -4877,6 +5047,10 @@ async checkEasterEggCollection(e) {
     const { text: userDisplay } = getUserDisplay(e);
     if (!keyword) {
       await this.reply(`${userDisplay}\n请输入鱼饵编号或鱼饵名，例如：#鱼饵详情 鱼饵1 / #鱼饵属性 沉流鱼饵 / #鱼饵详情 桂花酒糟特调饵`);
+      return;
+    }
+    if (isAllDetailsKeyword(keyword)) {
+      await this.showAllBaitDetails(e);
       return;
     }
     await this.showBaitDetails(e, keyword);
@@ -5014,6 +5188,68 @@ async checkEasterEggCollection(e) {
       subtitle: baitName,
       sections,
       footer: '词条以倾向展示，实际手感以抛竿为准。'
+    }, fallback);
+  }
+
+  async showAllBaitDetails(e) {
+    const data = this.loadData();
+    const { userId, text: userDisplay } = getUserDisplay(e);
+    const userData = this.getOrCreateUser(data, userId);
+    const equipped = getEquippedBait(userData);
+    const baits = getOwnedBaitDetailsList(userData);
+    const switchableBaits = getSwitchableBaitList(userData);
+
+    if (!baits.length) {
+      await this.reply(`${userDisplay}\n你还没有可展示的鱼饵。`);
+      return;
+    }
+
+    const list = baits.map((bait, index) => {
+      const inventory = Number(userData.baitInventory?.[bait.id] || 0);
+      const baitName = getBaitDisplayName(bait);
+      const detailIndex = switchableBaits.findIndex(item => item.id === bait.id);
+      const indexText = bait.isDefault
+        ? '默认鱼饵'
+        : detailIndex >= 0
+          ? `详情编号 鱼饵${detailIndex + 1}`
+          : '';
+      const status = bait.isDefault ? '默认鱼饵' : `库存 ${inventory} 份`;
+      return {
+        badge: bait.id === equipped.id ? '当前' : bait.isDefault ? '默认' : `饵${detailIndex >= 0 ? detailIndex + 1 : index + 1}`,
+        title: baitName,
+        desc: buildTraitSummary(buildBaitTraitLines(bait), getBaitDisplayDescription(bait)),
+        meta: joinTextParts([
+          bait.id === equipped.id ? '当前使用' : '',
+          indexText,
+          status,
+          isCustomBait(bait) ? '自定义鱼饵' : '',
+          bait.lotteryOnly ? '祈愿限定' : ''
+        ]),
+        tone: bait.id === equipped.id ? 'active' : isCustomBait(bait) ? 'amber' : inventory > 0 ? 'positive' : 'sky'
+      };
+    });
+
+    const sections = buildCardGridSections(applyGroupThemes([{
+      group: '已拥有鱼饵缩略详情',
+      list
+    }], ['sky']), { badgePrefix: '饵' });
+    const fallback = [
+      '鱼饵详情总览',
+      `当前鱼饵：${getBaitDisplayName(equipped)}`,
+      ...baits.map((bait, index) => {
+        const inventory = Number(userData.baitInventory?.[bait.id] || 0);
+        const detailIndex = switchableBaits.findIndex(item => item.id === bait.id);
+        const indexText = bait.isDefault ? '默认鱼饵' : detailIndex >= 0 ? `鱼饵${detailIndex + 1}` : `鱼饵${index + 1}`;
+        return `${indexText} | ${getBaitDisplayName(bait)}${bait.id === equipped.id ? ' | 当前使用' : ''} | ${bait.isDefault ? '默认鱼饵' : `库存 ${inventory} 份`} | ${buildTraitSummary(buildBaitTraitLines(bait), getBaitDisplayDescription(bait))}`;
+      })
+    ].join('\n');
+
+    await replyWithPanel(this, {
+      key: `bait-details-all-${e.user_id}`,
+      title: '鱼饵详情总览',
+      subtitle: `可用 ${baits.length} 种 | 当前：${getBaitDisplayName(equipped)}`,
+      sections,
+      footer: '查看完整单项：#鱼饵详情 鱼饵1 / #鱼饵详情 鱼饵名'
     }, fallback);
   }
 
