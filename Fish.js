@@ -23,6 +23,7 @@ import {
   EASTER_EGG_RARITY,
   HIDDEN_PITY_CATCH_BONUS,
   LEGENDARY_ROD_RECIPES,
+  LOTTERY_GRAND_PRIZE_PLUGINS,
   RARITY_LABELS,
   RARITY_ORDER,
   ROD_CATALOG,
@@ -93,7 +94,15 @@ import { buildSellPreview, canSellFish, findShopItem, getFishSellValue, parseSel
 import { formatAchievementList, getAchievementCatchRateBonus, getAchievementDailyCastBonus, getCollectionStats, scanAchievements } from './lib/achievements.js';
 import { ensureDailySignal } from './lib/signals.js';
 import { ensureResourceDirs, replyWithPanel } from './lib/panel.js';
-import { getLotteryPoolSummary, isLotteryGrandPrizeAvailable, parseLotteryCommand, performLotteryDraws } from './lib/lottery.js';
+import {
+  getLotteryGrandPrizeList,
+  getLotteryPoolSummary,
+  getPreferredLotteryGrandPrizePlugin,
+  isLotteryGrandPrizeAvailable,
+  parseLotteryCommand,
+  performLotteryDraws,
+  resolveLotteryGrandPrizePlugin
+} from './lib/lottery.js';
 import { findCustomBaitBySource, generateCustomBaitFromText } from './lib/custom-bait.js';
 import { getNowDateKey, getNowTimestamp, getTodayKey, getTimeRuntimeInfo } from './lib/time.js';
 import {
@@ -166,6 +175,7 @@ const HELP_GROUPS = [
       { title: '#彩蛋收藏', desc: '查看已收集彩蛋、当前生效项和待切换项。' },
       { title: '#切换彩蛋 愿望锦鲤', desc: '安排彩蛋效果切换；每天只能安排一次，次日生效。' },
       { title: '#钓鱼祈愿 / #钓鱼祈愿10 / #钓鱼十连 / #钓鱼祈愿清单', desc: '100鱼币祈愿1次，可获得限定鱼竿、限定鱼饵和免费祈愿。' },
+      { title: '#钓鱼祈愿大奖 金满竿 / #钓鱼祈愿大奖 鱼饵配送员', desc: '切换当前想抽的祈愿大奖，已有保底进度会继续累计。' },
       { title: '#金谦指定 虹鳟 / #金谦目标 common 鲫鱼', desc: '拥有金满而谦虚之竿后，每天可指定1次目标鱼；同一目标也可用于刷新闯入鱼影。' },
       { title: '#钓鱼成就', desc: '查看成就进度和永久加成。' },
       { title: '#打窝 文本 / #打窝 @某人', desc: '投放临时窝料，效果持续2竿。' },
@@ -592,14 +602,76 @@ function getLotteryRewardResultMetaText(reward, item = {}) {
   if (!reward) return '已完成本次祈愿';
   if (item.isGrandPrize) {
     if (reward.duplicate) return `你已经拥有它，这次折成 ${reward.compensationCoins || 0} 鱼币`;
-    return reward.type === 'rod' ? '已加入鱼竿收藏' : '限定愿品已入账';
+    if (reward.type === 'rod') return '已加入鱼竿收藏';
+    if (reward.type === 'special_item') return '特殊愿品已登记，会自动生效';
+    return '限定愿品已入账';
   }
   if (reward.duplicate) return `重复愿品折成 ${reward.compensationCoins || 0} 鱼币`;
   if (reward.type === 'coins') return `到账 ${Number(reward.amount || 0)} 鱼币`;
   if (reward.type === 'bait') return getLotteryRewardMetaText(reward) || '鱼饵已加入库存';
   if (reward.type === 'ticket') return `钓鱼券 +${Math.max(1, Math.floor(Number(reward.count || 1)))}`;
   if (reward.type === 'lottery_free_draw') return `免费祈愿 +${Math.max(1, Math.floor(Number(reward.count || 1)))}`;
+  if (reward.type === 'special_item') return '特殊愿品已登记，会自动生效';
   return '已发放到背包';
+}
+
+function getBaitDeliveryPool() {
+  return Object.values(BAIT_CATALOG)
+    .filter(bait => bait?.id && !bait.isDefault && Math.max(1, Math.floor(Number(bait.packSize || 0))) > 0);
+}
+
+function summarizeBaitDeliveryPacks(deliveries = []) {
+  const groups = new Map();
+  for (const item of deliveries) {
+    const baitId = item?.bait?.id;
+    if (!baitId) continue;
+    const current = groups.get(baitId) || { bait: item.bait, packs: 0, count: 0 };
+    current.packs += 1;
+    current.count += Math.max(1, Math.floor(Number(item.count || 1)));
+    groups.set(baitId, current);
+  }
+  return [...groups.values()]
+    .map(item => `${getBaitDisplayName(item.bait)} ${item.packs}包(${item.count}份)`)
+    .join('、');
+}
+
+function claimDailyBaitDelivery(userData) {
+  const grandPlugin = LOTTERY_GRAND_PRIZE_PLUGINS.bait_delivery_clerk;
+  if (!grandPlugin?.id || !Array.isArray(userData?.lotteryGrandPrizes) || !userData.lotteryGrandPrizes.includes(grandPlugin.id)) return null;
+
+  const todayKey = getTodayKey();
+  if (!userData.dailyBaitDelivery || typeof userData.dailyBaitDelivery !== 'object') {
+    userData.dailyBaitDelivery = { lastDate: '', delivered: false };
+  }
+  if (String(userData.dailyBaitDelivery.lastDate || '').trim() === todayKey && userData.dailyBaitDelivery.delivered) return null;
+
+  const pool = getBaitDeliveryPool();
+  if (!pool.length) return null;
+  const packCount = Math.max(1, Math.floor(Number(grandPlugin.dailyDelivery?.packCount || 3)));
+  const deliveries = [];
+  if (!userData.baitInventory || typeof userData.baitInventory !== 'object') userData.baitInventory = {};
+  for (let index = 0; index < packCount; index += 1) {
+    const bait = pool[Math.floor(Math.random() * pool.length)];
+    const count = Math.max(1, Math.floor(Number(bait.packSize || 1)));
+    userData.baitInventory[bait.id] = Number(userData.baitInventory[bait.id] || 0) + count;
+    deliveries.push({ bait, count });
+  }
+  const totalCount = deliveries.reduce((sum, item) => sum + item.count, 0);
+  userData.dailyBaitDelivery = {
+    lastDate: todayKey,
+    delivered: true,
+    deliveredAt: getNowTimestamp(),
+    packs: deliveries.map(item => ({
+      id: item.bait.id,
+      name: getBaitDisplayName(item.bait),
+      count: item.count
+    }))
+  };
+  return {
+    deliveries,
+    totalCount,
+    text: `[鱼饵配送员] 今日鱼饵配送到货：${summarizeBaitDeliveryPacks(deliveries)}，库存合计 +${totalCount} 份。`
+  };
 }
 
 function formatLotteryProbability(rate) {
@@ -970,9 +1042,11 @@ function buildRarityBiasEntries(bias = {}) {
 function getRodWithTargetBias(rod, rodTarget = null) {
   if (!rodTarget || rod?.targetFishEffect?.type !== 'gold_humble') return rod;
   const targetBias = getGoldHumbleRarityBias(rod, rodTarget);
-  if (!Object.keys(targetBias).length) return rod;
+  const targetCatchRateBonus = getGoldHumbleCatchRateBonus(rod, rodTarget);
+  if (!Object.keys(targetBias).length && targetCatchRateBonus === 0) return rod;
   return {
     ...rod,
+    catchRateBonus: Number(rod.catchRateBonus || 0) + targetCatchRateBonus,
     rarityBias: mergeRarityBias(rod.rarityBias || {}, targetBias)
   };
 }
@@ -1197,6 +1271,11 @@ function resolveRodTarget(userData, rod) {
 function getGoldHumbleRarityBias(rod, rodTarget) {
   if (rod?.targetFishEffect?.type !== 'gold_humble' || !rodTarget?.rarity) return {};
   return rod.targetFishEffect.rarityBiasByTargetRarity?.[rodTarget.rarity] || {};
+}
+
+function getGoldHumbleCatchRateBonus(rod, rodTarget) {
+  if (rod?.targetFishEffect?.type !== 'gold_humble' || !rodTarget?.rarity) return 0;
+  return Number(rod.targetFishEffect.catchRateBonusByTargetRarity?.[rodTarget.rarity] || 0);
 }
 
 function getGoldHumbleTargetRewardMultiplier(targetName = '') {
@@ -1502,6 +1581,7 @@ export class fishing extends plugin {
         { reg: '^#查看鱼缸(?:\\s*.*)?$', fnc: 'checkFishTank' },
         { reg: '^#彩蛋收藏$', fnc: 'checkEasterEggCollection' },
         { reg: '^#切换彩蛋\\s+.+$', fnc: 'scheduleActiveEasterEgg' },
+        { reg: '^#钓鱼祈愿(?:大奖|目标|切换|选择)\\s*.*$', fnc: 'setFishingLotteryGrandPrize' },
         { reg: '^#钓鱼(?:祈愿(?:\\s*\\d{0,2}|\\s*(?:十|\\d{1,2})连|清单|列表|概率|说明)?|(?:十|\\d{1,2})连)$', fnc: 'handleFishingLottery' },
         { reg: '^#(?:金谦指定|金谦目标)\\s*.*$', fnc: 'setGoldHumbleRodTarget' },
         { reg: '^#升级鱼缸\\s+(legendary|epic)\\s+.+', fnc: 'upgradeFishTank' },
@@ -3100,6 +3180,12 @@ export class fishing extends plugin {
         return;
       }
 
+      const delivery = claimDailyBaitDelivery(userData);
+      if (delivery?.text) {
+        saveFishData(data);
+        await this.reply(`${userDisplay}\n${delivery.text}`);
+      }
+
       const summary = this.createFastFishingSummary(rod);
       const signal = this.getDailySignal();
 
@@ -3132,7 +3218,10 @@ export class fishing extends plugin {
 
         const mergedBias = mergeRarityBias(rod.rarityBias, shopBait.rarityBias, easterEggEffect.rarityBias);
         const bodyModifiers = mergeFishBodyModifiers(rod, shopBait.bodyModifiers);
-        const catchRate = Math.max(0.05, getCatchRate(userData, manualBait.bonus + shopBait.bonus + hiddenPityBonus, rod.catchRateBonus || 0) - FAST_FISHING_CATCH_RATE_PENALTY);
+        const rodTarget = resolveRodTarget(userData, rod);
+        const targetCatchRateBonus = getGoldHumbleCatchRateBonus(rod, rodTarget);
+        const rodCatchRateBonus = Number(rod.catchRateBonus || 0) + targetCatchRateBonus;
+        const catchRate = Math.max(0.05, getCatchRate(userData, manualBait.bonus + shopBait.bonus + hiddenPityBonus, rodCatchRateBonus) - FAST_FISHING_CATCH_RATE_PENALTY);
         const failRescueChance = Math.max(0, Math.min(0.45, Number(rod.failProtection || 0) + easterEggEffect.failProtection));
         const missedCatch = Math.random() >= catchRate;
         const failResult = missedCatch ? await this.getRandomFailResult(userId, e.group_id, e, null, { lostItemsData: lostItems, autoSaveLostItems: false, userData }) : null;
@@ -3221,6 +3310,7 @@ export class fishing extends plugin {
         return;
       }
 
+      const delivery = claimDailyBaitDelivery(userData);
       userData.total += 1;
       registerCastUsage(this.config, userData, rod);
       const currentCount = userData.today.count;
@@ -3229,7 +3319,8 @@ export class fishing extends plugin {
       saveFishData(data);
 
       const easterEggEffect = getEasterEggEffects(userData);
-      await this.reply(`${userDisplay}\n已抛竿，当前鱼竿：${rod.name}\n当前鱼饵：${getBaitDisplayName(bait)}\n请稍等片刻...`);
+      const deliveryText = delivery?.text ? `${delivery.text}\n` : '';
+      await this.reply(`${userDisplay}\n${deliveryText}已抛竿，当前鱼竿：${rod.name}\n当前鱼饵：${getBaitDisplayName(bait)}\n请稍等片刻...`);
 
       const minDelay = 1000;
       const maxDelay = 15000;
@@ -3250,7 +3341,10 @@ export class fishing extends plugin {
       const mergedBias = mergeRarityBias(rod.rarityBias, shopBait.rarityBias, easterEggEffect.rarityBias);
       const bodyModifiers = mergeFishBodyModifiers(rod, shopBait.bodyModifiers);
 
-      const catchRate = getCatchRate(settleUser, manualBait.bonus + shopBait.bonus + hiddenPityBonus, rod.catchRateBonus || 0);
+      const settleRod = getEquippedRod(settleUser);
+      const settleRodTarget = resolveRodTarget(settleUser, settleRod);
+      const settleRodCatchRateBonus = Number(settleRod.catchRateBonus || 0) + getGoldHumbleCatchRateBonus(settleRod, settleRodTarget);
+      const catchRate = getCatchRate(settleUser, manualBait.bonus + shopBait.bonus + hiddenPityBonus, settleRodCatchRateBonus);
       const easterEggMsg = easterEggEffect.descriptions.length ? `\n[彩蛋加成] ${easterEggEffect.descriptions.join('；')}` : '';
       const failRescueChance = Math.max(0, Math.min(0.45, Number(rod.failProtection || 0) + easterEggEffect.failProtection));
       const missedCatch = Math.random() >= catchRate;
@@ -4202,12 +4296,13 @@ async checkEasterEggCollection(e) {
 
   buildLotteryResultPanel(userDisplay, userData, result) {
     const grandCount = result.results.filter(item => item.isGrandPrize).length;
+    const grandName = result.grandPlugin?.name || '限定愿品';
     const grandStatus = result.grandAvailableAfter
-      ? `金线进度 ${result.pityAfter}/${result.pityLimit || 100}`
+      ? `大奖进度 ${result.pityAfter}/${result.pityLimit || 100}`
       : '当前限定愿品已获得，留些机会给没遇见它的钓友吧';
     const rewardLines = result.results.map((item, index) => {
       const reward = item.reward || {};
-      const prefix = item.isGrandPrize ? (item.pityHit ? '金线牵引' : '限定愿品') : `愿${index + 1}`;
+      const prefix = item.isGrandPrize ? (item.pityHit ? '保底牵引' : '限定愿品') : `愿${index + 1}`;
       return `${prefix} | ${reward.title || reward.type} | ${reward.desc || ''} | ${getLotteryRewardResultMetaText(reward, item)}`;
     });
     const groups = applyGroupThemes([
@@ -4224,7 +4319,7 @@ async checkEasterEggCollection(e) {
           {
             badge: '限定',
             title: grandCount > 0 ? `相遇 ${grandCount} 次` : '擦肩而过',
-            desc: result.grandPlugin?.name || '限定愿品暂未开放',
+            desc: grandName,
             meta: grandStatus,
             tone: grandCount > 0 ? 'legendary' : 'neutral'
           }
@@ -4235,7 +4330,7 @@ async checkEasterEggCollection(e) {
         list: result.results.map((item, index) => {
           const reward = item.reward || {};
           return {
-            badge: item.isGrandPrize ? (item.pityHit ? '金线' : '限定') : `愿${index + 1}`,
+            badge: item.isGrandPrize ? (item.pityHit ? '保底' : '限定') : `愿${index + 1}`,
             title: reward.title || reward.type,
             desc: reward.desc || '已发放到背包',
             meta: getLotteryRewardResultMetaText(reward, item),
@@ -4256,9 +4351,9 @@ async checkEasterEggCollection(e) {
       panel: {
         key: `fish-lottery-${getNowTimestamp()}`,
         title: '钓鱼祈愿结果',
-        subtitle: grandCount > 0 ? '金光已经压不住了' : '水面轻轻晃了一下',
+        subtitle: grandCount > 0 ? `${grandName} 已经入账` : '水面轻轻晃了一下',
         sections: buildCardGridSections(groups, { badgePrefix: '愿' }),
-        footer: '继续使用：#钓鱼祈愿 / #钓鱼祈愿10 / #钓鱼十连 / #钓鱼祈愿清单'
+        footer: '继续使用：#钓鱼祈愿 / #钓鱼祈愿10 / #钓鱼十连 / #钓鱼祈愿清单 / #钓鱼祈愿大奖 鱼饵配送员'
       },
       fallback
     };
@@ -4267,13 +4362,13 @@ async checkEasterEggCollection(e) {
   async showFishingLotteryPool(e) {
     const data = this.loadData();
     const userData = this.getOrCreateUser(data, String(e.user_id));
-    const grandPlugin = getLotteryPoolSummary().grandPlugin;
+    const grandPlugin = getPreferredLotteryGrandPrizePlugin(userData);
     const grandAvailable = isLotteryGrandPrizeAvailable(userData, grandPlugin);
-    const pool = getLotteryPoolSummary({ grandAvailable });
+    const pool = getLotteryPoolSummary({ grandAvailable, grandPluginId: grandPlugin?.id });
     const pityNow = Number(userData.lotteryPity || 0);
     const pityLimit = Math.max(1, Number(pool.config.grandPrize.pityDraws || 100));
     const grandStatusText = grandAvailable
-      ? `金线进度 ${pityNow}/${pityLimit}`
+      ? `大奖进度 ${pityNow}/${pityLimit}`
       : '当前限定愿品已获得，留些机会给没遇见它的钓友吧';
     const grandRate = grandAvailable ? Number(pool.config.grandPrize.rate || 0) : 0;
     const regularRateTotal = grandAvailable ? Math.max(0, 1 - grandRate) : 1;
@@ -4337,10 +4432,43 @@ async checkEasterEggCollection(e) {
     await replyWithPanel(this, {
       key: `fish-lottery-pool-${e.user_id}`,
       title: '钓鱼祈愿清单',
-      subtitle: '100鱼币一次，愿品会在结算后直接入账',
+      subtitle: `当前大奖：${pool.grandPlugin?.name || '暂未开放'} | 100鱼币一次`,
       sections: buildCardGridSections(groups, { badgePrefix: '愿' }),
-      footer: '祈愿：#钓鱼祈愿 / #钓鱼祈愿10 / #钓鱼十连'
+      footer: '祈愿：#钓鱼祈愿 / #钓鱼祈愿10 / #钓鱼十连；切换大奖：#钓鱼祈愿大奖 金满竿 / #钓鱼祈愿大奖 鱼饵配送员'
     }, fallback);
+  }
+
+  async setFishingLotteryGrandPrize(e) {
+    const data = this.loadData();
+    const { userId, text: userDisplay } = getUserDisplay(e);
+    const userData = this.getOrCreateUser(data, userId);
+    const keyword = String(e.msg || '')
+      .replace(/^#钓鱼祈愿(?:大奖|目标|切换|选择)\s*/, '')
+      .trim();
+
+    if (!keyword) {
+      const current = getPreferredLotteryGrandPrizePlugin(userData);
+      const lines = getLotteryGrandPrizeList().map(plugin => {
+        const owned = userData.lotteryGrandPrizes?.includes(plugin.id);
+        const currentMark = plugin.id === current?.id ? '当前' : '可选';
+        return `${plugin.name} - ${currentMark}${owned ? '，已获得' : ''} - ${plugin.description || ''}`;
+      });
+      await this.reply(`${userDisplay}\n当前祈愿大奖：${current?.name || '未设置'}\n可切换：\n${lines.join('\n')}\n格式：#钓鱼祈愿大奖 金满竿 / #钓鱼祈愿大奖 鱼饵配送员`);
+      return;
+    }
+
+    const target = resolveLotteryGrandPrizePlugin(keyword);
+    if (!target) {
+      await this.reply(`${userDisplay}\n没有找到这个祈愿大奖。可选：${getLotteryGrandPrizeList().map(item => item.name).join('、')}`);
+      return;
+    }
+
+    userData.preferredLotteryGrandPrizeId = target.id;
+    saveFishData(data);
+    const ownedText = userData.lotteryGrandPrizes?.includes(target.id)
+      ? '你已经获得过这个大奖，当前大奖池会显示为已获得。'
+      : `保底进度会继续按当前记录累计：${Number(userData.lotteryPity || 0)}/${Math.max(1, Number(getLotteryPoolSummary({ grandPluginId: target.id }).config.grandPrize.pityDraws || 100))}`;
+    await this.reply(`${userDisplay}\n已将祈愿大奖切换为：${target.name}\n${target.description || ''}\n${ownedText}`);
   }
 
   async handleFishingLottery(e) {
@@ -4356,7 +4484,7 @@ async checkEasterEggCollection(e) {
     const data = this.loadData();
     const { userId, text: userDisplay } = getUserDisplay(e);
     const userData = this.getOrCreateUser(data, userId);
-    const result = performLotteryDraws(userData, parsed.count);
+    const result = performLotteryDraws(userData, parsed.count, { grandPluginId: userData.preferredLotteryGrandPrizeId });
     if (!result.ok) {
       await this.reply(`${userDisplay}\n鱼币不足：本次 ${result.drawCount} 连可用免费祈愿 ${result.freeUsed} 次，仍有 ${result.paidDraws} 次需要付费，共需 ${result.totalCost} 鱼币，当前只有 ${userData.coins}。`);
       return;
