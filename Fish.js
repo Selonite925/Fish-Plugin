@@ -62,10 +62,12 @@ import {
   getEquippedRod,
   getFishingLimitExhaustedText,
   getFishingLimitText,
+  getSegmentedReturnedCasts,
   getLockedFishIds,
   getTargetUserId,
   getDisplayNameForUser,
   getUserDisplay,
+  isSegmentedCastReturnEnabled,
   getOwnedEasterEggCollection,
   getOwnedRodsSummary,
   isFishLocked,
@@ -105,7 +107,7 @@ import {
   resolveLotteryGrandPrizePlugin
 } from './lib/lottery.js';
 import { findCustomBaitBySource, generateCustomBaitFromText } from './lib/custom-bait.js';
-import { getNowDateKey, getNowTimestamp, getTodayKey, getTimeRuntimeInfo } from './lib/time.js';
+import { getLocalHour, getNowTimestamp, getTodayKey, getTimeRuntimeInfo } from './lib/time.js';
 import {
   parseBaitIndex,
   parseLegendaryCraftTarget,
@@ -119,6 +121,8 @@ const __dirname = path.dirname(__filename);
 const FISH_PLUGIN_REPO = 'https://github.com/Selonite925/Fish-Plugin.git';
 const FISH_PLUGIN_UPDATE_PROXY_CONFIG_KEY = 'updateProxy';
 const SELF_UPDATE_BACKUP_DIR = '.self-update-backups';
+const DEFAULT_DAILY_RESET_HOUR = 0;
+const SEGMENTED_CAST_RETURN_EXTRA_TICKET_HOUR = 16;
 const USER_BACKUP_DIR = 'user_backup';
 const USER_BACKUP_FILES = [
   'fishdata/fishData.json',
@@ -192,6 +196,8 @@ const MANAGEMENT_HELP_GROUPS = [
     group: '主人命令',
     list: [
       { title: '#设置钓鱼次数10', desc: '调整全局基础每日钓鱼次数。' },
+      { title: '#设置钓鱼刷新时间 6', desc: '设置每日钓鱼日刷新时间，24小时制，只能填0-23点。' },
+      { title: '#钓鱼分段返还 开启 / 关闭', desc: '开启后基础次数按刷新点、+6小时、+12小时分三段返还，+16小时后可用钓鱼券。' },
       { title: '#鱼蛋补偿 @某人 *100', desc: '给单人补发鱼蛋。' },
       { title: '#鱼蛋补偿 全体 *100', desc: '给已有数据的全部玩家统一补发鱼蛋。' },
       { title: '#补鱼 @某人 鳗鱼 / #补鱼 rare 鳗鱼 @某人 80 3.5', desc: '直接补发指定鱼，目标、稀有度、鱼名顺序更自由，长度和重量可省略。' },
@@ -352,7 +358,7 @@ function buildTodayFishRecordPanel(config, userData, ownerDisplay = '你', optio
   const todayCatchCount = Number(today.catches || 0);
   const currentFishCount = annotatedFish.length;
   const totalCount = Number(userData?.total || 0);
-  const limitText = userData ? getFishingLimitText(config, userData, rod) : '0/0';
+  const limitText = userData ? getFishingLimitText(config, userData, rod, getFishingUsageOptions(config)) : '0/0';
   const emptyText = userData
     ? todayCatchCount > 0
       ? '今天钓到的鱼已经不在当前鱼获列表里，可能已经出售或移入鱼缸。'
@@ -670,11 +676,10 @@ function summarizeBaitDeliveryPacks(deliveries = []) {
     .join('、');
 }
 
-function claimDailyBaitDelivery(userData) {
+function claimDailyBaitDelivery(userData, todayKey = getTodayKey()) {
   const grandPlugin = LOTTERY_GRAND_PRIZE_PLUGINS.bait_delivery_clerk;
   if (!grandPlugin?.id || !Array.isArray(userData?.lotteryGrandPrizes) || !userData.lotteryGrandPrizes.includes(grandPlugin.id)) return null;
 
-  const todayKey = getTodayKey();
   if (!userData.dailyBaitDelivery || typeof userData.dailyBaitDelivery !== 'object') {
     userData.dailyBaitDelivery = { lastDate: '', delivered: false };
   }
@@ -1413,6 +1418,71 @@ function normalizeRarityKeyword(keyword = '') {
   return aliases[text] || null;
 }
 
+function normalizeDailyResetHour(value, fallback = DEFAULT_DAILY_RESET_HOUR) {
+  const hour = Math.floor(Number(value));
+  if (!Number.isFinite(hour)) return fallback;
+  return Math.max(0, Math.min(23, hour));
+}
+
+function parseDailyResetHour(input = '') {
+  const text = String(input || '').trim();
+  const match = text.match(/(?:^|\s)([01]?\d|2[0-3])(?:(?:\s*[:：]\s*00)|\s*(?:点|时|:00|：00|h)?)\s*$/i);
+  if (!match) return null;
+  return normalizeDailyResetHour(match[1]);
+}
+
+function parseOnOffToggle(input = '') {
+  const text = String(input || '')
+    .trim()
+    .toLowerCase()
+    .replace(/[\s　:：,，。.!！?？、_\-\\/]+/g, '');
+  if (!text || /^(?:状态|查看|查询|帮助|说明|怎么用|开关|当前|help)$/.test(text)) return null;
+  if (/^(?:off|close|closed|false|0|no|n|关|关闭|关掉|关了|停用|禁用|取消|停止|不要|不用|不开)/.test(text)) return false;
+  if (/^(?:on|open|opened|true|1|yes|y|开|开启|打开|启用|启动|使用|要|需要)/.test(text)) return true;
+  return null;
+}
+
+function getDailyResetHour(config = {}) {
+  return normalizeDailyResetHour(config?.dailyResetHour, DEFAULT_DAILY_RESET_HOUR);
+}
+
+function getFishingDayKey(config = {}, date = new Date()) {
+  const resetHour = getDailyResetHour(config);
+  const shifted = new Date(date.getTime() - resetHour * 60 * 60 * 1000);
+  return getTodayKey(shifted);
+}
+
+function getHoursSinceFishingDayReset(config = {}, date = new Date()) {
+  const resetHour = getDailyResetHour(config);
+  const currentHour = getLocalHour(date);
+  return (currentHour - resetHour + 24) % 24;
+}
+
+function getFishingUsageOptions(config = {}, options = {}) {
+  return {
+    elapsedHours: getHoursSinceFishingDayReset(config),
+    ignoreSegments: Boolean(options.ignoreSegments)
+  };
+}
+
+function getFastFishingUsageOptions(config = {}) {
+  const options = getFishingUsageOptions(config, { ignoreSegments: true });
+  options.elapsedHours = getHoursSinceFishingDayReset(config);
+  return options;
+}
+
+function getSegmentedCastReturnStatusText(config, totalLimit, options = {}) {
+  if (!isSegmentedCastReturnEnabled(config)) return '分段返还：关闭';
+  const elapsedHours = options.elapsedHours ?? getHoursSinceFishingDayReset(config);
+  const returned = getSegmentedReturnedCasts(totalLimit, elapsedHours);
+  const resetHour = getDailyResetHour(config);
+  const at0 = `${resetHour}:00`;
+  const at6 = `${(resetHour + 6) % 24}:00`;
+  const at12 = `${(resetHour + 12) % 24}:00`;
+  const at16 = `${(resetHour + SEGMENTED_CAST_RETURN_EXTRA_TICKET_HOUR) % 24}:00`;
+  return `分段返还：开启，当前已返还 ${returned}/${totalLimit} 次（${at0}、${at6}、${at12}；${at16} 后可用钓鱼券）`;
+}
+
 function getCompensateFishUsage() {
   return '格式示例：#补鱼 @某人 rare 鳗鱼 80 3.5、#补鱼 rare 鳗鱼 @某人、#补鱼 @某人 鳗鱼；长度和重量可省略。';
 }
@@ -1611,6 +1681,8 @@ export class fishing extends plugin {
         { reg: '^#钓鱼排行$', fnc: 'checkFishingRank' },
         { reg: '^#鱼王榜$', fnc: 'checkFishKingRank' },
         { reg: '^#设置钓鱼次数(\\d+)$', fnc: 'setFishingLimit' },
+        { reg: '^#(?:设置)?钓鱼(?:每日)?刷新(?:时间|小时)?\\s*.*$', fnc: 'setDailyResetHour' },
+        { reg: '^#(?:钓鱼)?分段(?:式)?(?:返还|次数|钓鱼)?\\s*.*$', fnc: 'toggleSegmentedCastReturn' },
         { reg: '^#重置钓鱼次数\\s*(全体|全部|@?.*)?$', fnc: 'resetFishingCount' },
         { reg: '^#钓鱼次数$', fnc: 'checkFishingLimit' },
         { reg: '^#查看鱼缸(?:\\s*.*)?$', fnc: 'checkFishTank' },
@@ -1684,9 +1756,9 @@ export class fishing extends plugin {
       return loadWorldState();
     }
     if (!world.lastDailyResetDate) {
-      world.lastDailyResetDate = getNowDateKey();
+      world.lastDailyResetDate = getFishingDayKey(this.config);
     }
-    ensureDailySignal(world, this.fishTypes);
+    ensureDailySignal(world, this.fishTypes, getFishingDayKey(this.config));
     saveWorldState(world);
     return world;
   }
@@ -1698,7 +1770,7 @@ export class fishing extends plugin {
     return data;
   }
 
-  resetDailyState(targetDate = getNowDateKey()) {
+  resetDailyState(targetDate = getFishingDayKey(this.config)) {
     const data = loadFishData();
     for (const userId in data) {
       const userData = data[userId];
@@ -1729,12 +1801,12 @@ export class fishing extends plugin {
     const world = loadWorldState();
     world.lastDailyResetDate = targetDate;
     world.todaySignal = null;
-    ensureDailySignal(world, this.fishTypes);
+    ensureDailySignal(world, this.fishTypes, targetDate);
     saveWorldState(world);
   }
 
   ensureDailyResetIfNeeded() {
-    const today = getNowDateKey();
+    const today = getFishingDayKey(this.config);
     const world = loadWorldState();
     const lastReset = String(world.lastDailyResetDate || '').trim();
     if (lastReset === today) return false;
@@ -2404,7 +2476,7 @@ export class fishing extends plugin {
 
   getDailySignal() {
     const world = this.ensureWorldState();
-    return ensureDailySignal(world, this.fishTypes);
+    return ensureDailySignal(world, this.fishTypes, getFishingDayKey(this.config));
   }
 
   applyRarityBias(baseWeights, bias = {}) {
@@ -2616,18 +2688,71 @@ export class fishing extends plugin {
     await this.reply(`已将基础每日钓鱼次数设置为：${limit}次`);
   }
 
+  async setDailyResetHour(e) {
+    if (!e.isMaster) {
+      await this.reply('只有主人才能设置钓鱼每日刷新时间。');
+      return;
+    }
+    const hour = parseDailyResetHour(e.msg);
+    if (hour === null) {
+      await this.reply(`当前钓鱼每日刷新时间：${getDailyResetHour(this.config)}:00\n格式：#设置钓鱼刷新时间 6 或 #钓鱼刷新时间 06:00（24小时制，0-23）`);
+      return;
+    }
+
+    this.config.dailyResetHour = hour;
+    saveConfig(this.config);
+    const fishingDay = getFishingDayKey(this.config);
+    const world = loadWorldState();
+    world.lastDailyResetDate = fishingDay;
+    if (world.todaySignal?.date && world.todaySignal.date !== fishingDay) {
+      world.todaySignal = null;
+      ensureDailySignal(world, this.fishTypes, fishingDay);
+    }
+    saveWorldState(world);
+    await this.reply(`已将钓鱼每日刷新时间设置为 ${hour}:00。\n当前钓鱼日：${fishingDay}\n说明：本次设置不会立刻清空今日鱼获和次数；下一个 ${hour}:00 起按新时间刷新。`);
+  }
+
+  async toggleSegmentedCastReturn(e) {
+    if (!e.isMaster) {
+      await this.reply('只有主人才能设置分段式返还钓鱼次数。');
+      return;
+    }
+    const raw = String(e.msg || '').replace(/^#(?:钓鱼)?分段(?:式)?(?:返还|次数|钓鱼)?\s*/, '').trim();
+    const nextValue = parseOnOffToggle(raw);
+    const resetHour = getDailyResetHour(this.config);
+    const statusText = getSegmentedCastReturnStatusText(this.config, Number(this.config.dailyLimit || 0), getFishingUsageOptions(this.config));
+    if (nextValue === null) {
+      await this.reply(`${statusText}\n格式：#钓鱼分段返还 开启 / #钓鱼分段返还 关闭\n规则：${resetHour}:00 返还1/3，${(resetHour + 6) % 24}:00 再返还1/3，${(resetHour + 12) % 24}:00 返还剩余次数，${(resetHour + SEGMENTED_CAST_RETURN_EXTRA_TICKET_HOUR) % 24}:00 后可用额外钓鱼券。`);
+      return;
+    }
+
+    this.config.segmentedCastReturnEnabled = nextValue;
+    saveConfig(this.config);
+    const status = nextValue ? '开启' : '关闭';
+    await this.reply(
+      `分段式返还钓鱼次数已${status}。\n` +
+      `刷新时间：${resetHour}:00\n` +
+      (nextValue
+        ? `返还节点：${resetHour}:00 / ${(resetHour + 6) % 24}:00 / ${(resetHour + 12) % 24}:00；${(resetHour + SEGMENTED_CAST_RETURN_EXTRA_TICKET_HOUR) % 24}:00 后可用钓鱼券。\n钓鱼极速版仍可提前消耗当天全部基础次数。`
+        : '关闭后恢复为每日刷新后一次性获得全部基础次数。')
+    );
+  }
+
   async checkFishingLimit(e) {
     const data = this.loadData();
     const userData = this.getOrCreateUser(data, String(e.user_id));
     const rod = getEquippedRod(userData);
     const limit = getDailyLimitBreakdown(this.config, userData, rod);
+    const usageOptions = getFishingUsageOptions(this.config);
     const normalUsed = getTodayNormalCastUsed(userData);
     const ticketUsed = Math.min(Number(userData.todayExtraUsed || 0), Number(userData.today?.count || 0));
     const easterEggSourceText = limit.easterEggBonus > 0 ? ' + 彩蛋效果（已计入）' : '';
     await this.reply(
       `你的每日基础钓鱼次数：${limit.total}次\n` +
-      `今日已用：基础${normalUsed}/${limit.total}，钓鱼券${ticketUsed}张，剩余钓鱼券${Number(userData.tickets || 0)}张\n` +
+      `今日已用：${getFishingLimitText(this.config, userData, rod, usageOptions)}\n` +
       `来源：全局基础${limit.base} + 鱼缸${limit.tankBonus} + 成就${limit.achievementBonus} + 鱼竿${limit.rodBonus}${easterEggSourceText}\n` +
+      `${getSegmentedCastReturnStatusText(this.config, limit.total, usageOptions)}\n` +
+      `钓鱼券：今日已用${ticketUsed}张，剩余${Number(userData.tickets || 0)}张\n` +
       `说明：鱼缸每升1级，玩家本人永久额外+${TANK_UPGRADE_EXTRA_CASTS}竿；钓鱼券只记录为额外竿，不会占用鱼缸升级后新增的基础次数。`
     );
   }
@@ -3048,7 +3173,7 @@ export class fishing extends plugin {
     };
   }
 
-  buildFastFishingResultPanel(userDisplay, summary, userData, rod) {
+  buildFastFishingResultPanel(userDisplay, summary, userData, rod, usageOptions = getFishingUsageOptions(this.config)) {
     const rarityLines = RARITY_ORDER
       .filter(rarity => summary.rarityCounts[rarity] > 0)
       .map(rarity => `${rarityLabel(rarity)}：${summary.rarityCounts[rarity]}条`);
@@ -3096,7 +3221,7 @@ export class fishing extends plugin {
             badge: '抛竿',
             title: `${summary.casts} 竿`,
             desc: `上鱼 ${summary.catches} 条，空军 ${summary.misses} 竿`,
-            meta: `今日次数：${getFishingLimitText(this.config, userData, getEquippedRod(userData))}`,
+            meta: `今日次数：${getFishingLimitText(this.config, userData, getEquippedRod(userData), usageOptions)}`,
             tone: summary.catches > 0 ? 'positive' : 'warning'
           },
           {
@@ -3186,7 +3311,7 @@ export class fishing extends plugin {
       userDisplay,
       `鱼竿：${rod.name}`,
       `总抛竿：${summary.casts}竿，上鱼${summary.catches}条，空军${summary.misses}竿`,
-      `今日次数：${getFishingLimitText(this.config, userData, getEquippedRod(userData))}`,
+      `今日次数：${getFishingLimitText(this.config, userData, getEquippedRod(userData), usageOptions)}`,
       `鱼蛋变化：${summary.coinGain >= 0 ? '+' : ''}${summary.coinGain}，当前${userData.coins}`,
       ...extraLines,
       '',
@@ -3224,13 +3349,14 @@ export class fishing extends plugin {
       const lostItems = loadLostItems();
       const userData = this.getOrCreateUser(data, userId);
       let rod = getEquippedRod(userData);
+      const usageOptions = getFastFishingUsageOptions(this.config);
 
-      if (!canFishToday(this.config, userData, rod)) {
-        await this.reply(`${userDisplay}\n${getFishingLimitExhaustedText(this.config, userData, rod)}`);
+      if (!canFishToday(this.config, userData, rod, usageOptions)) {
+        await this.reply(`${userDisplay}\n${getFishingLimitExhaustedText(this.config, userData, rod, usageOptions)}`);
         return;
       }
 
-      const delivery = claimDailyBaitDelivery(userData);
+      const delivery = claimDailyBaitDelivery(userData, getFishingDayKey(this.config));
       if (delivery?.text) {
         saveFishData(data);
         await this.reply(`${userDisplay}\n${delivery.text}`);
@@ -3239,10 +3365,10 @@ export class fishing extends plugin {
       const summary = this.createFastFishingSummary(rod);
       const signal = this.getDailySignal();
 
-      while (canFishToday(this.config, userData, rod)) {
+      while (canFishToday(this.config, userData, rod, usageOptions)) {
         const coinsBeforeCast = Number(userData.coins || 0);
         userData.total += 1;
-        const usage = registerCastUsage(this.config, userData, rod);
+        const usage = registerCastUsage(this.config, userData, rod, usageOptions);
         if (!usage.registered) break;
 
         summary.casts += 1;
@@ -3331,7 +3457,7 @@ export class fishing extends plugin {
         rod = getEquippedRod(userData);
       }
 
-      const result = this.buildFastFishingResultPanel(userDisplay, summary, userData, rod);
+      const result = this.buildFastFishingResultPanel(userDisplay, summary, userData, rod, usageOptions);
       const replyResult = await replyWithPanel(this, result.panel, result.fallback);
       if (!replyResult?.ok) {
         await this.reply(`${userDisplay}\n极速钓鱼结果发送失败，本次未扣除次数，也未结算鱼获。请稍后重试。`);
@@ -3354,15 +3480,16 @@ export class fishing extends plugin {
       const data = this.loadData();
       const userData = this.getOrCreateUser(data, userId);
       const rod = getEquippedRod(userData);
+      const usageOptions = getFishingUsageOptions(this.config);
 
-      if (!canFishToday(this.config, userData, rod)) {
-        await this.reply(`${userDisplay}\n${getFishingLimitExhaustedText(this.config, userData, rod)}`);
+      if (!canFishToday(this.config, userData, rod, usageOptions)) {
+        await this.reply(`${userDisplay}\n${getFishingLimitExhaustedText(this.config, userData, rod, usageOptions)}`);
         return;
       }
 
-      const delivery = claimDailyBaitDelivery(userData);
+      const delivery = claimDailyBaitDelivery(userData, getFishingDayKey(this.config));
       userData.total += 1;
-      registerCastUsage(this.config, userData, rod);
+      registerCastUsage(this.config, userData, rod, usageOptions);
       const currentCount = userData.today.count;
       const bait = getEquippedBait(userData);
       const shopBait = this.consumeShopBait(userData, bait);
@@ -3413,7 +3540,7 @@ export class fishing extends plugin {
         settleUser.achievementCatchRateBonus = getAchievementCatchRateBonus(settleUser);
         settleUser.achievementDailyCastBonus = getAchievementDailyCastBonus(settleUser);
         saveFishData(settleData);
-        await this.reply(`${userDisplay}\n${failResult.message}\n今日钓鱼次数：${getFishingLimitText(this.config, settleUser, getEquippedRod(settleUser))}${manualBait.message}${shopBait.message}${easterEggMsg}${this.formatAchievementUnlocks(unlocked)}`);
+        await this.reply(`${userDisplay}\n${failResult.message}\n今日钓鱼次数：${getFishingLimitText(this.config, settleUser, getEquippedRod(settleUser), usageOptions)}${manualBait.message}${shopBait.message}${easterEggMsg}${this.formatAchievementUnlocks(unlocked)}`);
         return;
       }
 
@@ -3466,7 +3593,7 @@ export class fishing extends plugin {
         resultIntroMsg +
         `恭喜！你钓到了一条 ${fishWithTimestamp.rarity} 鱼：${fishWithTimestamp.name}\n` +
         `长度：${fishWithTimestamp.length}cm，重量：${fishWithTimestamp.weight}kg${tankUpdateMsg}\n` +
-        `今日钓鱼次数：${getFishingLimitText(this.config, settleUser, getEquippedRod(settleUser))}${manualBait.message}${shopBait.message}${easterEggMsg}${signalMsg}${this.formatAchievementUnlocks(unlocked)}`
+        `今日钓鱼次数：${getFishingLimitText(this.config, settleUser, getEquippedRod(settleUser), usageOptions)}${manualBait.message}${shopBait.message}${easterEggMsg}${signalMsg}${this.formatAchievementUnlocks(unlocked)}`
       );
     } finally {
       this.releaseFishingLock(userId);
@@ -3936,7 +4063,7 @@ async checkEasterEggCollection(e) {
       return;
     }
 
-    const result = scheduleEasterEggSwitch(userData, targetName, getTodayKey());
+    const result = scheduleEasterEggSwitch(userData, targetName, getFishingDayKey(this.config));
     if (!result.ok) {
       if (result.reason === 'not_owned') {
         await this.reply(`${userDisplay}\n你还没有收集到 ${targetName}。可先用 #彩蛋收藏 查看已收集列表。`);
@@ -4015,7 +4142,7 @@ async checkEasterEggCollection(e) {
     }
     if (!userData.rodTargets || typeof userData.rodTargets !== 'object') userData.rodTargets = {};
     if (!userData.rodTargetChangeDates || typeof userData.rodTargetChangeDates !== 'object') userData.rodTargetChangeDates = {};
-    const todayKey = getTodayKey();
+    const todayKey = getFishingDayKey(this.config);
     const lastChangeDate = String(userData.rodTargetChangeDates[rod.id] || '').trim();
     const currentTarget = resolveRodTarget(userData, rod);
     const isNoopClear = parsed.clear && !currentTarget;
@@ -4099,9 +4226,9 @@ async checkEasterEggCollection(e) {
           },
           {
             badge: '次数',
-            title: getFishingLimitText(this.config, userData, rod),
+            title: getFishingLimitText(this.config, userData, rod, getFishingUsageOptions(this.config)),
             desc: `鱼蛋 ${userData.coins} | 钓鱼券 ${userData.tickets}`,
-            meta: `总钓鱼次数 ${userData.total || 0}`,
+            meta: `${getSegmentedCastReturnStatusText(this.config, getDailyLimit(this.config, userData, rod), getFishingUsageOptions(this.config))} | 总钓鱼次数 ${userData.total || 0}`,
             tone: 'positive'
           }
         ]
@@ -4177,7 +4304,7 @@ async checkEasterEggCollection(e) {
       `鱼缸容量：${userData.fishTank.length}/${userData.tankCapacity}`,
       `鱼缸等级：${userData.tankLevel || 0}`,
       `升级进度：${progressText}`,
-      `今日钓鱼次数：${getFishingLimitText(this.config, userData, rod)}`,
+      `今日钓鱼次数：${getFishingLimitText(this.config, userData, rod, getFishingUsageOptions(this.config))}`,
       `鱼竿库存：${getOwnedRodsSummary(userData) || '无'}`,
       `彩蛋加成：${describeEasterEggEffects(userData)}`,
       `彩蛋收藏：${easterEggOwnedText}`,
@@ -5705,7 +5832,7 @@ async showAchievements(e) {
       return;
     }
 
-    this.resetDailyState(getTodayKey());
+    this.resetDailyState(getFishingDayKey(this.config));
     const signal = this.getDailySignal();
     await this.reply(
       `已强制刷新钓鱼日。\n` +
