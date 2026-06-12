@@ -182,7 +182,7 @@ const HELP_GROUPS = [
       { title: '#切换彩蛋 愿望锦鲤', desc: '安排彩蛋效果切换；每天只能安排一次，次日生效。' },
       { title: '#钓鱼祈愿 / #钓鱼祈愿10 / #钓鱼十连 / #钓鱼祈愿清单', desc: '100鱼蛋祈愿1次，可获得限定鱼竿、限定鱼饵和免费祈愿。' },
       { title: '#钓鱼祈愿大奖 金满竿 / #钓鱼祈愿大奖 鱼饵配送员', desc: '切换当前想抽的祈愿大奖，已有保底进度会继续累计。' },
-      { title: '#金谦指定 虹鳟 / #金谦目标 common 鲫鱼', desc: '拥有金满而谦虚之竿后，每天可指定1次目标鱼；清除目标需发送 #金谦指定 确认清除。' },
+      { title: '#金谦指定 虹鳟 / #金谦目标 rare', desc: '拥有金满而谦虚之竿后，每天可指定1次目标鱼或整个稀有度；清除目标需发送 #金谦指定 确认清除。' },
       { title: '#钓鱼成就', desc: '查看成就进度和永久加成。' },
       { title: '#打窝 文本 / #打窝 @某人', desc: '投放临时窝料，效果持续2竿。' },
       { title: '#炼竿 1 / #炼竿预览 1', desc: '按鱼缸展示序号先预览 legendary 会炼成什么鱼竿，再决定是否正式炼制。' },
@@ -1158,8 +1158,18 @@ function buildRodTraitEntries(rod, options = {}) {
   if (Number(effectiveRod?.signalBonusCoins || 0) > 0) entries.push({ text: '命中鱼讯时收成会更亮眼', tone: 'positive' });
   if (Number(effectiveRod?.permanentDailyCasts || 0) > 0) entries.push({ text: '装备后每日可抛竿次数会增加', tone: 'positive' });
   if (Number(effectiveRod?.ownedPermanentDailyCasts || 0) > 0) entries.push({ text: '只要拥有这根竿，每日可抛竿次数就会增加', tone: 'positive' });
-  if (rod?.targetFishEffect) entries.push({ text: '可指定目标鱼：目标鱼在同稀有度中的出现感会明显增强，偶尔会有鱼影意外闯入', tone: 'positive' });
-  if (rod?.targetFishEffect?.rewardCoinsByRarity) entries.push({ text: '成功钓到指定目标时会获得额外鱼蛋奖励', tone: 'positive' });
+  if (rod?.targetFishEffect) entries.push({ text: '可指定单条目标鱼，也可指定整个稀有度', tone: 'positive' });
+  if (rod?.targetFishEffect?.rewardCoinsByRarity) {
+    const profile = options.rodTarget
+      ? getGoldHumbleTargetProfile(rod.targetFishEffect, options.rodTarget.rarity, options.rodTarget)
+      : null;
+    entries.push({
+      text: profile
+        ? `当前目标命中奖励 +${profile.rewardCoins}鱼蛋`
+        : '成功钓到指定目标时会获得额外鱼蛋奖励，整稀有度目标奖励较低',
+      tone: 'positive'
+    });
+  }
   if (rod?.suppressExtraCoinBonuses) entries.push({ text: '目标检索生效时，其它额外鱼蛋收益会被压下去', tone: 'negative' });
 
   return entries;
@@ -1288,7 +1298,20 @@ function createFishFromTemplate(template, rarity) {
 function resolveRodTarget(userData, rod) {
   const target = userData?.rodTargets?.[rod?.id];
   if (!target || typeof target !== 'object') return null;
+  const type = String(target.type || 'fish').trim();
   const rarity = String(target.rarity || '').trim();
+  if (!rarity || !RARITY_ORDER.includes(rarity)) return null;
+  if (type === 'rarity') {
+    return {
+      type: 'rarity',
+      rarity,
+      name: '',
+      template: null,
+      distractors: [],
+      updatedAt: Number(target.updatedAt || 0),
+      updatedDate: String(target.updatedDate || '').trim()
+    };
+  }
   const name = normalizeFishTemplateName(target.name);
   if (!rarity || !name) return null;
   const template = fishTemplateByName?.[name];
@@ -1299,6 +1322,7 @@ function resolveRodTarget(userData, rod) {
       .filter(item => item && item !== name && fishRarityByName?.[item] === rarity)
     : [];
   return {
+    type: 'fish',
     name,
     rarity,
     template,
@@ -1306,6 +1330,21 @@ function resolveRodTarget(userData, rod) {
     updatedAt: Number(target.updatedAt || 0),
     updatedDate: String(target.updatedDate || '').trim()
   };
+}
+
+function isGoldHumbleRarityTarget(target) {
+  return target?.type === 'rarity' || target?.targetType === 'rarity';
+}
+
+function getGoldHumbleTargetDisplayName(target) {
+  if (!target) return '未指定';
+  if (isGoldHumbleRarityTarget(target)) return `${rarityLabel(target.rarity)} 稀有度`;
+  return `${target.name}（${target.rarity}）`;
+}
+
+function getGoldHumbleTargetShortName(target) {
+  if (!target) return '未指定';
+  return isGoldHumbleRarityTarget(target) ? `${rarityLabel(target.rarity)} 稀有度` : target.name;
 }
 
 function getGoldHumbleRarityBias(rod, rodTarget) {
@@ -1342,12 +1381,16 @@ function getGoldHumbleDistractorCount(effect, rarity, poolSize = 0) {
   return Math.max(min, Math.min(max, count));
 }
 
-function getGoldHumbleTargetProfile(effect, rarity, targetName = '', poolSize = 0) {
-  const baseReward = Math.max(0, Math.floor(Number(effect?.rewardCoinsByRarity?.[rarity] || 0)));
+function getGoldHumbleTargetProfile(effect, rarity, target = '', poolSize = 0) {
+  const rarityTarget = typeof target === 'object' && isGoldHumbleRarityTarget(target);
+  const targetName = typeof target === 'object' ? target.name : target;
+  const rewardMap = rarityTarget ? effect?.rarityTargetRewardCoinsByRarity : effect?.rewardCoinsByRarity;
+  const baseReward = Math.max(0, Math.floor(Number(rewardMap?.[rarity] || 0)));
+  const rewardMultiplier = rarityTarget ? 1 : getGoldHumbleTargetRewardMultiplier(targetName);
   return {
     revealChance: clampNumber(effect?.revealChanceByRarity?.[rarity] ?? 0, 0, 1),
     distractorCount: getGoldHumbleDistractorCount(effect, rarity, poolSize),
-    rewardCoins: Math.max(0, Math.floor(baseReward * getGoldHumbleTargetRewardMultiplier(targetName)))
+    rewardCoins: Math.max(0, Math.floor(baseReward * rewardMultiplier))
   };
 }
 
@@ -1375,7 +1418,8 @@ function getStableGoldHumbleDistractors(pool = [], target, count = 0, excludes =
 
 function resolveGoldHumbleCandidateNames(effect, pool = [], target) {
   if (!target?.name || !target?.rarity) return [];
-  const profile = getGoldHumbleTargetProfile(effect, target.rarity, target.name, pool.length);
+  if (isGoldHumbleRarityTarget(target)) return [];
+  const profile = getGoldHumbleTargetProfile(effect, target.rarity, target, pool.length);
   const poolNames = new Set(pool.map(item => item.name));
   const distractors = Array.isArray(target.distractors)
     ? target.distractors.filter(name => name !== target.name && poolNames.has(name))
@@ -1395,6 +1439,7 @@ function resolveGoldHumbleCandidateNames(effect, pool = [], target) {
 
 function normalizeRarityKeyword(keyword = '') {
   const text = String(keyword || '').trim().toLowerCase();
+  const normalizedText = text.replace(/(?:鱼|稀有度|品质|级)$/u, '');
   const aliases = {
     c: 'common',
     common: 'common',
@@ -1415,7 +1460,7 @@ function normalizeRarityKeyword(keyword = '') {
     '？': EASTER_EGG_RARITY,
     彩蛋: EASTER_EGG_RARITY
   };
-  return aliases[text] || null;
+  return aliases[text] || aliases[normalizedText] || null;
 }
 
 function normalizeDailyResetHour(value, fallback = DEFAULT_DAILY_RESET_HOUR) {
@@ -2539,10 +2584,11 @@ export class fishing extends plugin {
     let candidateNames = [];
     let revealTriggered = false;
     let targetPoolSize = 0;
-    if (targetEffect && rarity === targetEffect.target.rarity) {
+    const rarityTarget = isGoldHumbleRarityTarget(targetEffect?.target);
+    if (targetEffect && rarity === targetEffect.target.rarity && !rarityTarget) {
       const pool = rarity === EASTER_EGG_RARITY ? availableMysteryFish : (this.fishTypes[rarity] || []);
       targetPoolSize = pool.length;
-      const profile = getGoldHumbleTargetProfile(targetEffect, rarity, targetEffect.target.name, pool.length);
+      const profile = getGoldHumbleTargetProfile(targetEffect, rarity, targetEffect.target, pool.length);
       candidateNames = resolveGoldHumbleCandidateNames(targetEffect, pool, targetEffect.target);
       candidatesSeen = candidateNames.length;
       revealTriggered = candidatesSeen > 0 && Math.random() < profile.revealChance;
@@ -2556,7 +2602,7 @@ export class fishing extends plugin {
       }
     }
     if (!fish && rarity === EASTER_EGG_RARITY && availableMysteryFish.length > 0) {
-      const fallbackPool = targetEffect?.target?.rarity === rarity
+      const fallbackPool = targetEffect?.target?.rarity === rarity && !rarityTarget
         ? availableMysteryFish.filter(item => item.name !== targetEffect.target.name)
         : availableMysteryFish;
       const realPool = fallbackPool.length ? fallbackPool : availableMysteryFish;
@@ -2564,7 +2610,7 @@ export class fishing extends plugin {
       fish = createFishFromTemplate(template, rarity);
     } else if (!fish) {
       const pool = this.fishTypes[rarity] || [];
-      const fallbackPool = targetEffect?.target?.rarity === rarity
+      const fallbackPool = targetEffect?.target?.rarity === rarity && !rarityTarget
         ? pool.filter(item => item.name !== targetEffect.target.name)
         : pool;
       const realPool = fallbackPool.length ? fallbackPool : pool;
@@ -2572,18 +2618,23 @@ export class fishing extends plugin {
       fish = template ? createFishFromTemplate(template, rarity) : generateFish(rarity);
     }
     fish = applyFishBodyBuffs(fish, bodyModifiers);
+    if (targetEffect && rarityTarget && fish?.rarity === targetEffect.target.rarity) {
+      targetHit = true;
+      targetPoolSize = this.fishTypes[rarity]?.length || 0;
+    }
     if (targetEffect) {
       fish.specialRodEffect = {
         type: targetEffect.type || 'target_fish',
         rodId: rod.id,
         rodName: rod.name,
-        targetName: targetEffect.target.name,
+        targetName: getGoldHumbleTargetShortName(targetEffect.target),
         targetRarity: targetEffect.target.rarity,
+        targetType: rarityTarget ? 'rarity' : 'fish',
         targetHit,
         candidatesSeen,
         candidateNames,
         revealTriggered,
-        rewardCoins: targetHit ? getGoldHumbleTargetProfile(targetEffect, rarity, targetEffect.target.name, targetPoolSize).rewardCoins : 0,
+        rewardCoins: targetHit ? getGoldHumbleTargetProfile(targetEffect, rarity, targetEffect.target, targetPoolSize).rewardCoins : 0,
         suppressExtraCoinBonuses: Boolean(rod.suppressExtraCoinBonuses && targetHit)
       };
     }
@@ -3025,9 +3076,12 @@ export class fishing extends plugin {
     if (rewardCoins > 0) {
       userData.coins = Number(userData.coins || 0) + rewardCoins;
     }
+    const targetText = effect.targetType === 'rarity'
+      ? effect.targetName
+      : `目标 ${effect.targetName}`;
     const message = options.compact
-      ? `${effect.rodName}：命中目标 ${effect.targetName}，+${rewardCoins}鱼蛋${effect.suppressExtraCoinBonuses ? '，其它额外鱼蛋不叠加' : ''}`
-      : `\n[${effect.rodName}] 金线把目标 ${effect.targetName} 牵上来了，奖励 ${rewardCoins} 鱼蛋。`;
+      ? `${effect.rodName}：命中${targetText}，+${rewardCoins}鱼蛋${effect.suppressExtraCoinBonuses ? '，其它额外鱼蛋不叠加' : ''}`
+      : `\n[${effect.rodName}] 金线确认命中${targetText}，奖励 ${rewardCoins} 鱼蛋。`;
     return {
       message,
       rewardCoins,
@@ -4102,6 +4156,10 @@ async checkEasterEggCollection(e) {
     if (/^(?:确认清除|确认取消|确认重置|确定清除|确定取消|确定重置|clear-confirm|confirm-clear)$/i.test(body)) {
       return { clear: true };
     }
+    const rarityOnly = normalizeRarityKeyword(body);
+    if (rarityOnly) {
+      return { targetType: 'rarity', rarity: rarityOnly };
+    }
     const tokens = body.split(/\s+/).filter(Boolean);
     let rarity = null;
     let fishName = body;
@@ -4115,7 +4173,7 @@ async checkEasterEggCollection(e) {
     fishName = normalizeFishTemplateName(fishName);
     const candidates = findFishTemplatesByName(fishName);
     if (!candidates.length) {
-      return { error: `鱼池里没有找到 ${fishName || body}。示例：#金谦指定 虹鳟 / #金谦目标 rare 金龙鱼` };
+      return { error: `鱼池里没有找到 ${fishName || body}。示例：#金谦指定 虹鳟 / #金谦目标 rare 金龙鱼 / #金谦指定 rare` };
     }
     if (!rarity) {
       if (candidates.length === 1) {
@@ -4128,7 +4186,7 @@ async checkEasterEggCollection(e) {
     if (!template) {
       return { error: `${fishName} 不属于 ${rarity}，可用稀有度：${candidates.map(item => item.rarity).join(' / ')}` };
     }
-    return { name: fishName, rarity, template };
+    return { targetType: 'fish', name: fishName, rarity, template };
   }
 
   async setGoldHumbleRodTarget(e) {
@@ -4152,12 +4210,13 @@ async checkEasterEggCollection(e) {
     const lastChangeDate = String(userData.rodTargetChangeDates[rod.id] || '').trim();
     const currentTarget = resolveRodTarget(userData, rod);
     if (parsed.empty || parsed.clearPrompt) {
-      const currentText = currentTarget ? `${currentTarget.name}（${currentTarget.rarity}）` : '未指定';
+      const currentText = getGoldHumbleTargetDisplayName(currentTarget);
       const actionText = parsed.clearPrompt ? '已收到清除请求，但还没有修改目标。' : '没有填写指定鱼，本次不会修改目标。';
       await this.reply(
         `${userDisplay}\n${actionText}\n` +
         `当前目标：${currentText}\n` +
-        `要指定目标，请发送：#金谦指定 鱼名\n` +
+        `要指定单条鱼，请发送：#金谦指定 鱼名\n` +
+        `要指定整个稀有度，请发送：#金谦指定 rare\n` +
         `要清除目标，请确认发送：#金谦指定 确认清除`
       );
       return;
@@ -4166,7 +4225,7 @@ async checkEasterEggCollection(e) {
     if (!isNoopClear && lastChangeDate === todayKey) {
       await this.reply(
         `${userDisplay}\n${rod.name} 每天最多调整 1 次目标。你今天已经调整过了，请明天再改。\n` +
-        `当前目标：${currentTarget ? `${currentTarget.name}（${currentTarget.rarity}）` : '未指定'}`
+        `当前目标：${getGoldHumbleTargetDisplayName(currentTarget)}`
       );
       return;
     }
@@ -4175,6 +4234,37 @@ async checkEasterEggCollection(e) {
       if (!isNoopClear) userData.rodTargetChangeDates[rod.id] = todayKey;
       saveFishData(data);
       await this.reply(`${userDisplay}\n已清除 ${rod.name} 的指定目标。`);
+      return;
+    }
+
+    if (parsed.targetType === 'rarity') {
+      const rawPool = this.fishTypes[parsed.rarity] || [];
+      if (!rawPool.length) {
+        await this.reply(`${userDisplay}\n鱼池里还没有 ${rarityLabel(parsed.rarity)} 鱼，暂时不能指定这个稀有度。`);
+        return;
+      }
+      if (parsed.rarity === EASTER_EGG_RARITY) {
+        const ownedEggs = new Set(getOwnedEasterEggCollection(userData));
+        const availableEggs = rawPool.filter(item => !ownedEggs.has(item.name));
+        if (!availableEggs.length) {
+          await this.reply(`${userDisplay}\n彩蛋鱼已经全部收集过了，彩蛋鱼不会重复钓起。建议指定其他稀有度或具体鱼。`);
+          return;
+        }
+      }
+      const profile = getGoldHumbleTargetProfile(rod.targetFishEffect, parsed.rarity, parsed);
+      userData.rodTargets[rod.id] = {
+        type: 'rarity',
+        rarity: parsed.rarity,
+        updatedAt: getNowTimestamp(),
+        updatedDate: todayKey
+      };
+      userData.rodTargetChangeDates[rod.id] = todayKey;
+      saveFishData(data);
+      await this.reply(
+        `${userDisplay}\n${rod.name} 已指定目标：${rarityLabel(parsed.rarity)} 稀有度。\n` +
+        `金线会追踪这一整档鱼影；钓到 ${rarityLabel(parsed.rarity)} 鱼时都会判定命中目标。\n` +
+        `整稀有度目标范围更宽，命中奖励降低为 +${profile.rewardCoins} 鱼蛋；今天的目标调整次数已用完。`
+      );
       return;
     }
 
@@ -4188,9 +4278,10 @@ async checkEasterEggCollection(e) {
     const distractorPool = parsed.rarity === EASTER_EGG_RARITY
       ? rawPool.filter(item => item.name === parsed.name || !ownedEggs.has(item.name))
       : rawPool;
-    const profile = getGoldHumbleTargetProfile(rod.targetFishEffect, parsed.rarity, parsed.name, distractorPool.length);
+    const profile = getGoldHumbleTargetProfile(rod.targetFishEffect, parsed.rarity, parsed, distractorPool.length);
     const distractors = pickGoldHumbleDistractors(distractorPool, parsed.name, profile.distractorCount);
     userData.rodTargets[rod.id] = {
+      type: 'fish',
       name: parsed.name,
       rarity: parsed.rarity,
       distractors,
@@ -4207,7 +4298,7 @@ async checkEasterEggCollection(e) {
     await this.reply(
       `${userDisplay}\n${rod.name} 已指定目标：${parsed.name}（${parsed.rarity}）。\n` +
       `金线已经记住了它的水纹，${intruderText}，水面一下子热闹了些。\n` +
-      `接下来钓到 ${parsed.rarity} 鱼时，${parsed.name} 在同稀有度里的出现感会大大增加；今天的目标调整次数已用完。`
+      `接下来钓到 ${parsed.rarity} 鱼时，${parsed.name} 在同稀有度里的出现感会大大增加；命中真正目标奖励 +${profile.rewardCoins} 鱼蛋；今天的目标调整次数已用完。`
     );
   }
 
@@ -5284,9 +5375,11 @@ async checkEasterEggCollection(e) {
     let targetLine = null;
     if (rod.targetFishEffect) {
       if (rodTarget) {
-        targetLine = `指定目标：${rodTarget.name}（${rodTarget.rarity}） | 下方词条已按当前目标修正，同稀有度出现感已大大增加`;
+        targetLine = isGoldHumbleRarityTarget(rodTarget)
+          ? `指定目标：${getGoldHumbleTargetDisplayName(rodTarget)} | 下方词条已按当前目标修正，钓到该稀有度就会触发较低额外奖励`
+          : `指定目标：${getGoldHumbleTargetDisplayName(rodTarget)} | 下方词条已按当前目标修正，同稀有度出现感已大大增加`;
       } else {
-        targetLine = '指定目标：未指定，可用 #金谦指定 鱼名';
+        targetLine = '指定目标：未指定，可用 #金谦指定 鱼名 / #金谦指定 rare';
       }
     }
     const sections = [
@@ -5352,7 +5445,7 @@ async checkEasterEggCollection(e) {
           rod.id === equipped.id ? '当前装备' : '',
           indexText,
           sourceText,
-          rodTarget ? `目标 ${rodTarget.name}` : ''
+          rodTarget ? `目标 ${getGoldHumbleTargetShortName(rodTarget)}` : ''
         ]),
         tone: rod.id === equipped.id ? 'active' : rod.sourceLegendary || rod.sourceLottery ? 'legendary' : 'plum'
       };
