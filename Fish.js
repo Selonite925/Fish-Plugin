@@ -182,7 +182,7 @@ const HELP_GROUPS = [
       { title: '#切换彩蛋 愿望锦鲤', desc: '安排彩蛋效果切换；每天只能安排一次，次日生效。' },
       { title: '#钓鱼祈愿 / #钓鱼祈愿10 / #钓鱼十连 / #钓鱼祈愿清单', desc: '100鱼蛋祈愿1次，可获得限定鱼竿、限定鱼饵和免费祈愿。' },
       { title: '#钓鱼祈愿大奖 金满竿 / #钓鱼祈愿大奖 鱼饵配送员', desc: '切换当前想抽的祈愿大奖，已有保底进度会继续累计。' },
-      { title: '#金谦指定 虹鳟 / #金谦目标 common 鲫鱼', desc: '拥有金满而谦虚之竿后，每天可指定1次目标鱼；同一目标也可用于刷新闯入鱼影。' },
+      { title: '#金谦指定 虹鳟 / #金谦目标 common 鲫鱼', desc: '拥有金满而谦虚之竿后，每天可指定1次目标鱼；清除目标需发送 #金谦指定 确认清除。' },
       { title: '#钓鱼成就', desc: '查看成就进度和永久加成。' },
       { title: '#打窝 文本 / #打窝 @某人', desc: '投放临时窝料，效果持续2竿。' },
       { title: '#炼竿 1 / #炼竿预览 1', desc: '按鱼缸展示序号先预览 legendary 会炼成什么鱼竿，再决定是否正式炼制。' },
@@ -4093,7 +4093,13 @@ async checkEasterEggCollection(e) {
 
   parseGoldHumbleTargetCommand(msg = '') {
     const body = String(msg || '').replace(/^#(?:金谦指定|金谦目标)\s*/i, '').trim();
-    if (!body || /^(?:取消|清除|重置|无|none)$/i.test(body)) {
+    if (!body) {
+      return { empty: true };
+    }
+    if (/^(?:取消|清除|重置|无|none)$/i.test(body)) {
+      return { clearPrompt: true };
+    }
+    if (/^(?:确认清除|确认取消|确认重置|确定清除|确定取消|确定重置|clear-confirm|confirm-clear)$/i.test(body)) {
       return { clear: true };
     }
     const tokens = body.split(/\s+/).filter(Boolean);
@@ -4145,6 +4151,17 @@ async checkEasterEggCollection(e) {
     const todayKey = getFishingDayKey(this.config);
     const lastChangeDate = String(userData.rodTargetChangeDates[rod.id] || '').trim();
     const currentTarget = resolveRodTarget(userData, rod);
+    if (parsed.empty || parsed.clearPrompt) {
+      const currentText = currentTarget ? `${currentTarget.name}（${currentTarget.rarity}）` : '未指定';
+      const actionText = parsed.clearPrompt ? '已收到清除请求，但还没有修改目标。' : '没有填写指定鱼，本次不会修改目标。';
+      await this.reply(
+        `${userDisplay}\n${actionText}\n` +
+        `当前目标：${currentText}\n` +
+        `要指定目标，请发送：#金谦指定 鱼名\n` +
+        `要清除目标，请确认发送：#金谦指定 确认清除`
+      );
+      return;
+    }
     const isNoopClear = parsed.clear && !currentTarget;
     if (!isNoopClear && lastChangeDate === todayKey) {
       await this.reply(
