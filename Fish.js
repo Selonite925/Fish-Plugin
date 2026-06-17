@@ -5,7 +5,6 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import {
   fishTemplateByName,
-  fishRarityByName,
   fishTypes,
   legacyFishAliases,
   rarityWeights,
@@ -20,7 +19,6 @@ import {
   BAIT_CATALOG,
   DEFAULT_BAIT_ID,
   DEFAULT_ROD_ID,
-  DUANWU_EVENT_CONFIG,
   EASTER_EGG_EFFECTS,
   EASTER_EGG_RARITY,
   HIDDEN_PITY_CATCH_BONUS,
@@ -109,6 +107,26 @@ import {
 } from './lib/lottery.js';
 import { findCustomBaitBySource, generateCustomBaitFromText } from './lib/custom-bait.js';
 import { getLocalHour, getNowTimestamp, getTodayKey, getTimeRuntimeInfo } from './lib/time.js';
+import {
+  applyBaitRandomEffectForCast,
+  applyDuanwuQuyuanEvent,
+  claimDailyDuanwuZongziGift,
+  isDuanwuEventActive,
+  isSeasonalBaitActive,
+  shouldTriggerDuanwuQuyuanEvent
+} from './lib/duanwu.js';
+import {
+  getGoldHumbleCatchRateBonus,
+  getGoldHumbleRarityBias,
+  getGoldHumbleSpecialRewardCoins,
+  getGoldHumbleTargetDisplayName,
+  getGoldHumbleTargetProfile,
+  getGoldHumbleTargetShortName,
+  isGoldHumbleRarityTarget,
+  pickGoldHumbleDistractors,
+  resolveGoldHumbleCandidateNames,
+  resolveRodTarget
+} from './lib/gold-humble.js';
 import {
   parseBaitIndex,
   parseLegendaryCraftTarget,
@@ -458,24 +476,6 @@ function getRecyclableRodList(userData) {
     });
 }
 
-function isDateInRange(dateKey, startDate = '', endDateExclusive = '') {
-  const today = String(dateKey || getTodayKey()).trim();
-  const start = String(startDate || '').trim();
-  const end = String(endDateExclusive || '').trim();
-  if (start && today < start) return false;
-  if (end && today >= end) return false;
-  return true;
-}
-
-function isDuanwuEventActive(dateKey = getTodayKey()) {
-  return isDateInRange(dateKey, DUANWU_EVENT_CONFIG.startDate, DUANWU_EVENT_CONFIG.endDateExclusive);
-}
-
-function isSeasonalBaitActive(bait, dateKey = getTodayKey()) {
-  if (!bait?.seasonal) return true;
-  return isDateInRange(dateKey, bait.seasonal.startDate, bait.seasonal.endDateExclusive);
-}
-
 function getBuiltinBuyableBaitList(dateKey = getTodayKey()) {
   return Object.values(BAIT_CATALOG)
     .filter(item => !item.isDefault && !item.lotteryOnly)
@@ -562,29 +562,6 @@ function getBaitDisplayDescription(bait) {
   if (!bait) return '';
   if (!isCustomBait(bait)) return bait.description || '';
   return bait.description || '一份按私人配方拌出的定制鱼饵，气味层次复杂，适合试试不同手感。';
-}
-
-function mergeBaitRandomEffect(bait, effect) {
-  if (!effect) return bait;
-  return {
-    ...bait,
-    activeRandomEffectName: effect.name || '',
-    activeRandomEffectDesc: effect.desc || '',
-    catchRateBonus: Number(bait?.catchRateBonus || 0) + Number(effect.catchRateBonus || 0),
-    baitPreserveChance: Number(bait?.baitPreserveChance || 0) + Number(effect.baitPreserveChance || 0),
-    rarityBias: mergeRarityBias(bait?.rarityBias || {}, effect.rarityBias || {}),
-    sizeMultiplier: Number(bait?.sizeMultiplier || 1) * Number(effect.sizeMultiplier || 1),
-    weightMultiplier: Number(bait?.weightMultiplier || 1) * Number(effect.weightMultiplier || 1),
-    minSizeRatio: Math.max(Number(bait?.minSizeRatio || 0), Number(effect.minSizeRatio || 0)),
-    minWeightRatio: Math.max(Number(bait?.minWeightRatio || 0), Number(effect.minWeightRatio || 0))
-  };
-}
-
-function applyBaitRandomEffectForCast(bait) {
-  const effects = Array.isArray(bait?.randomEffects) ? bait.randomEffects.filter(Boolean) : [];
-  if (!effects.length) return bait;
-  const effect = effects[Math.floor(Math.random() * effects.length)];
-  return mergeBaitRandomEffect(bait, effect);
 }
 
 function getOwnedBaitsDisplaySummary(userData) {
@@ -760,30 +737,6 @@ function claimDailyBaitDelivery(userData, todayKey = getTodayKey()) {
   };
 }
 
-function claimDailyDuanwuZongziGift(userData, todayKey = getTodayKey()) {
-  if (!isDuanwuEventActive(todayKey)) return null;
-  const bait = BAIT_CATALOG[DUANWU_EVENT_CONFIG.baitId];
-  if (!bait) return null;
-  if (!userData.duanwuEvent || typeof userData.duanwuEvent !== 'object') {
-    userData.duanwuEvent = {};
-  }
-  if (String(userData.duanwuEvent.lastGiftDate || '').trim() === todayKey) return null;
-
-  const packCount = Math.max(1, Math.floor(Number(DUANWU_EVENT_CONFIG.dailyGiftPackCount || 1)));
-  const packSize = Math.max(1, Math.floor(Number(bait.packSize || 1)));
-  const count = packCount * packSize;
-  if (!userData.baitInventory || typeof userData.baitInventory !== 'object') userData.baitInventory = {};
-  userData.baitInventory[bait.id] = Number(userData.baitInventory[bait.id] || 0) + count;
-  userData.duanwuEvent.lastGiftDate = todayKey;
-  userData.duanwuEvent.lastGiftAt = getNowTimestamp();
-  return {
-    bait,
-    packCount,
-    count,
-    text: `[端午活动] 今日水边挂起了艾草，送你 ${getBaitDisplayName(bait)} ${packCount}包(${count}份)。活动期间装备粽子，空钩时有机会遇见一段江上的奇事。`
-  };
-}
-
 function formatLotteryProbability(rate) {
   const percent = Number(rate || 0) * 100;
   if (!Number.isFinite(percent) || percent <= 0) return '0%';
@@ -806,16 +759,6 @@ function clampNumber(value, min, max) {
   const number = Number(value);
   if (!Number.isFinite(number)) return min;
   return Math.max(min, Math.min(max, number));
-}
-
-function randomInteger(min, max) {
-  const lower = Math.floor(Number(min));
-  const upper = Math.floor(Number(max));
-  const realMin = Number.isFinite(lower) ? lower : 0;
-  const realMax = Number.isFinite(upper) ? upper : realMin;
-  const start = Math.min(realMin, realMax);
-  const end = Math.max(realMin, realMax);
-  return Math.floor(Math.random() * (end - start + 1)) + start;
 }
 
 function clampFishBodyValue(value, min, max, decimals) {
@@ -1364,15 +1307,6 @@ function buildEquipCardItem({ badge, title, desc, meta, tone = 'neutral' }) {
   return { badge, title, desc, meta, tone };
 }
 
-function shuffleList(list = []) {
-  const shuffled = [...list];
-  for (let index = shuffled.length - 1; index > 0; index -= 1) {
-    const swapIndex = Math.floor(Math.random() * (index + 1));
-    [shuffled[index], shuffled[swapIndex]] = [shuffled[swapIndex], shuffled[index]];
-  }
-  return shuffled;
-}
-
 function createFishFromTemplate(template, rarity) {
   return {
     name: template.name,
@@ -1380,148 +1314,6 @@ function createFishFromTemplate(template, rarity) {
     length: getRandomBodyValue(template.size.min, template.size.max, 1),
     weight: getRandomBodyValue(template.weight.min, template.weight.max, 2)
   };
-}
-
-function resolveRodTarget(userData, rod) {
-  const target = userData?.rodTargets?.[rod?.id];
-  if (!target || typeof target !== 'object') return null;
-  const type = String(target.type || 'fish').trim();
-  const rarity = String(target.rarity || '').trim();
-  if (!rarity || !RARITY_ORDER.includes(rarity)) return null;
-  if (type === 'rarity') {
-    return {
-      type: 'rarity',
-      rarity,
-      name: '',
-      template: null,
-      distractors: [],
-      updatedAt: Number(target.updatedAt || 0),
-      updatedDate: String(target.updatedDate || '').trim()
-    };
-  }
-  const name = normalizeFishTemplateName(target.name);
-  if (!rarity || !name) return null;
-  const template = fishTemplateByName?.[name];
-  if (!template || fishRarityByName?.[name] !== rarity) return null;
-  const distractors = Array.isArray(target.distractors)
-    ? target.distractors
-      .map(item => normalizeFishTemplateName(item))
-      .filter(item => item && item !== name && fishRarityByName?.[item] === rarity)
-    : [];
-  return {
-    type: 'fish',
-    name,
-    rarity,
-    template,
-    distractors: [...new Set(distractors)],
-    updatedAt: Number(target.updatedAt || 0),
-    updatedDate: String(target.updatedDate || '').trim()
-  };
-}
-
-function isGoldHumbleRarityTarget(target) {
-  return target?.type === 'rarity' || target?.targetType === 'rarity';
-}
-
-function getGoldHumbleTargetDisplayName(target) {
-  if (!target) return '未指定';
-  if (isGoldHumbleRarityTarget(target)) return `${rarityLabel(target.rarity)} 稀有度`;
-  return `${target.name}（${target.rarity}）`;
-}
-
-function getGoldHumbleTargetShortName(target) {
-  if (!target) return '未指定';
-  return isGoldHumbleRarityTarget(target) ? `${rarityLabel(target.rarity)} 稀有度` : target.name;
-}
-
-function getGoldHumbleRarityBias(rod, rodTarget) {
-  if (rod?.targetFishEffect?.type !== 'gold_humble' || !rodTarget?.rarity) return {};
-  return rod.targetFishEffect.rarityBiasByTargetRarity?.[rodTarget.rarity] || {};
-}
-
-function getGoldHumbleCatchRateBonus(rod, rodTarget) {
-  if (rod?.targetFishEffect?.type !== 'gold_humble' || !rodTarget?.rarity) return 0;
-  return Number(rod.targetFishEffect.catchRateBonusByTargetRarity?.[rodTarget.rarity] || 0);
-}
-
-function getGoldHumbleTargetRewardMultiplier(targetName = '') {
-  const chars = [...String(targetName || '')];
-  if (!chars.length) return 1;
-  const hash = chars.reduce((sum, char) => ((sum * 131) + (char.codePointAt(0) || 0)) >>> 0, 0);
-  return 0.96 + (hash % 9) * 0.01;
-}
-
-function getGoldHumbleDistractorCount(effect, rarity, poolSize = 0) {
-  const legacyCount = effect?.distractorCountByRarity?.[rarity];
-  if (Number.isFinite(Number(legacyCount))) {
-    return Math.max(0, Math.floor(Number(legacyCount)));
-  }
-  const rules = effect?.distractorPoolSizeRules || {};
-  const min = Math.max(0, Math.floor(Number(rules.min ?? 1)));
-  const max = Math.max(min, Math.floor(Number(rules.max ?? 4)));
-  const size = Math.max(0, Math.floor(Number(poolSize || 0)));
-  const thresholds = Array.isArray(rules.thresholds) ? rules.thresholds : [];
-  const matched = [...thresholds]
-    .sort((left, right) => Number(right.minPoolSize || 0) - Number(left.minPoolSize || 0))
-    .find(rule => size >= Number(rule.minPoolSize || 0));
-  const count = matched ? Math.floor(Number(matched.count || min)) : min;
-  return Math.max(min, Math.min(max, count));
-}
-
-function getGoldHumbleTargetProfile(effect, rarity, target = '', poolSize = 0) {
-  const rarityTarget = typeof target === 'object' && isGoldHumbleRarityTarget(target);
-  const targetName = typeof target === 'object' ? target.name : target;
-  const rewardMap = rarityTarget ? effect?.rarityTargetRewardCoinsByRarity : effect?.rewardCoinsByRarity;
-  const baseReward = Math.max(0, Math.floor(Number(rewardMap?.[rarity] || 0)));
-  const rewardMultiplier = rarityTarget ? 1 : getGoldHumbleTargetRewardMultiplier(targetName);
-  return {
-    revealChance: clampNumber(effect?.revealChanceByRarity?.[rarity] ?? 0, 0, 1),
-    distractorCount: getGoldHumbleDistractorCount(effect, rarity, poolSize),
-    rewardCoins: Math.max(0, Math.floor(baseReward * rewardMultiplier))
-  };
-}
-
-function pickGoldHumbleDistractors(pool = [], targetName = '', count = 0) {
-  const candidates = pool.filter(item => item?.name && item.name !== targetName);
-  return shuffleList(candidates)
-    .slice(0, Math.max(0, Math.min(candidates.length, count)))
-    .map(item => item.name);
-}
-
-function getStableGoldHumbleDistractors(pool = [], target, count = 0, excludes = []) {
-  const excludeSet = new Set([target?.name, ...excludes].filter(Boolean));
-  const seed = `${target?.name || ''}:${target?.rarity || ''}:${target?.updatedAt || target?.updatedDate || ''}`;
-  return pool
-    .filter(item => item?.name && !excludeSet.has(item.name))
-    .map(item => {
-      const hash = [...`${seed}:${item.name}`]
-        .reduce((sum, char) => ((sum * 131) + (char.codePointAt(0) || 0)) >>> 0, 0);
-      return { name: item.name, hash };
-    })
-    .sort((left, right) => left.hash - right.hash)
-    .slice(0, Math.max(0, Math.min(pool.length, count)))
-    .map(item => item.name);
-}
-
-function resolveGoldHumbleCandidateNames(effect, pool = [], target) {
-  if (!target?.name || !target?.rarity) return [];
-  if (isGoldHumbleRarityTarget(target)) return [];
-  const profile = getGoldHumbleTargetProfile(effect, target.rarity, target, pool.length);
-  const poolNames = new Set(pool.map(item => item.name));
-  const distractors = Array.isArray(target.distractors)
-    ? target.distractors.filter(name => name !== target.name && poolNames.has(name))
-    : [];
-  const activeDistractors = distractors.slice(0, profile.distractorCount);
-  const missingCount = Math.max(0, profile.distractorCount - activeDistractors.length);
-  const fallbackDistractors = missingCount > 0
-    ? getStableGoldHumbleDistractors(
-      pool.filter(item => !activeDistractors.includes(item.name)),
-      target,
-      missingCount,
-      activeDistractors
-    )
-    : [];
-  return [target.name, ...activeDistractors, ...fallbackDistractors].filter(name => poolNames.has(name));
 }
 
 function normalizeRarityKeyword(keyword = '') {
@@ -3164,7 +2956,7 @@ export class fishing extends plugin {
   applySpecialRodCatchEffect(userData, fish, options = {}) {
     const effect = fish?.specialRodEffect;
     if (!effect?.targetHit) return { message: '', rewardCoins: 0, suppressExtraCoinBonuses: false };
-    const rewardCoins = this.getSpecialRodRewardCoins(effect);
+    const rewardCoins = getGoldHumbleSpecialRewardCoins(effect);
     if (rewardCoins > 0) {
       userData.coins = Number(userData.coins || 0) + rewardCoins;
     }
@@ -3178,48 +2970,6 @@ export class fishing extends plugin {
       message,
       rewardCoins,
       suppressExtraCoinBonuses: Boolean(effect.suppressExtraCoinBonuses)
-    };
-  }
-
-  getSpecialRodRewardCoins(effect = {}) {
-    const configuredReward = Math.floor(Number(effect.rewardCoins || 0));
-    if (configuredReward > 0) return configuredReward;
-    if (!effect?.targetHit || effect.type !== 'gold_humble') return 0;
-
-    const rod = ROD_CATALOG[effect.rodId] || Object.values(ROD_CATALOG).find(item => item.targetFishEffect?.type === 'gold_humble');
-    const rarity = String(effect.targetRarity || '').trim();
-    if (!rod?.targetFishEffect || !rarity) return 1;
-    const target = {
-      type: effect.targetType === 'rarity' ? 'rarity' : 'fish',
-      targetType: effect.targetType,
-      rarity,
-      name: effect.targetType === 'rarity' ? '' : String(effect.targetName || '').trim()
-    };
-    const fallbackReward = getGoldHumbleTargetProfile(rod.targetFishEffect, rarity, target).rewardCoins;
-    return Math.max(1, Math.floor(Number(fallbackReward || 0)));
-  }
-
-  shouldTriggerDuanwuQuyuanEvent(shopBait = {}) {
-    const event = shopBait?.activityEvent;
-    if (event?.id !== 'duanwu_quyuan' || !isDuanwuEventActive()) return false;
-    const chance = clampNumber(event.failEventChance ?? DUANWU_EVENT_CONFIG.failEventChance, 0, 1);
-    return Math.random() < chance;
-  }
-
-  applyDuanwuQuyuanEvent(userData) {
-    const rewardRange = DUANWU_EVENT_CONFIG.rewardCoins || {};
-    const rewardCoins = randomInteger(rewardRange.min ?? 200, rewardRange.max ?? 700);
-    userData.coins = Number(userData.coins || 0) + rewardCoins;
-    if (!userData.duanwuEvent || typeof userData.duanwuEvent !== 'object') userData.duanwuEvent = {};
-    userData.duanwuEvent.quyuanHits = Number(userData.duanwuEvent.quyuanHits || 0) + 1;
-    userData.duanwuEvent.lastQuyuanAt = getNowTimestamp();
-    return {
-      rewardCoins,
-      compactText: `端午奇遇：钓上屈原，+${rewardCoins}鱼蛋`,
-      resultText:
-        `[端午奇遇] 钩尖没有鱼，却牵起一缕沉静的江潮。\n` +
-        `粽叶在水面铺开，彩绳轻轻一紧，你竟从波纹里钓起了屈原的诗魂。\n` +
-        `江风替你翻过一页离骚，水边落下一袋节令鱼蛋：+${rewardCoins}。`
     };
   }
 
@@ -3601,8 +3351,8 @@ export class fishing extends plugin {
         const catchRate = Math.max(0.05, getCatchRate(userData, manualBait.bonus + shopBait.bonus + hiddenPityBonus, rodCatchRateBonus) - FAST_FISHING_CATCH_RATE_PENALTY);
         const failRescueChance = Math.max(0, Math.min(0.45, Number(rod.failProtection || 0) + easterEggEffect.failProtection));
         const missedCatch = Math.random() >= catchRate;
-        const duanwuEvent = missedCatch && this.shouldTriggerDuanwuQuyuanEvent(shopBait)
-          ? this.applyDuanwuQuyuanEvent(userData)
+        const duanwuEvent = missedCatch && shouldTriggerDuanwuQuyuanEvent(shopBait)
+          ? applyDuanwuQuyuanEvent(userData)
           : null;
         if (duanwuEvent) {
           summary.duanwuEvents += 1;
@@ -3741,8 +3491,8 @@ export class fishing extends plugin {
       const easterEggMsg = easterEggEffect.descriptions.length ? `\n[彩蛋加成] ${easterEggEffect.descriptions.join('；')}` : '';
       const failRescueChance = Math.max(0, Math.min(0.45, Number(rod.failProtection || 0) + easterEggEffect.failProtection));
       const missedCatch = Math.random() >= catchRate;
-      const duanwuEvent = missedCatch && this.shouldTriggerDuanwuQuyuanEvent(shopBait)
-        ? this.applyDuanwuQuyuanEvent(settleUser)
+      const duanwuEvent = missedCatch && shouldTriggerDuanwuQuyuanEvent(shopBait)
+        ? applyDuanwuQuyuanEvent(settleUser)
         : null;
       if (duanwuEvent) {
         resetEmptyCastStreak(settleUser);
