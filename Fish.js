@@ -20,6 +20,7 @@ import {
   BAIT_CATALOG,
   DEFAULT_BAIT_ID,
   DEFAULT_ROD_ID,
+  DUANWU_EVENT_CONFIG,
   EASTER_EGG_EFFECTS,
   EASTER_EGG_RARITY,
   HIDDEN_PITY_CATCH_BONUS,
@@ -457,8 +458,28 @@ function getRecyclableRodList(userData) {
     });
 }
 
-function getBuiltinBuyableBaitList() {
-  return Object.values(BAIT_CATALOG).filter(item => !item.isDefault && !item.lotteryOnly);
+function isDateInRange(dateKey, startDate = '', endDateExclusive = '') {
+  const today = String(dateKey || getTodayKey()).trim();
+  const start = String(startDate || '').trim();
+  const end = String(endDateExclusive || '').trim();
+  if (start && today < start) return false;
+  if (end && today >= end) return false;
+  return true;
+}
+
+function isDuanwuEventActive(dateKey = getTodayKey()) {
+  return isDateInRange(dateKey, DUANWU_EVENT_CONFIG.startDate, DUANWU_EVENT_CONFIG.endDateExclusive);
+}
+
+function isSeasonalBaitActive(bait, dateKey = getTodayKey()) {
+  if (!bait?.seasonal) return true;
+  return isDateInRange(dateKey, bait.seasonal.startDate, bait.seasonal.endDateExclusive);
+}
+
+function getBuiltinBuyableBaitList(dateKey = getTodayKey()) {
+  return Object.values(BAIT_CATALOG)
+    .filter(item => !item.isDefault && !item.lotteryOnly)
+    .filter(item => isSeasonalBaitActive(item, dateKey));
 }
 
 function getOwnedBuiltinBaitList(userData) {
@@ -515,6 +536,7 @@ function getBaitPackText(bait) {
   const unitPrice = Number(bait?.price || 0);
   const costPerUse = unitPrice / packSize;
   if (bait?.lotteryOnly) return `祈愿限定，1包${packSize}份，库存按份消耗`;
+  if (bait?.seasonal) return `${unitPrice}鱼蛋/包，1包${packSize}份，限时出售至${bait.seasonal.endDateExclusive}`;
   return `${unitPrice}鱼蛋/包，1包${packSize}份，约${costPerUse.toFixed(1)}鱼蛋/次`;
 }
 
@@ -540,6 +562,29 @@ function getBaitDisplayDescription(bait) {
   if (!bait) return '';
   if (!isCustomBait(bait)) return bait.description || '';
   return bait.description || '一份按私人配方拌出的定制鱼饵，气味层次复杂，适合试试不同手感。';
+}
+
+function mergeBaitRandomEffect(bait, effect) {
+  if (!effect) return bait;
+  return {
+    ...bait,
+    activeRandomEffectName: effect.name || '',
+    activeRandomEffectDesc: effect.desc || '',
+    catchRateBonus: Number(bait?.catchRateBonus || 0) + Number(effect.catchRateBonus || 0),
+    baitPreserveChance: Number(bait?.baitPreserveChance || 0) + Number(effect.baitPreserveChance || 0),
+    rarityBias: mergeRarityBias(bait?.rarityBias || {}, effect.rarityBias || {}),
+    sizeMultiplier: Number(bait?.sizeMultiplier || 1) * Number(effect.sizeMultiplier || 1),
+    weightMultiplier: Number(bait?.weightMultiplier || 1) * Number(effect.weightMultiplier || 1),
+    minSizeRatio: Math.max(Number(bait?.minSizeRatio || 0), Number(effect.minSizeRatio || 0)),
+    minWeightRatio: Math.max(Number(bait?.minWeightRatio || 0), Number(effect.minWeightRatio || 0))
+  };
+}
+
+function applyBaitRandomEffectForCast(bait) {
+  const effects = Array.isArray(bait?.randomEffects) ? bait.randomEffects.filter(Boolean) : [];
+  if (!effects.length) return bait;
+  const effect = effects[Math.floor(Math.random() * effects.length)];
+  return mergeBaitRandomEffect(bait, effect);
 }
 
 function getOwnedBaitsDisplaySummary(userData) {
@@ -614,6 +659,7 @@ function getBaitAcquireText(bait) {
   const packSize = Math.max(1, Number(bait?.packSize || 1));
   if (bait?.isDefault) return '售价：不可购买';
   if (bait?.lotteryOnly) return `获取：祈愿限定，1包${packSize}份，库存按份消耗`;
+  if (bait?.seasonal) return `售价：${Number(bait?.price || 0)}鱼蛋 / 包，1包${packSize}份；限时出售至${bait.seasonal.endDateExclusive}`;
   return `售价：${Number(bait?.price || 0)}鱼蛋 / 包，1包${packSize}份`;
 }
 
@@ -656,9 +702,9 @@ function getLotteryRewardResultMetaText(reward, item = {}) {
   return '已发放到背包';
 }
 
-function getBaitDeliveryPool() {
+function getBaitDeliveryPool(dateKey = getTodayKey()) {
   return Object.values(BAIT_CATALOG)
-    .filter(bait => bait?.id && !bait.isDefault && Math.max(1, Math.floor(Number(bait.packSize || 0))) > 0);
+    .filter(bait => bait?.id && !bait.isDefault && isSeasonalBaitActive(bait, dateKey) && Math.max(1, Math.floor(Number(bait.packSize || 0))) > 0);
 }
 
 function summarizeBaitDeliveryPacks(deliveries = []) {
@@ -714,6 +760,30 @@ function claimDailyBaitDelivery(userData, todayKey = getTodayKey()) {
   };
 }
 
+function claimDailyDuanwuZongziGift(userData, todayKey = getTodayKey()) {
+  if (!isDuanwuEventActive(todayKey)) return null;
+  const bait = BAIT_CATALOG[DUANWU_EVENT_CONFIG.baitId];
+  if (!bait) return null;
+  if (!userData.duanwuEvent || typeof userData.duanwuEvent !== 'object') {
+    userData.duanwuEvent = {};
+  }
+  if (String(userData.duanwuEvent.lastGiftDate || '').trim() === todayKey) return null;
+
+  const packCount = Math.max(1, Math.floor(Number(DUANWU_EVENT_CONFIG.dailyGiftPackCount || 1)));
+  const packSize = Math.max(1, Math.floor(Number(bait.packSize || 1)));
+  const count = packCount * packSize;
+  if (!userData.baitInventory || typeof userData.baitInventory !== 'object') userData.baitInventory = {};
+  userData.baitInventory[bait.id] = Number(userData.baitInventory[bait.id] || 0) + count;
+  userData.duanwuEvent.lastGiftDate = todayKey;
+  userData.duanwuEvent.lastGiftAt = getNowTimestamp();
+  return {
+    bait,
+    packCount,
+    count,
+    text: `[端午活动] 今日水边挂起了艾草，送你 ${getBaitDisplayName(bait)} ${packCount}包(${count}份)。活动期间装备粽子，空钩时有机会遇见一段江上的奇事。`
+  };
+}
+
 function formatLotteryProbability(rate) {
   const percent = Number(rate || 0) * 100;
   if (!Number.isFinite(percent) || percent <= 0) return '0%';
@@ -736,6 +806,16 @@ function clampNumber(value, min, max) {
   const number = Number(value);
   if (!Number.isFinite(number)) return min;
   return Math.max(min, Math.min(max, number));
+}
+
+function randomInteger(min, max) {
+  const lower = Math.floor(Number(min));
+  const upper = Math.floor(Number(max));
+  const realMin = Number.isFinite(lower) ? lower : 0;
+  const realMax = Number.isFinite(upper) ? upper : realMin;
+  const start = Math.min(realMin, realMax);
+  const end = Math.max(realMin, realMax);
+  return Math.floor(Math.random() * (end - start + 1)) + start;
 }
 
 function clampFishBodyValue(value, min, max, decimals) {
@@ -1201,6 +1281,13 @@ function buildRodTraitHtml(rod, options = {}) {
 
 function buildBaitTraitEntries(bait) {
   const entries = [];
+
+  if (Array.isArray(bait?.randomEffects) && bait.randomEffects.length) {
+    entries.push({ text: '每次使用会随机获得一种节令小效果', tone: 'positive' });
+  }
+  if (bait?.activityEvent?.id === 'duanwu_quyuan' && isDuanwuEventActive()) {
+    entries.push({ text: '端午活动中，空钩时有小概率触发屈原奇遇', tone: 'positive' });
+  }
 
   const catchRateTrend = describeTrend(bait?.catchRateBonus || 0, [0.008, 0.025, 0.055, 0.11, 0.18]);
   entries.push(catchRateTrend
@@ -2660,7 +2747,8 @@ export class fishing extends plugin {
   consumeShopBait(userData, lockedBait = null) {
     const rawBait = lockedBait || getEquippedBait(userData);
     const easterEggEffect = getEasterEggEffects(userData);
-    const bait = amplifyBaitModifiers(rawBait, easterEggEffect.baitEffectAmplifier);
+    const randomizedBait = applyBaitRandomEffectForCast(rawBait);
+    const bait = amplifyBaitModifiers(randomizedBait, easterEggEffect.baitEffectAmplifier);
     if (!bait || bait.id === 'plain') {
       return { bonus: 0, message: '', rarityBias: {}, bodyModifiers: {} };
     }
@@ -2689,6 +2777,9 @@ export class fishing extends plugin {
       : afterCount > 0
         ? `\n[当前鱼饵] 已消耗 1 份 ${baitName}，剩余 ${afterCount} 份。`
         : `\n[当前鱼饵] 已消耗最后 1 份 ${baitName}，下次将换回清水团饵。`;
+    if (bait.activeRandomEffectName) {
+      message += `\n[粽子风味] ${bait.activeRandomEffectName}：${bait.activeRandomEffectDesc || '本次节令小效果已生效。'}`;
+    }
     const rarityBias = bait.rarityBias || {};
     if (userData.baitInventory[bait.id] <= 0) {
       const nextBait = userData.autoRenewBait ? getNextAutoRenewBait(userData, bait.id) : null;
@@ -2703,7 +2794,8 @@ export class fishing extends plugin {
       bonus: bait.catchRateBonus || 0,
       message,
       rarityBias,
-      bodyModifiers: bait
+      bodyModifiers: bait,
+      activityEvent: isDuanwuEventActive() ? bait.activityEvent : null
     };
   }
 
@@ -3072,7 +3164,7 @@ export class fishing extends plugin {
   applySpecialRodCatchEffect(userData, fish, options = {}) {
     const effect = fish?.specialRodEffect;
     if (!effect?.targetHit) return { message: '', rewardCoins: 0, suppressExtraCoinBonuses: false };
-    const rewardCoins = Math.max(0, Math.floor(Number(effect.rewardCoins || 0)));
+    const rewardCoins = this.getSpecialRodRewardCoins(effect);
     if (rewardCoins > 0) {
       userData.coins = Number(userData.coins || 0) + rewardCoins;
     }
@@ -3089,6 +3181,55 @@ export class fishing extends plugin {
     };
   }
 
+  getSpecialRodRewardCoins(effect = {}) {
+    const configuredReward = Math.floor(Number(effect.rewardCoins || 0));
+    if (configuredReward > 0) return configuredReward;
+    if (!effect?.targetHit || effect.type !== 'gold_humble') return 0;
+
+    const rod = ROD_CATALOG[effect.rodId] || Object.values(ROD_CATALOG).find(item => item.targetFishEffect?.type === 'gold_humble');
+    const rarity = String(effect.targetRarity || '').trim();
+    if (!rod?.targetFishEffect || !rarity) return 1;
+    const target = {
+      type: effect.targetType === 'rarity' ? 'rarity' : 'fish',
+      targetType: effect.targetType,
+      rarity,
+      name: effect.targetType === 'rarity' ? '' : String(effect.targetName || '').trim()
+    };
+    const fallbackReward = getGoldHumbleTargetProfile(rod.targetFishEffect, rarity, target).rewardCoins;
+    return Math.max(1, Math.floor(Number(fallbackReward || 0)));
+  }
+
+  shouldTriggerDuanwuQuyuanEvent(shopBait = {}) {
+    const event = shopBait?.activityEvent;
+    if (event?.id !== 'duanwu_quyuan' || !isDuanwuEventActive()) return false;
+    const chance = clampNumber(event.failEventChance ?? DUANWU_EVENT_CONFIG.failEventChance, 0, 1);
+    return Math.random() < chance;
+  }
+
+  applyDuanwuQuyuanEvent(userData) {
+    const rewardRange = DUANWU_EVENT_CONFIG.rewardCoins || {};
+    const rewardCoins = randomInteger(rewardRange.min ?? 400, rewardRange.max ?? 2500);
+    userData.coins = Number(userData.coins || 0) + rewardCoins;
+    if (!userData.duanwuEvent || typeof userData.duanwuEvent !== 'object') userData.duanwuEvent = {};
+    userData.duanwuEvent.quyuanHits = Number(userData.duanwuEvent.quyuanHits || 0) + 1;
+    userData.duanwuEvent.lastQuyuanAt = getNowTimestamp();
+    return {
+      rewardCoins,
+      compactText: `端午奇遇：钓上屈原，+${rewardCoins}鱼蛋`,
+      resultText:
+        `[端午奇遇] 钩尖没有鱼，却牵起一缕沉静的江潮。\n` +
+        `粽叶在水面铺开，彩绳轻轻一紧，你竟从波纹里钓起了屈原的诗魂。\n` +
+        `江风替你翻过一页离骚，水边落下一袋节令鱼蛋：+${rewardCoins}。`
+    };
+  }
+
+  async playDuanwuQuyuanPerformance() {
+    await this.reply(epicMessages[Math.floor(Math.random() * epicMessages.length)]);
+    await new Promise(resolve => setTimeout(resolve, Math.floor(Math.random() * 3000) + 1200));
+    await this.reply('水面忽然安静下来，粽叶香气沿着鱼线往深处沉去。像是有什么不属于鱼群的东西，正从江心慢慢回头。');
+    await new Promise(resolve => setTimeout(resolve, Math.floor(Math.random() * 2000) + 1500));
+  }
+
   createFastFishingSummary(rod) {
     return {
       rodName: rod.name,
@@ -3099,6 +3240,8 @@ export class fishing extends plugin {
       ticketCasts: 0,
       coinGain: 0,
       signalHits: 0,
+      duanwuEvents: 0,
+      duanwuCoins: 0,
       specialEffects: [],
       tankAdded: 0,
       tankReplaced: 0,
@@ -3262,6 +3405,7 @@ export class fishing extends plugin {
       summary.ticketCasts > 0 ? `本次消耗钓鱼券：${summary.ticketCasts}张` : null,
       summary.rescued > 0 ? `失败保护补救：${summary.rescued}次` : null,
       summary.signalHits > 0 ? `命中限时鱼讯：${summary.signalHits}条` : null,
+      summary.duanwuEvents > 0 ? `端午奇遇：${summary.duanwuEvents}次，+${summary.duanwuCoins}鱼蛋` : null,
       summary.tankAdded > 0 || summary.tankReplaced > 0 ? `鱼缸更新：新增${summary.tankAdded}条，替换${summary.tankReplaced}条` : null,
       summary.autoSellCoins > 0 ? `鱼缸替换自动售出：+${summary.autoSellCoins}鱼蛋` : null
     ].filter(Boolean);
@@ -3410,10 +3554,13 @@ export class fishing extends plugin {
         return;
       }
 
-      const delivery = claimDailyBaitDelivery(userData, getFishingDayKey(this.config));
-      if (delivery?.text) {
+      const todayKey = getFishingDayKey(this.config);
+      const duanwuGift = claimDailyDuanwuZongziGift(userData);
+      const delivery = claimDailyBaitDelivery(userData, todayKey);
+      const preCastTexts = [duanwuGift?.text, delivery?.text].filter(Boolean);
+      if (preCastTexts.length) {
         saveFishData(data);
-        await this.reply(`${userDisplay}\n${delivery.text}`);
+        await this.reply(`${userDisplay}\n${preCastTexts.join('\n')}`);
       }
 
       const summary = this.createFastFishingSummary(rod);
@@ -3454,6 +3601,19 @@ export class fishing extends plugin {
         const catchRate = Math.max(0.05, getCatchRate(userData, manualBait.bonus + shopBait.bonus + hiddenPityBonus, rodCatchRateBonus) - FAST_FISHING_CATCH_RATE_PENALTY);
         const failRescueChance = Math.max(0, Math.min(0.45, Number(rod.failProtection || 0) + easterEggEffect.failProtection));
         const missedCatch = Math.random() >= catchRate;
+        const duanwuEvent = missedCatch && this.shouldTriggerDuanwuQuyuanEvent(shopBait)
+          ? this.applyDuanwuQuyuanEvent(userData)
+          : null;
+        if (duanwuEvent) {
+          summary.duanwuEvents += 1;
+          summary.duanwuCoins += duanwuEvent.rewardCoins;
+          summary.specialEffects.push(duanwuEvent.compactText);
+          resetEmptyCastStreak(userData);
+          summary.coinGain += Number(userData.coins || 0) - coinsBeforeCast;
+          rod = getEquippedRod(userData);
+          continue;
+        }
+
         const failResult = missedCatch ? await this.getRandomFailResult(userId, e.group_id, e, null, { lostItemsData: lostItems, autoSaveLostItems: false, userData }) : null;
         const rescuedCatch = failResult?.type === 'empty_hook' && Math.random() < failRescueChance;
 
@@ -3541,7 +3701,9 @@ export class fishing extends plugin {
         return;
       }
 
-      const delivery = claimDailyBaitDelivery(userData, getFishingDayKey(this.config));
+      const todayKey = getFishingDayKey(this.config);
+      const duanwuGift = claimDailyDuanwuZongziGift(userData);
+      const delivery = claimDailyBaitDelivery(userData, todayKey);
       userData.total += 1;
       registerCastUsage(this.config, userData, rod, usageOptions);
       const currentCount = userData.today.count;
@@ -3550,8 +3712,8 @@ export class fishing extends plugin {
       saveFishData(data);
 
       const easterEggEffect = getEasterEggEffects(userData);
-      const deliveryText = delivery?.text ? `${delivery.text}\n` : '';
-      await this.reply(`${userDisplay}\n${deliveryText}已抛竿，当前鱼竿：${rod.name}\n当前鱼饵：${getBaitDisplayName(bait)}\n请稍等片刻...`);
+      const preCastText = [duanwuGift?.text, delivery?.text].filter(Boolean).map(text => `${text}\n`).join('');
+      await this.reply(`${userDisplay}\n${preCastText}已抛竿，当前鱼竿：${rod.name}\n当前鱼饵：${getBaitDisplayName(bait)}\n请稍等片刻...`);
 
       const minDelay = 1000;
       const maxDelay = 15000;
@@ -3579,6 +3741,20 @@ export class fishing extends plugin {
       const easterEggMsg = easterEggEffect.descriptions.length ? `\n[彩蛋加成] ${easterEggEffect.descriptions.join('；')}` : '';
       const failRescueChance = Math.max(0, Math.min(0.45, Number(rod.failProtection || 0) + easterEggEffect.failProtection));
       const missedCatch = Math.random() >= catchRate;
+      const duanwuEvent = missedCatch && this.shouldTriggerDuanwuQuyuanEvent(shopBait)
+        ? this.applyDuanwuQuyuanEvent(settleUser)
+        : null;
+      if (duanwuEvent) {
+        resetEmptyCastStreak(settleUser);
+        const unlocked = scanAchievements(settleUser, this.fishTypes);
+        settleUser.achievementCatchRateBonus = getAchievementCatchRateBonus(settleUser);
+        settleUser.achievementDailyCastBonus = getAchievementDailyCastBonus(settleUser);
+        saveFishData(settleData);
+        await this.playDuanwuQuyuanPerformance();
+        await this.reply(`${userDisplay}\n${duanwuEvent.resultText}\n今日钓鱼次数：${getFishingLimitText(this.config, settleUser, getEquippedRod(settleUser), usageOptions)}${manualBait.message}${shopBait.message}${easterEggMsg}${this.formatAchievementUnlocks(unlocked)}`);
+        return;
+      }
+
       const failResult = missedCatch ? await this.getRandomFailResult(userId, e.group_id, e, null, { userData: settleUser }) : null;
       const rescuedCatch = failResult?.type === 'empty_hook' && Math.random() < failRescueChance;
       const rescuedCatchFakeFailMessage = rescuedCatch
@@ -5190,6 +5366,10 @@ async checkEasterEggCollection(e) {
     }
     if (!item) {
       await this.reply(`${userDisplay}\n未找到要购买的商品。`);
+      return;
+    }
+    if (item.type === 'bait' && item.seasonal && !isSeasonalBaitActive(item)) {
+      await this.reply(`${userDisplay}\n${item.name} 是限时鱼饵，当前不在出售时间内。`);
       return;
     }
 
