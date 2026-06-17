@@ -17,13 +17,11 @@ import {
   ACHIEVEMENT_DEFS,
   BAIT_PRESERVE_CHANCE_CAP,
   BAIT_CATALOG,
-  DEFAULT_BAIT_ID,
   DEFAULT_ROD_ID,
   EASTER_EGG_EFFECTS,
   EASTER_EGG_RARITY,
   HIDDEN_PITY_CATCH_BONUS,
   LEGENDARY_ROD_RECIPES,
-  LOTTERY_GRAND_PRIZE_PLUGINS,
   RARITY_LABELS,
   RARITY_ORDER,
   ROD_CATALOG,
@@ -95,9 +93,12 @@ import { formatAchievementList, getAchievementCatchRateBonus, getAchievementDail
 import { ensureDailySignal } from './lib/signals.js';
 import { ensureResourceDirs, replyWithPanel } from './lib/panel.js';
 import {
+  formatLotteryProbability,
   getLotteryGrandPrizeList,
   getLotteryPoolSummary,
   getPreferredLotteryGrandPrizePlugin,
+  getLotteryRewardPreviewMetaText,
+  getLotteryRewardResultMetaText,
   isLotteryGrandPrizeAvailable,
   parseLotteryCommand,
   performLotteryDraws,
@@ -124,6 +125,27 @@ import {
   shouldTriggerDuanwuQuyuanEvent
 } from './lib/duanwu.js';
 import {
+  claimDailyBaitDelivery,
+  getBaitAcquireText,
+  getBaitDisplayDescription,
+  getBaitDisplayName,
+  getBaitPackText,
+  getBuiltinBuyableBaitList,
+  getBuyableRodList,
+  getCustomBaitList,
+  getNextAutoRenewBait,
+  getOwnedBaitDetailsList,
+  getOwnedBaitsDisplaySummary,
+  getOwnedBuiltinBaitList,
+  getOwnedRodDetailsList,
+  getRecyclableRodList,
+  getRodRecycleValue,
+  getSwitchableBaitList,
+  getSwitchableRodList,
+  getVisibleRodList,
+  isCustomBait
+} from './lib/equipment.js';
+import {
   getGoldHumbleCatchRateBonus,
   getGoldHumbleRarityBias,
   getGoldHumbleSpecialRewardCoins,
@@ -136,12 +158,26 @@ import {
   resolveRodTarget
 } from './lib/gold-humble.js';
 import {
+  extractAutoRenewBaitKeyword,
+  getAutoRenewBaitUsageText,
   parseBaitIndex,
+  parseAutoRenewBaitToggle,
   parseLegendaryCraftTarget,
   parseLegendaryPreviewTarget,
   parseMarketPurchaseKeyword,
   parseRodIndex
 } from './lib/command-parsers.js';
+
+// 模块导航：
+// - lib/constants.js：鱼竿、鱼饵、商店、活动和基础数值配置
+// - lib/equipment.js：鱼竿/鱼饵目录、展示名、库存列表和鱼饵配送员
+// - lib/gold-humble.js：金谦竿目标、干扰鱼、指定稀有度和命中奖励
+// - lib/duanwu.js：端午粽子活动、随机鱼饵效果和屈原奇遇
+// - lib/fishing-day.js：每日刷新时间、钓鱼日和分段返还
+// - lib/lottery.js：钓鱼祈愿、奖池和大奖偏好
+// - lib/command-parsers.js：换竿/换饵、购买、炼竿和自动续饵等指令解析
+// - lib/user.js：玩家数据归一化、每日次数、彩蛋与持有物状态
+// - lib/panel.js：图片面板渲染入口
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -440,144 +476,8 @@ function rarityLabel(rarity) {
   return RARITY_LABELS[rarity] || rarity;
 }
 
-function getBuyableRodList() {
-  return Object.values(ROD_CATALOG).filter(item => item.price > 0 && !item.sourceLegendary);
-}
-
-function getRodRecycleValue(rod) {
-  if (!rod || rod.id === DEFAULT_ROD_ID) return 0;
-  if (Number(rod.recycleValue || 0) > 0) return Math.floor(Number(rod.recycleValue || 0));
-  if (rod.sourceLegendary) return 750;
-  return Math.max(0, Math.floor(Number(rod.price || 0) / 2));
-}
-
 function getVisibleCollectionRarities() {
   return [...RARITY_ORDER];
-}
-
-function getVisibleRodList(userData) {
-  const owned = new Set(userData?.rodsOwned || []);
-  return Object.values(ROD_CATALOG).filter(rod => {
-    if (rod.sourceLegendary || rod.sourceLottery) return owned.has(rod.id);
-    return true;
-  });
-}
-
-function getSwitchableRodList(userData) {
-  const owned = new Set(userData?.rodsOwned || []);
-  const buyable = getBuyableRodList();
-  const special = Object.values(ROD_CATALOG)
-    .filter(rod => (rod.sourceLegendary || rod.sourceLottery) && owned.has(rod.id));
-  return [...buyable, ...special];
-}
-
-function getRecyclableRodList(userData) {
-  const owned = new Set(userData?.rodsOwned || []);
-  return Object.values(ROD_CATALOG)
-    .filter(rod => rod.id !== DEFAULT_ROD_ID && owned.has(rod.id))
-    .sort((a, b) => {
-      const craftedDiff = Number(Boolean(b.sourceLegendary)) - Number(Boolean(a.sourceLegendary));
-      if (craftedDiff !== 0) return craftedDiff;
-      return getRodRecycleValue(b) - getRodRecycleValue(a);
-    });
-}
-
-function getBuiltinBuyableBaitList(dateKey = getTodayKey()) {
-  return Object.values(BAIT_CATALOG)
-    .filter(item => !item.isDefault && !item.lotteryOnly)
-    .filter(item => isSeasonalBaitActive(item, dateKey));
-}
-
-function getOwnedBuiltinBaitList(userData) {
-  return Object.values(BAIT_CATALOG)
-    .filter(item => !item.isDefault)
-    .filter(item => !item.lotteryOnly || Number(userData?.baitInventory?.[item.id] || 0) > 0);
-}
-
-function getCustomBaitList(userData) {
-  return Object.values(userData?.customBaits || {})
-    .filter(bait => Number(userData?.baitInventory?.[bait.id] || 0) > 0)
-    .filter((bait, index, arr) => arr.findIndex(item => item.id === bait.id) === index);
-}
-
-function getSwitchableBaitList(userData) {
-  return [...getOwnedBuiltinBaitList(userData), ...getCustomBaitList(userData)];
-}
-
-function getNextAutoRenewBait(userData, currentBaitId = '') {
-  const orderedBaits = getSwitchableBaitList(userData)
-    .filter(bait => bait?.id && bait.id !== DEFAULT_BAIT_ID);
-  if (!orderedBaits.length) return null;
-
-  const currentIndex = orderedBaits.findIndex(bait => bait.id === currentBaitId);
-  const ordered = currentIndex >= 0
-    ? [...orderedBaits.slice(currentIndex + 1), ...orderedBaits.slice(0, currentIndex)]
-    : orderedBaits;
-  return ordered.find(bait => Number(userData?.baitInventory?.[bait.id] || 0) > 0) || null;
-}
-
-function parseAutoRenewBaitToggle(keyword = '') {
-  const text = String(keyword || '')
-    .trim()
-    .toLowerCase()
-    .replace(/[\s　:：,，。.!！?？、_\-\\/]+/g, '');
-  if (!text || /^(?:状态|查看|查询|帮助|说明|怎么用|开关|当前|help)$/.test(text)) return null;
-  if (/^(?:off|close|closed|false|0|no|n|关|关闭|关掉|关了|停用|禁用|取消|停止|不要|不用|不开|不续)/.test(text)) return false;
-  if (/^(?:on|open|opened|true|1|yes|y|开|开启|打开|启用|启动|使用|要|需要|续|自动|自动续|自动续饵|续饵)/.test(text)) return true;
-  return null;
-}
-
-function extractAutoRenewBaitKeyword(msg = '') {
-  const text = String(msg || '').trim();
-  const match = text.match(/^#\s*(?:自动\s*续\s*(?:鱼)?饵?|续\s*(?:鱼)?饵|(?:鱼饵|换饵)\s*自动\s*续(?:饵)?|自动\s*(?:换|补)\s*(?:鱼)?饵)\s*(.*)$/);
-  return match ? match[1].trim() : text.replace(/^#\s*/, '').trim();
-}
-
-function getAutoRenewBaitUsageText() {
-  return '格式：#自动续饵开 / #自动续饵关；也可用 #续饵 开 / #鱼饵自动续 关闭';
-}
-
-function getBaitPackText(bait) {
-  const packSize = Math.max(1, Number(bait?.packSize || 1));
-  const unitPrice = Number(bait?.price || 0);
-  const costPerUse = unitPrice / packSize;
-  if (bait?.lotteryOnly) return `祈愿限定，1包${packSize}份，库存按份消耗`;
-  if (bait?.seasonal) return `${unitPrice}鱼蛋/包，1包${packSize}份，限时出售至${bait.seasonal.endDateExclusive}`;
-  return `${unitPrice}鱼蛋/包，1包${packSize}份，约${costPerUse.toFixed(1)}鱼蛋/次`;
-}
-
-function isCustomBait(bait) {
-  return Boolean(bait?.isCustom || bait?.sourceText || String(bait?.id || '').startsWith('custom_'));
-}
-
-function getLegacyCustomBaitName(bait) {
-  const source = String(bait?.sourceText || '').trim();
-  if (source) return `${source.slice(0, 8)}特调饵`;
-  return bait?.name || bait?.id || '自定义鱼饵';
-}
-
-function getBaitDisplayName(bait) {
-  if (!bait) return '未知鱼饵';
-  if (!isCustomBait(bait)) return bait.name || bait.id || '未知鱼饵';
-  const name = String(bait.name || '').trim();
-  if (!name || /^手作鱼饵-[0-9A-Z]{4}$/i.test(name)) return getLegacyCustomBaitName(bait);
-  return name;
-}
-
-function getBaitDisplayDescription(bait) {
-  if (!bait) return '';
-  if (!isCustomBait(bait)) return bait.description || '';
-  return bait.description || '一份按私人配方拌出的定制鱼饵，气味层次复杂，适合试试不同手感。';
-}
-
-function getOwnedBaitsDisplaySummary(userData) {
-  const entries = Object.entries(userData?.baitInventory || {})
-    .filter(([, count]) => Number(count || 0) > 0)
-    .map(([id, count]) => {
-      const bait = userData?.customBaits?.[id] || BAIT_CATALOG[id] || SHOP_ITEMS[id] || { id, name: id };
-      return `${getBaitDisplayName(bait)}x${count}`;
-    });
-  return entries.join('、');
 }
 
 function getSenderGroupDisplayName(e, fallback = '你') {
@@ -636,119 +536,6 @@ async function getSafeLostItemOwnerNameAsync(e, foundItem = {}) {
   const storedName = String(foundItem?.ownerName || '').trim();
   if (storedName && storedName !== ownerId && !/^\d{5,}$/.test(storedName)) return storedName;
   return '某位钓友';
-}
-
-function getBaitAcquireText(bait) {
-  const packSize = Math.max(1, Number(bait?.packSize || 1));
-  if (bait?.isDefault) return '售价：不可购买';
-  if (bait?.lotteryOnly) return `获取：祈愿限定，1包${packSize}份，库存按份消耗`;
-  if (bait?.seasonal) return `售价：${Number(bait?.price || 0)}鱼蛋 / 包，1包${packSize}份；限时出售至${bait.seasonal.endDateExclusive}`;
-  return `售价：${Number(bait?.price || 0)}鱼蛋 / 包，1包${packSize}份`;
-}
-
-function getLotteryRewardMetaText(reward) {
-  if (reward?.type !== 'bait') return '';
-  const bait = BAIT_CATALOG[reward.id];
-  if (!bait) return '';
-  const packSize = Math.max(1, Math.floor(Number(bait.packSize || 1)));
-  const packCount = Math.max(0, Math.floor(Number(reward.packCount || 0)));
-  if (packCount > 0) {
-    return `${packCount}包，每包${packSize}份，获得${packCount * packSize}份`;
-  }
-  const count = Math.max(1, Math.floor(Number(reward.count || 1)));
-  return `${count}份，库存按份消耗`;
-}
-
-function getLotteryRewardPreviewMetaText(reward) {
-  if (!reward) return '愿品内容以实际入账为准';
-  if (reward.type === 'bait') return getLotteryRewardMetaText(reward) || '鱼饵会直接加入库存';
-  if (reward.type === 'ticket') return `额外钓鱼券 +${Math.max(1, Math.floor(Number(reward.count || 1)))}`;
-  if (reward.type === 'lottery_free_draw') return `免费祈愿 +${Math.max(1, Math.floor(Number(reward.count || 1)))}`;
-  if (reward.type === 'coins') return '鱼蛋愿品，获得后会直接到账';
-  return '愿品内容以实际入账为准';
-}
-
-function getLotteryRewardResultMetaText(reward, item = {}) {
-  if (!reward) return '已完成本次祈愿';
-  if (item.isGrandPrize) {
-    if (reward.duplicate) return `你已经拥有它，这次折成 ${reward.compensationCoins || 0} 鱼蛋`;
-    if (reward.type === 'rod') return '已加入鱼竿收藏';
-    if (reward.type === 'special_item') return '特殊愿品已登记，会自动生效';
-    return '限定愿品已入账';
-  }
-  if (reward.duplicate) return `重复愿品折成 ${reward.compensationCoins || 0} 鱼蛋`;
-  if (reward.type === 'coins') return `到账 ${Number(reward.amount || 0)} 鱼蛋`;
-  if (reward.type === 'bait') return getLotteryRewardMetaText(reward) || '鱼饵已加入库存';
-  if (reward.type === 'ticket') return `钓鱼券 +${Math.max(1, Math.floor(Number(reward.count || 1)))}`;
-  if (reward.type === 'lottery_free_draw') return `免费祈愿 +${Math.max(1, Math.floor(Number(reward.count || 1)))}`;
-  if (reward.type === 'special_item') return '特殊愿品已登记，会自动生效';
-  return '已发放到背包';
-}
-
-function getBaitDeliveryPool(dateKey = getTodayKey()) {
-  return Object.values(BAIT_CATALOG)
-    .filter(bait => bait?.id && !bait.isDefault && isSeasonalBaitActive(bait, dateKey) && Math.max(1, Math.floor(Number(bait.packSize || 0))) > 0);
-}
-
-function summarizeBaitDeliveryPacks(deliveries = []) {
-  const groups = new Map();
-  for (const item of deliveries) {
-    const baitId = item?.bait?.id;
-    if (!baitId) continue;
-    const current = groups.get(baitId) || { bait: item.bait, packs: 0, count: 0 };
-    current.packs += 1;
-    current.count += Math.max(1, Math.floor(Number(item.count || 1)));
-    groups.set(baitId, current);
-  }
-  return [...groups.values()]
-    .map(item => `${getBaitDisplayName(item.bait)} ${item.packs}包(${item.count}份)`)
-    .join('、');
-}
-
-function claimDailyBaitDelivery(userData, todayKey = getTodayKey()) {
-  const grandPlugin = LOTTERY_GRAND_PRIZE_PLUGINS.bait_delivery_clerk;
-  if (!grandPlugin?.id || !Array.isArray(userData?.lotteryGrandPrizes) || !userData.lotteryGrandPrizes.includes(grandPlugin.id)) return null;
-
-  if (!userData.dailyBaitDelivery || typeof userData.dailyBaitDelivery !== 'object') {
-    userData.dailyBaitDelivery = { lastDate: '', delivered: false };
-  }
-  if (String(userData.dailyBaitDelivery.lastDate || '').trim() === todayKey && userData.dailyBaitDelivery.delivered) return null;
-
-  const pool = getBaitDeliveryPool();
-  if (!pool.length) return null;
-  const packCount = Math.max(1, Math.floor(Number(grandPlugin.dailyDelivery?.packCount || 3)));
-  const deliveries = [];
-  if (!userData.baitInventory || typeof userData.baitInventory !== 'object') userData.baitInventory = {};
-  for (let index = 0; index < packCount; index += 1) {
-    const bait = pool[Math.floor(Math.random() * pool.length)];
-    const count = Math.max(1, Math.floor(Number(bait.packSize || 1)));
-    userData.baitInventory[bait.id] = Number(userData.baitInventory[bait.id] || 0) + count;
-    deliveries.push({ bait, count });
-  }
-  const totalCount = deliveries.reduce((sum, item) => sum + item.count, 0);
-  userData.dailyBaitDelivery = {
-    lastDate: todayKey,
-    delivered: true,
-    deliveredAt: getNowTimestamp(),
-    packs: deliveries.map(item => ({
-      id: item.bait.id,
-      name: getBaitDisplayName(item.bait),
-      count: item.count
-    }))
-  };
-  return {
-    deliveries,
-    totalCount,
-    text: `[鱼饵配送员] 今日鱼饵配送到货：${summarizeBaitDeliveryPacks(deliveries)}，库存合计 +${totalCount} 份。`
-  };
-}
-
-function formatLotteryProbability(rate) {
-  const percent = Number(rate || 0) * 100;
-  if (!Number.isFinite(percent) || percent <= 0) return '0%';
-  if (percent < 0.1) return `${percent.toFixed(3)}%`;
-  if (percent < 1) return `${percent.toFixed(2)}%`;
-  return `${percent.toFixed(1)}%`;
 }
 
 function mergeRarityBias(...biasList) {
@@ -1417,23 +1204,6 @@ function parseCustomBaitPurchaseKeyword(keyword = '') {
 
 function isAllDetailsKeyword(keyword = '') {
   return ALL_DETAILS_KEYWORD_REG.test(String(keyword || '').trim());
-}
-
-function getOwnedRodDetailsList(userData) {
-  const owned = new Set(userData?.rodsOwned || []);
-  const rods = Object.values(ROD_CATALOG)
-    .filter(Boolean)
-    .filter(rod => rod.id === DEFAULT_ROD_ID || owned.has(rod.id));
-  return rods;
-}
-
-function getOwnedBaitDetailsList(userData) {
-  const ownedBuiltinBaits = Object.values(BAIT_CATALOG)
-    .filter(item => !item.isDefault)
-    .filter(item => Number(userData?.baitInventory?.[item.id] || 0) > 0);
-  return [BAIT_CATALOG.plain, ...ownedBuiltinBaits, ...getCustomBaitList(userData)]
-    .filter(Boolean)
-    .filter((bait, index, arr) => arr.findIndex(item => item.id === bait.id) === index);
 }
 
 function buildTraitSummary(lines = [], fallback = '暂无明显词条') {
