@@ -61,12 +61,10 @@ import {
   getEquippedRod,
   getFishingLimitExhaustedText,
   getFishingLimitText,
-  getSegmentedReturnedCasts,
   getLockedFishIds,
   getTargetUserId,
   getDisplayNameForUser,
   getUserDisplay,
-  isSegmentedCastReturnEnabled,
   getOwnedEasterEggCollection,
   getOwnedRodsSummary,
   isFishLocked,
@@ -106,7 +104,17 @@ import {
   resolveLotteryGrandPrizePlugin
 } from './lib/lottery.js';
 import { findCustomBaitBySource, generateCustomBaitFromText } from './lib/custom-bait.js';
-import { getLocalHour, getNowTimestamp, getTodayKey, getTimeRuntimeInfo } from './lib/time.js';
+import { getNowTimestamp, getTodayKey, getTimeRuntimeInfo } from './lib/time.js';
+import {
+  SEGMENTED_CAST_RETURN_EXTRA_TICKET_HOUR,
+  getDailyResetHour,
+  getFastFishingUsageOptions,
+  getFishingDayKey,
+  getFishingUsageOptions,
+  getSegmentedCastReturnStatusText,
+  parseDailyResetHour,
+  parseOnOffToggle
+} from './lib/fishing-day.js';
 import {
   applyBaitRandomEffectForCast,
   applyDuanwuQuyuanEvent,
@@ -140,8 +148,6 @@ const __dirname = path.dirname(__filename);
 const FISH_PLUGIN_REPO = 'https://github.com/Selonite925/Fish-Plugin.git';
 const FISH_PLUGIN_UPDATE_PROXY_CONFIG_KEY = 'updateProxy';
 const SELF_UPDATE_BACKUP_DIR = '.self-update-backups';
-const DEFAULT_DAILY_RESET_HOUR = 0;
-const SEGMENTED_CAST_RETURN_EXTRA_TICKET_HOUR = 16;
 const USER_BACKUP_DIR = 'user_backup';
 const USER_BACKUP_FILES = [
   'fishdata/fishData.json',
@@ -1340,71 +1346,6 @@ function normalizeRarityKeyword(keyword = '') {
     彩蛋: EASTER_EGG_RARITY
   };
   return aliases[text] || aliases[normalizedText] || null;
-}
-
-function normalizeDailyResetHour(value, fallback = DEFAULT_DAILY_RESET_HOUR) {
-  const hour = Math.floor(Number(value));
-  if (!Number.isFinite(hour)) return fallback;
-  return Math.max(0, Math.min(23, hour));
-}
-
-function parseDailyResetHour(input = '') {
-  const text = String(input || '').trim();
-  const match = text.match(/(?:^|\s)([01]?\d|2[0-3])(?:(?:\s*[:：]\s*00)|\s*(?:点|时|:00|：00|h)?)\s*$/i);
-  if (!match) return null;
-  return normalizeDailyResetHour(match[1]);
-}
-
-function parseOnOffToggle(input = '') {
-  const text = String(input || '')
-    .trim()
-    .toLowerCase()
-    .replace(/[\s　:：,，。.!！?？、_\-\\/]+/g, '');
-  if (!text || /^(?:状态|查看|查询|帮助|说明|怎么用|开关|当前|help)$/.test(text)) return null;
-  if (/^(?:off|close|closed|false|0|no|n|关|关闭|关掉|关了|停用|禁用|取消|停止|不要|不用|不开)/.test(text)) return false;
-  if (/^(?:on|open|opened|true|1|yes|y|开|开启|打开|启用|启动|使用|要|需要)/.test(text)) return true;
-  return null;
-}
-
-function getDailyResetHour(config = {}) {
-  return normalizeDailyResetHour(config?.dailyResetHour, DEFAULT_DAILY_RESET_HOUR);
-}
-
-function getFishingDayKey(config = {}, date = new Date()) {
-  const resetHour = getDailyResetHour(config);
-  const shifted = new Date(date.getTime() - resetHour * 60 * 60 * 1000);
-  return getTodayKey(shifted);
-}
-
-function getHoursSinceFishingDayReset(config = {}, date = new Date()) {
-  const resetHour = getDailyResetHour(config);
-  const currentHour = getLocalHour(date);
-  return (currentHour - resetHour + 24) % 24;
-}
-
-function getFishingUsageOptions(config = {}, options = {}) {
-  return {
-    elapsedHours: getHoursSinceFishingDayReset(config),
-    ignoreSegments: Boolean(options.ignoreSegments)
-  };
-}
-
-function getFastFishingUsageOptions(config = {}) {
-  const options = getFishingUsageOptions(config, { ignoreSegments: true });
-  options.elapsedHours = getHoursSinceFishingDayReset(config);
-  return options;
-}
-
-function getSegmentedCastReturnStatusText(config, totalLimit, options = {}) {
-  if (!isSegmentedCastReturnEnabled(config)) return '分段返还：关闭';
-  const elapsedHours = options.elapsedHours ?? getHoursSinceFishingDayReset(config);
-  const returned = getSegmentedReturnedCasts(totalLimit, elapsedHours);
-  const resetHour = getDailyResetHour(config);
-  const at0 = `${resetHour}:00`;
-  const at6 = `${(resetHour + 6) % 24}:00`;
-  const at12 = `${(resetHour + 12) % 24}:00`;
-  const at16 = `${(resetHour + SEGMENTED_CAST_RETURN_EXTRA_TICKET_HOUR) % 24}:00`;
-  return `分段返还：开启，当前已返还 ${returned}/${totalLimit} 次（${at0}、${at6}、${at12}；${at16} 后可用钓鱼券）`;
 }
 
 function getCompensateFishUsage() {
