@@ -3208,7 +3208,7 @@ export class fishing extends plugin {
 
   applyDuanwuQuyuanEvent(userData) {
     const rewardRange = DUANWU_EVENT_CONFIG.rewardCoins || {};
-    const rewardCoins = randomInteger(rewardRange.min ?? 400, rewardRange.max ?? 2500);
+    const rewardCoins = randomInteger(rewardRange.min ?? 200, rewardRange.max ?? 700);
     userData.coins = Number(userData.coins || 0) + rewardCoins;
     if (!userData.duanwuEvent || typeof userData.duanwuEvent !== 'object') userData.duanwuEvent = {};
     userData.duanwuEvent.quyuanHits = Number(userData.duanwuEvent.quyuanHits || 0) + 1;
