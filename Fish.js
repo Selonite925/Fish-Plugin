@@ -2208,6 +2208,10 @@ export class fishing extends plugin {
       fish = template ? createFishFromTemplate(template, rarity) : generateFish(rarity);
     }
     fish = applyFishBodyBuffs(fish, bodyModifiers);
+    if (targetEffect && !rarityTarget && fish?.rarity === targetEffect.target.rarity && fish?.name === targetEffect.target.name) {
+      // 彩蛋鱼可能在“目标以外无可选鱼”的兜底路径中被钓上来，实际命中目标也要结算奖励。
+      targetHit = true;
+    }
     if (targetEffect && rarityTarget && fish?.rarity === targetEffect.target.rarity) {
       targetHit = true;
       targetPoolSize = this.fishTypes[rarity]?.length || 0;
