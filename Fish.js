@@ -59,12 +59,14 @@ import {
   getEquippedRod,
   getFishingLimitExhaustedText,
   getFishingLimitText,
+  getDailyTicketUseLimitStatusText,
   getLockedFishIds,
   getTargetUserId,
   getDisplayNameForUser,
   getUserDisplay,
   getOwnedEasterEggCollection,
   getOwnedRodsSummary,
+  isDailyTicketUseLimitReached,
   isFishLocked,
   isSameFish,
   lockFishById,
@@ -259,6 +261,7 @@ const MANAGEMENT_HELP_GROUPS = [
       { title: '#设置钓鱼次数10', desc: '调整全局基础每日钓鱼次数。' },
       { title: '#设置钓鱼刷新时间 6', desc: '设置每日钓鱼日刷新时间，24小时制，只能填0-23点。' },
       { title: '#钓鱼分段返还 开启 / 关闭', desc: '开启后基础次数按刷新点、+6小时、+12小时分三段返还，+16小时后可用钓鱼券。' },
+      { title: '#钓鱼券使用限制 开启 / 关闭', desc: '默认每人每天最多使用10张钓鱼券；关闭后不限制每日用券数。' },
       { title: '#鱼蛋补偿 @某人 *100', desc: '给单人补发鱼蛋。' },
       { title: '#鱼蛋补偿 全体 *100', desc: '给已有数据的全部玩家统一补发鱼蛋。' },
       { title: '#补鱼 @某人 鳗鱼 / #补鱼 rare 鳗鱼 @某人 80 3.5', desc: '直接补发指定鱼，目标、稀有度、鱼名顺序更自由，长度和重量可省略。' },
@@ -1318,6 +1321,7 @@ export class fishing extends plugin {
         { reg: '^#设置钓鱼次数(\\d+)$', fnc: 'setFishingLimit' },
         { reg: '^#(?:设置)?钓鱼(?:每日)?刷新(?:时间|小时)?\\s*.*$', fnc: 'setDailyResetHour' },
         { reg: '^#(?:钓鱼)?分段(?:式)?(?:返还|次数|钓鱼)?\\s*.*$', fnc: 'toggleSegmentedCastReturn' },
+        { reg: '^#(?:钓鱼券|额外钓鱼券)(?:使用)?(?:限制|上限)\\s*.*$', fnc: 'toggleDailyTicketUseLimit' },
         { reg: '^#重置钓鱼次数\\s*(全体|全部|@?.*)?$', fnc: 'resetFishingCount' },
         { reg: '^#钓鱼次数$', fnc: 'checkFishingLimit' },
         { reg: '^#查看鱼缸(?:\\s*.*)?$', fnc: 'checkFishTank' },
@@ -2388,6 +2392,29 @@ export class fishing extends plugin {
     );
   }
 
+  async toggleDailyTicketUseLimit(e) {
+    if (!e.isMaster) {
+      await this.reply('只有主人才能设置钓鱼券每日使用限制。');
+      return;
+    }
+    const raw = String(e.msg || '').replace(/^#(?:钓鱼券|额外钓鱼券)(?:使用)?(?:限制|上限)\s*/, '').trim();
+    let nextValue = parseOnOffToggle(raw);
+    if (/^(?:解除|解除限制|不限|无限|无上限|取消限制)$/i.test(raw.replace(/\s+/g, ''))) {
+      nextValue = false;
+    }
+    if (nextValue === null) {
+      await this.reply(`${getDailyTicketUseLimitStatusText(this.config)}\n格式：#钓鱼券使用限制 开启 / #钓鱼券使用限制 关闭\n默认开启时每人每天最多使用 10 张钓鱼券。`);
+      return;
+    }
+
+    this.config.dailyTicketUseLimitEnabled = nextValue;
+    this.config.dailyTicketUseLimit = 10;
+    saveConfig(this.config);
+    await this.reply(nextValue
+      ? '钓鱼券每日使用限制已开启：每人每天最多使用 10 张钓鱼券。'
+      : '钓鱼券每日使用限制已关闭：玩家可继续消耗已持有的钓鱼券。');
+  }
+
   async checkFishingLimit(e) {
     const data = this.loadData();
     const userData = this.getOrCreateUser(data, String(e.user_id));
@@ -2868,6 +2895,7 @@ export class fishing extends plugin {
 
     const extraLines = [
       summary.ticketCasts > 0 ? `本次消耗钓鱼券：${summary.ticketCasts}张` : null,
+      isDailyTicketUseLimitReached(this.config, userData) ? getDailyTicketUseLimitStatusText(this.config, userData) : null,
       summary.rescued > 0 ? `失败保护补救：${summary.rescued}次` : null,
       summary.signalHits > 0 ? `命中限时鱼讯：${summary.signalHits}条` : null,
       summary.duanwuEvents > 0 ? `端午奇遇：${summary.duanwuEvents}次，+${summary.duanwuCoins}鱼蛋` : null,
