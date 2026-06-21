@@ -208,7 +208,13 @@ export const mysteryFish = [
   { name: '不存在的鱼', size: { min: 1, max: 999 }, weight: { min: 0.01, max: 99.99 } },
   { name: '空指针鲤', size: { min: 0, max: 1 }, weight: { min: 0.01, max: 0.01 } },
   { name: '铁yu...?', size: { min: 160, max: 320 }, weight: { min: 12, max: 46 } },
-  { name: '闲鱼', size: { min: 38, max: 88 }, weight: { min: 0.6, max: 6.8 } }
+  { name: '闲鱼', size: { min: 38, max: 88 }, weight: { min: 0.6, max: 6.8 } },
+  {
+    name: '端午𩽾𩾌',
+    size: { min: 55, max: 125 },
+    weight: { min: 2.5, max: 12.5 },
+    seasonal: { eventId: 'duanwu_2026', startDate: '2026-06-18', endDateExclusive: '2026-07-02' }
+  }
 ];
 
 export const fishTypes = {

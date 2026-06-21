@@ -48,6 +48,7 @@ import {
   canFishToday,
   createDefaultUserData,
   ensureFishId,
+  ensureTodayCastHistorySeed,
   getCatchRate,
   getDailyLimit,
   getDailyLimitBreakdown,
@@ -124,6 +125,7 @@ import {
   claimDailyDuanwuZongziGift,
   isDuanwuEventActive,
   isSeasonalBaitActive,
+  isSeasonalFishActive,
   shouldTriggerDuanwuQuyuanEvent
 } from './lib/duanwu.js';
 import {
@@ -210,7 +212,8 @@ const HELP_GROUPS = [
       { title: '#钓鱼', desc: '正常抛竿一次，结算当前鱼竿、鱼饵、彩蛋和鱼讯效果。' },
       { title: '#钓鱼极速版', desc: '一口气钓完当前能用次数，优先发图汇总结果。' },
       { title: '#今日鱼获 / #查看鱼获 @某人', desc: '查看自己或别人的当日鱼获记录。' },
-      { title: '#钓鱼图鉴 / #钓鱼排行 / #鱼王榜 / #空军榜', desc: '看收藏、排行、鱼王分数和今日空军情况。' }
+      { title: '#钓鱼图鉴 / #钓鱼排行 / #每周钓鱼榜 / #每月钓鱼榜', desc: '看收藏、总排行、本周排行和本月排行。' },
+      { title: '#鱼王榜 / #空军榜', desc: '看鱼缸综合质量和今日空军情况。' }
     ]
   },
   {
@@ -410,6 +413,60 @@ function getRarityCountSummary(fishList = []) {
     .filter(rarity => counts.has(rarity))
     .map(rarity => `${rarityLabel(rarity)} ${counts.get(rarity)}条`)
     .join('、') || '暂无';
+}
+
+function parseDateKeyAsUtcDate(dateKey = '') {
+  const match = String(dateKey || '').trim().match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!match) return new Date();
+  return new Date(Date.UTC(Number(match[1]), Number(match[2]) - 1, Number(match[3])));
+}
+
+function formatUtcDateKey(date) {
+  const year = date.getUTCFullYear();
+  const month = String(date.getUTCMonth() + 1).padStart(2, '0');
+  const day = String(date.getUTCDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+}
+
+function getWeekDateRange(dateKey = getTodayKey()) {
+  const date = parseDateKeyAsUtcDate(dateKey);
+  const day = date.getUTCDay();
+  const mondayOffset = (day + 6) % 7;
+  const start = new Date(date.getTime() - mondayOffset * 24 * 60 * 60 * 1000);
+  const end = new Date(start.getTime() + 6 * 24 * 60 * 60 * 1000);
+  return {
+    startKey: formatUtcDateKey(start),
+    endKey: formatUtcDateKey(end),
+    label: `${formatUtcDateKey(start)} 至 ${formatUtcDateKey(end)}`
+  };
+}
+
+function getMonthDateRange(dateKey = getTodayKey()) {
+  const monthKey = String(dateKey || getTodayKey()).slice(0, 7);
+  return {
+    startKey: `${monthKey}-01`,
+    endKey: `${monthKey}-31`,
+    label: monthKey
+  };
+}
+
+function isDateKeyInRange(dateKey, range) {
+  const key = String(dateKey || '').trim();
+  return Boolean(key && key >= range.startKey && key <= range.endKey);
+}
+
+function countHistoryItemsInDateRange(items = [], range) {
+  return (Array.isArray(items) ? items : [])
+    .filter(item => {
+      const timestamp = Number(item?.timestamp || 0);
+      if (!Number.isFinite(timestamp) || timestamp <= 0) return false;
+      return isDateKeyInRange(getTodayKey(new Date(timestamp)), range);
+    })
+    .length;
+}
+
+function getActiveFishPool(fishTypesMap, rarity, dateKey = getTodayKey()) {
+  return (fishTypesMap?.[rarity] || []).filter(fish => isSeasonalFishActive(fish, dateKey));
 }
 
 function buildTodayFishRecordPanel(config, userData, ownerDisplay = '你', options = {}) {
@@ -1022,7 +1079,15 @@ function buildBaitTraitEntries(bait) {
   const entries = [];
 
   if (Array.isArray(bait?.randomEffects) && bait.randomEffects.length) {
-    entries.push({ text: '每次使用会随机获得一种节令小效果', tone: 'positive' });
+    const effectNames = bait.randomEffects.map(effect => effect?.name).filter(Boolean).join(' / ');
+    entries.push({ text: `每次使用会随机获得一种节令小效果：${effectNames || '效果待定'}`, tone: 'positive' });
+    for (const effect of bait.randomEffects) {
+      if (!effect?.name && !effect?.desc) continue;
+      entries.push({
+        text: `${effect.name || '节令小效果'}：${effect.desc || '本次抛竿会获得一项临时加成。'}`,
+        tone: 'note'
+      });
+    }
   }
   if (bait?.activityEvent?.id === 'duanwu_quyuan' && isDuanwuEventActive()) {
     entries.push({ text: '端午活动中，空钩时有小概率触发屈原奇遇', tone: 'positive' });
@@ -1317,6 +1382,8 @@ export class fishing extends plugin {
         { reg: '^#空军榜$', fnc: 'checkEmptyHandsList' },
         { reg: '^#钓鱼图鉴$', fnc: 'checkFishCollection' },
         { reg: '^#钓鱼排行$', fnc: 'checkFishingRank' },
+        { reg: '^#(?:每周钓鱼(?:排行|榜)|本周钓鱼(?:排行|榜)|钓鱼周榜)$', fnc: 'checkWeeklyFishingRank' },
+        { reg: '^#(?:每月钓鱼(?:排行|榜)|本月钓鱼(?:排行|榜)|钓鱼月榜)$', fnc: 'checkMonthlyFishingRank' },
         { reg: '^#鱼王榜$', fnc: 'checkFishKingRank' },
         { reg: '^#设置钓鱼次数(\\d+)$', fnc: 'setFishingLimit' },
         { reg: '^#(?:设置)?钓鱼(?:每日)?刷新(?:时间|小时)?\\s*.*$', fnc: 'setDailyResetHour' },
@@ -1405,7 +1472,14 @@ export class fishing extends plugin {
   loadData() {
     this.ensureDailyResetIfNeeded();
     const data = loadFishData();
-    if (normalizeAllUsers(data)) saveFishData(data);
+    let changed = normalizeAllUsers(data);
+    const fishingDay = getFishingDayKey(this.config);
+    for (const userData of Object.values(data)) {
+      if (ensureTodayCastHistorySeed(userData, fishingDay, {
+        dateKeyResolver: date => getFishingDayKey(this.config, date)
+      })) changed = true;
+    }
+    if (changed) saveFishData(data);
     return data;
   }
 
@@ -2166,7 +2240,7 @@ export class fishing extends plugin {
     const targetRarityBias = getGoldHumbleRarityBias(rod, rodTarget);
     const weights = this.applyRarityBias(rarityWeights, mergeRarityBias(extraBias, targetRarityBias));
     const ownedEggs = new Set(getOwnedEasterEggCollection(userData));
-    const availableMysteryFish = (this.fishTypes[EASTER_EGG_RARITY] || []).filter(fish => !ownedEggs.has(fish.name));
+    const availableMysteryFish = getActiveFishPool(this.fishTypes, EASTER_EGG_RARITY).filter(fish => !ownedEggs.has(fish.name));
     if (availableMysteryFish.length === 0) {
       weights.legendary = (weights.legendary || 0) + (weights[EASTER_EGG_RARITY] || 0);
       rarities = rarities.filter(rarity => rarity !== EASTER_EGG_RARITY);
@@ -2180,7 +2254,7 @@ export class fishing extends plugin {
     let targetPoolSize = 0;
     const rarityTarget = isGoldHumbleRarityTarget(targetEffect?.target);
     if (targetEffect && rarity === targetEffect.target.rarity && !rarityTarget) {
-      const pool = rarity === EASTER_EGG_RARITY ? availableMysteryFish : (this.fishTypes[rarity] || []);
+      const pool = rarity === EASTER_EGG_RARITY ? availableMysteryFish : getActiveFishPool(this.fishTypes, rarity);
       targetPoolSize = pool.length;
       const profile = getGoldHumbleTargetProfile(targetEffect, rarity, targetEffect.target, pool.length);
       candidateNames = resolveGoldHumbleCandidateNames(targetEffect, pool, targetEffect.target);
@@ -2203,7 +2277,7 @@ export class fishing extends plugin {
       const template = realPool[Math.floor(Math.random() * realPool.length)];
       fish = createFishFromTemplate(template, rarity);
     } else if (!fish) {
-      const pool = this.fishTypes[rarity] || [];
+      const pool = getActiveFishPool(this.fishTypes, rarity);
       const fallbackPool = targetEffect?.target?.rarity === rarity && !rarityTarget
         ? pool.filter(item => item.name !== targetEffect.target.name)
         : pool;
@@ -2218,7 +2292,7 @@ export class fishing extends plugin {
     }
     if (targetEffect && rarityTarget && fish?.rarity === targetEffect.target.rarity) {
       targetHit = true;
-      targetPoolSize = this.fishTypes[rarity]?.length || 0;
+      targetPoolSize = getActiveFishPool(this.fishTypes, rarity).length;
     }
     if (targetEffect) {
       fish.specialRodEffect = {
@@ -2787,15 +2861,22 @@ export class fishing extends plugin {
     for (const name of getOwnedEasterEggCollection(userData)) {
       collectedNames.add(name);
     }
-    const totalSpecies = visibleRarities.reduce((sum, rarity) => sum + (this.fishTypes[rarity] || []).length, 0);
-    const collectedCount = collectedNames.size;
+    const collectionDateKey = getFishingDayKey(this.config);
+    const collectionFishTypes = {};
+    for (const rarity of visibleRarities) {
+      collectionFishTypes[rarity] = (this.fishTypes[rarity] || [])
+        .filter(fish => isSeasonalFishActive(fish, collectionDateKey) || collectedNames.has(fish.name));
+    }
+    const visibleSpeciesNames = new Set(Object.values(collectionFishTypes).flat().map(fish => fish.name));
+    const totalSpecies = visibleRarities.reduce((sum, rarity) => sum + (collectionFishTypes[rarity] || []).length, 0);
+    const collectedCount = [...collectedNames].filter(name => visibleSpeciesNames.has(name)).length;
     const progress = totalSpecies === 0 ? 0 : ((collectedCount / totalSpecies) * 100).toFixed(1);
-    const stats = getCollectionStats(userData, this.fishTypes, visibleRarities);
+    const stats = getCollectionStats(userData, collectionFishTypes, visibleRarities);
     const sections = [];
 
     for (const rarity of visibleRarities) {
       const theme = COLLECTION_RARITY_THEMES[rarity] || COLLECTION_RARITY_THEMES.common;
-      const species = this.fishTypes[rarity] || [];
+      const species = collectionFishTypes[rarity] || [];
       const chips = species.map(fish => {
         const owned = collectedNames.has(fish.name);
         const className = owned ? 'collection-chip owned' : 'collection-chip';
@@ -2819,7 +2900,7 @@ export class fishing extends plugin {
 
     let missingCount = 0;
     for (const rarity of [...visibleRarities].reverse()) {
-      for (const fish of this.fishTypes[rarity] || []) {
+      for (const fish of collectionFishTypes[rarity] || []) {
         if (!collectedNames.has(fish.name)) {
           missingCount += 1;
         }
@@ -2838,7 +2919,7 @@ export class fishing extends plugin {
       fallbackLines.push(`${rarityLabel(rarity)}：${stats[rarity].owned}/${stats[rarity].total}`);
       const owned = [];
       const missing = [];
-      for (const fish of this.fishTypes[rarity] || []) {
+      for (const fish of collectionFishTypes[rarity] || []) {
         (collectedNames.has(fish.name) ? owned : missing).push(fish.name);
       }
       fallbackLines.push(`已收集：${owned.join('、') || '暂无'}`);
@@ -3670,6 +3751,54 @@ export class fishing extends plugin {
     await this.reply(replyMsg.trim());
   }
 
+  buildPeriodFishingRank(data, period = 'week') {
+    const range = period === 'month' ? getMonthDateRange() : getWeekDateRange();
+    return Object.entries(data)
+      .map(([userId, userData]) => {
+        normalizeUserData(userData);
+        const casts = countHistoryItemsInDateRange(userData.castHistory, range);
+        const catches = countHistoryItemsInDateRange(userData.allTimeFish, range);
+        return {
+          userId,
+          casts,
+          catches,
+          tankSize: userData.fishTank.length,
+          total: userData.total || 0
+        };
+      })
+      .filter(item => item.casts > 0)
+      .sort((a, b) => b.casts - a.casts || b.catches - a.catches || b.total - a.total)
+      .slice(0, 10)
+      .map(item => ({ ...item, range }));
+  }
+
+  async checkPeriodFishingRank(e, period = 'week') {
+    const data = this.loadData();
+    const rankList = this.buildPeriodFishingRank(data, period);
+    const isMonth = period === 'month';
+    const title = isMonth ? '每月钓鱼榜' : '每周钓鱼榜';
+    const range = rankList[0]?.range || (isMonth ? getMonthDateRange() : getWeekDateRange());
+    if (rankList.length === 0) {
+      await this.reply(`${title}（${range.label}）\n\n本期还没有可显示的钓鱼记录。`);
+      return;
+    }
+
+    let replyMsg = `${title}（${range.label}）\n\n`;
+    rankList.forEach((item, index) => {
+      const displayName = getDisplayNameForUser(e, item.userId);
+      replyMsg += `${index + 1}. ${displayName} - ${item.casts}竿，上鱼${item.catches}条，鱼缸${item.tankSize}条\n`;
+    });
+    await this.reply(replyMsg.trim());
+  }
+
+  async checkWeeklyFishingRank(e) {
+    await this.checkPeriodFishingRank(e, 'week');
+  }
+
+  async checkMonthlyFishingRank(e) {
+    await this.checkPeriodFishingRank(e, 'month');
+  }
+
   async checkFishKingRank(e) {
     const data = this.loadData();
 
@@ -3851,8 +3980,10 @@ async checkEasterEggCollection(e) {
         return { error: `${fishName} 有多个稀有度版本，请补充 common / rare 等稀有度。` };
       }
     }
-    const template = (this.fishTypes[rarity] || []).find(item => item.name === fishName);
+    const template = getActiveFishPool(this.fishTypes, rarity).find(item => item.name === fishName);
     if (!template) {
+      const inactiveTemplate = (this.fishTypes[rarity] || []).find(item => item.name === fishName);
+      if (inactiveTemplate?.seasonal) return { error: `${fishName} 是限时鱼，当前活动期外暂时不能指定。` };
       return { error: `${fishName} 不属于 ${rarity}，可用稀有度：${candidates.map(item => item.rarity).join(' / ')}` };
     }
     return { targetType: 'fish', name: fishName, rarity, template };
@@ -3907,7 +4038,7 @@ async checkEasterEggCollection(e) {
     }
 
     if (parsed.targetType === 'rarity') {
-      const rawPool = this.fishTypes[parsed.rarity] || [];
+      const rawPool = getActiveFishPool(this.fishTypes, parsed.rarity);
       if (!rawPool.length) {
         await this.reply(`${userDisplay}\n鱼池里还没有 ${rarityLabel(parsed.rarity)} 鱼，暂时不能指定这个稀有度。`);
         return;
@@ -3943,7 +4074,7 @@ async checkEasterEggCollection(e) {
     }
 
     const ownedEggs = new Set(getOwnedEasterEggCollection(userData));
-    const rawPool = this.fishTypes[parsed.rarity] || [];
+    const rawPool = getActiveFishPool(this.fishTypes, parsed.rarity);
     const distractorPool = parsed.rarity === EASTER_EGG_RARITY
       ? rawPool.filter(item => item.name === parsed.name || !ownedEggs.has(item.name))
       : rawPool;
