@@ -469,6 +469,24 @@ function getActiveFishPool(fishTypesMap, rarity, dateKey = getTodayKey()) {
   return (fishTypesMap?.[rarity] || []).filter(fish => isSeasonalFishActive(fish, dateKey));
 }
 
+function isFishAllowedByBait(fish, baitId = '') {
+  const requiredBaitIds = Array.isArray(fish?.requiredBaitIds)
+    ? fish.requiredBaitIds
+    : fish?.requiredBaitId
+      ? [fish.requiredBaitId]
+      : [];
+  if (!requiredBaitIds.length) return true;
+  const normalizedBaitId = String(baitId || '').trim();
+  return requiredBaitIds.map(id => String(id || '').trim()).includes(normalizedBaitId);
+}
+
+function getCatchableFishPool(fishTypesMap, rarity, options = {}) {
+  const dateKey = options.dateKey || getTodayKey();
+  const baitId = options.baitId || '';
+  return getActiveFishPool(fishTypesMap, rarity, dateKey)
+    .filter(fish => isFishAllowedByBait(fish, baitId));
+}
+
 function buildTodayFishRecordPanel(config, userData, ownerDisplay = '你', options = {}) {
   const displayName = String(ownerDisplay || '你').trim() || '你';
   const today = userData?.today || {};
@@ -2232,6 +2250,7 @@ export class fishing extends plugin {
   catchFish(userData = null, extraBias = {}, bodyModifiers = {}) {
     const rod = getEquippedRod(userData);
     const rodTarget = resolveRodTarget(userData, rod);
+    const baitId = bodyModifiers?.id || '';
     const targetEffect = rod?.targetFishEffect && rodTarget ? {
       ...rod.targetFishEffect,
       target: rodTarget
@@ -2240,7 +2259,7 @@ export class fishing extends plugin {
     const targetRarityBias = getGoldHumbleRarityBias(rod, rodTarget);
     const weights = this.applyRarityBias(rarityWeights, mergeRarityBias(extraBias, targetRarityBias));
     const ownedEggs = new Set(getOwnedEasterEggCollection(userData));
-    const availableMysteryFish = getActiveFishPool(this.fishTypes, EASTER_EGG_RARITY).filter(fish => !ownedEggs.has(fish.name));
+    const availableMysteryFish = getCatchableFishPool(this.fishTypes, EASTER_EGG_RARITY, { baitId }).filter(fish => !ownedEggs.has(fish.name));
     if (availableMysteryFish.length === 0) {
       weights.legendary = (weights.legendary || 0) + (weights[EASTER_EGG_RARITY] || 0);
       rarities = rarities.filter(rarity => rarity !== EASTER_EGG_RARITY);
@@ -2254,7 +2273,7 @@ export class fishing extends plugin {
     let targetPoolSize = 0;
     const rarityTarget = isGoldHumbleRarityTarget(targetEffect?.target);
     if (targetEffect && rarity === targetEffect.target.rarity && !rarityTarget) {
-      const pool = rarity === EASTER_EGG_RARITY ? availableMysteryFish : getActiveFishPool(this.fishTypes, rarity);
+      const pool = rarity === EASTER_EGG_RARITY ? availableMysteryFish : getCatchableFishPool(this.fishTypes, rarity, { baitId });
       targetPoolSize = pool.length;
       const profile = getGoldHumbleTargetProfile(targetEffect, rarity, targetEffect.target, pool.length);
       candidateNames = resolveGoldHumbleCandidateNames(targetEffect, pool, targetEffect.target);
@@ -2277,7 +2296,7 @@ export class fishing extends plugin {
       const template = realPool[Math.floor(Math.random() * realPool.length)];
       fish = createFishFromTemplate(template, rarity);
     } else if (!fish) {
-      const pool = getActiveFishPool(this.fishTypes, rarity);
+      const pool = getCatchableFishPool(this.fishTypes, rarity, { baitId });
       const fallbackPool = targetEffect?.target?.rarity === rarity && !rarityTarget
         ? pool.filter(item => item.name !== targetEffect.target.name)
         : pool;
@@ -2292,7 +2311,7 @@ export class fishing extends plugin {
     }
     if (targetEffect && rarityTarget && fish?.rarity === targetEffect.target.rarity) {
       targetHit = true;
-      targetPoolSize = getActiveFishPool(this.fishTypes, rarity).length;
+      targetPoolSize = getCatchableFishPool(this.fishTypes, rarity, { baitId }).length;
     }
     if (targetEffect) {
       fish.specialRodEffect = {

@@ -213,7 +213,8 @@ export const mysteryFish = [
     name: '端午𩽾𩾌',
     size: { min: 55, max: 125 },
     weight: { min: 2.5, max: 12.5 },
-    seasonal: { eventId: 'duanwu_2026', startDate: '2026-06-18', endDateExclusive: '2026-07-02' }
+    seasonal: { eventId: 'duanwu_2026', startDate: '2026-06-18', endDateExclusive: '2026-07-02' },
+    requiredBaitIds: ['festival_zongzi_bait']
   }
 ];
 
