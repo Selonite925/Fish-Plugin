@@ -123,9 +123,11 @@ import {
   applyBaitRandomEffectForCast,
   applyDuanwuQuyuanEvent,
   claimDailyDuanwuZongziGift,
+  getDuanwuEasterEggGiftFishName,
   isDuanwuEventActive,
   isSeasonalBaitActive,
   isSeasonalFishActive,
+  shouldTriggerDuanwuEasterEggGift,
   shouldTriggerDuanwuQuyuanEvent
 } from './lib/duanwu.js';
 import {
@@ -1193,6 +1195,17 @@ function createFishFromTemplate(template, rarity) {
     length: getRandomBodyValue(template.size.min, template.size.max, 1),
     weight: getRandomBodyValue(template.weight.min, template.weight.max, 2)
   };
+}
+
+function createFishByName(fishTypesMap, fishName, rarity = null) {
+  const normalizedName = String(fishName || '').trim();
+  if (!normalizedName) return null;
+  for (const [entryRarity, pool] of Object.entries(fishTypesMap || {})) {
+    if (rarity && entryRarity !== rarity) continue;
+    const template = (pool || []).find(item => item.name === normalizedName);
+    if (template) return createFishFromTemplate(template, entryRarity);
+  }
+  return null;
 }
 
 function normalizeRarityKeyword(keyword = '') {
@@ -2815,6 +2828,30 @@ export class fishing extends plugin {
     await new Promise(resolve => setTimeout(resolve, Math.floor(Math.random() * 2000) + 1500));
   }
 
+  async playDuanwuEasterEggGiftPerformance(fish) {
+    await this.reply('江心忽然有一缕五色线绕上鱼钩，屈原的诗魂抬手一指，粽叶水纹里游出一尾只在端午现身的鱼影。');
+    await new Promise(resolve => setTimeout(resolve, Math.floor(Math.random() * 1500) + 1000));
+    await this.handleSpecialFishEvent(fish);
+  }
+
+  applyDuanwuEasterEggGift(userData) {
+    const fishName = getDuanwuEasterEggGiftFishName();
+    const fish = createFishByName(this.fishTypes, fishName, EASTER_EGG_RARITY);
+    if (!fish) return null;
+    const { fishWithTimestamp, tankUpdateMsg, tankResult } = this.addCaughtFishToUser(userData, fish);
+    return {
+      fish,
+      fishWithTimestamp,
+      tankUpdateMsg,
+      tankResult,
+      compactText: `屈原赠送：${fishWithTimestamp.name}`,
+      resultText:
+        `[端午彩蛋] 屈原把五色线轻轻系在鱼钩上，江面随之一亮。\n` +
+        `你顺势提竿，额外钓到了一条 ${fishWithTimestamp.rarity} 鱼：${fishWithTimestamp.name}\n` +
+        `长度：${fishWithTimestamp.length}cm，重量：${fishWithTimestamp.weight}kg${tankUpdateMsg}`
+    };
+  }
+
   createFastFishingSummary(rod) {
     return {
       rodName: rod.name,
@@ -3201,7 +3238,23 @@ export class fishing extends plugin {
           summary.duanwuEvents += 1;
           summary.duanwuCoins += duanwuEvent.rewardCoins;
           summary.specialEffects.push(duanwuEvent.compactText);
+          const duanwuGift = shouldTriggerDuanwuEasterEggGift(userData)
+            ? this.applyDuanwuEasterEggGift(userData)
+            : null;
+          if (duanwuGift) {
+            summary.catches += 1;
+            this.recordFastFish(summary, duanwuGift.fishWithTimestamp);
+            summary.specialEffects.push(duanwuGift.compactText);
+            if (duanwuGift.tankResult?.added) summary.tankAdded += 1;
+            if (duanwuGift.tankResult?.replaced) summary.tankReplaced += 1;
+            if (duanwuGift.tankResult?.soldCoins > 0) summary.autoSellCoins += duanwuGift.tankResult.soldCoins;
+            userData.stats.lastCatchRarity = duanwuGift.fishWithTimestamp.rarity;
+          }
           resetEmptyCastStreak(userData);
+          const unlocked = scanAchievements(userData, this.fishTypes);
+          this.recordFastAchievementUnlocks(summary, unlocked);
+          userData.achievementCatchRateBonus = getAchievementCatchRateBonus(userData);
+          userData.achievementDailyCastBonus = getAchievementDailyCastBonus(userData);
           summary.coinGain += Number(userData.coins || 0) - coinsBeforeCast;
           rod = getEquippedRod(userData);
           continue;
@@ -3338,13 +3391,19 @@ export class fishing extends plugin {
         ? applyDuanwuQuyuanEvent(settleUser)
         : null;
       if (duanwuEvent) {
+        const duanwuGift = shouldTriggerDuanwuEasterEggGift(settleUser)
+          ? this.applyDuanwuEasterEggGift(settleUser)
+          : null;
+        if (duanwuGift) settleUser.stats.lastCatchRarity = duanwuGift.fishWithTimestamp.rarity;
         resetEmptyCastStreak(settleUser);
         const unlocked = scanAchievements(settleUser, this.fishTypes);
         settleUser.achievementCatchRateBonus = getAchievementCatchRateBonus(settleUser);
         settleUser.achievementDailyCastBonus = getAchievementDailyCastBonus(settleUser);
         saveFishData(settleData);
         await this.playDuanwuQuyuanPerformance();
-        await this.reply(`${userDisplay}\n${duanwuEvent.resultText}\n今日钓鱼次数：${getFishingLimitText(this.config, settleUser, getEquippedRod(settleUser), usageOptions)}${manualBait.message}${shopBait.message}${easterEggMsg}${this.formatAchievementUnlocks(unlocked)}`);
+        if (duanwuGift) await this.playDuanwuEasterEggGiftPerformance(duanwuGift.fish);
+        const giftText = duanwuGift ? `\n${duanwuGift.resultText}` : '';
+        await this.reply(`${userDisplay}\n${duanwuEvent.resultText}${giftText}\n今日钓鱼次数：${getFishingLimitText(this.config, settleUser, getEquippedRod(settleUser), usageOptions)}${manualBait.message}${shopBait.message}${easterEggMsg}${this.formatAchievementUnlocks(unlocked)}`);
         return;
       }
 
