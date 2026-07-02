@@ -247,7 +247,7 @@ const HELP_GROUPS = [
     list: [
       { title: '#限时鱼讯', desc: '查看当天高活跃鱼讯与命中奖励。' },
       { title: '#彩蛋收藏', desc: '查看已收集彩蛋、当前生效项和待切换项。' },
-      { title: '#切换彩蛋 愿望锦鲤', desc: '安排彩蛋效果切换；每天只能安排一次，次日生效。' },
+      { title: '#切换彩蛋 愿望锦鲤 / #装备彩蛋 端午', desc: '安排彩蛋效果切换；每天只能安排一次，次日生效。' },
       { title: '#钓鱼祈愿 / #钓鱼祈愿10 / #钓鱼十连 / #钓鱼祈愿清单', desc: '100鱼蛋祈愿1次，可获得限定鱼竿、限定鱼饵和免费祈愿。' },
       { title: '#钓鱼祈愿大奖 金满竿 / #钓鱼祈愿大奖 鱼饵配送员', desc: '切换当前想抽的祈愿大奖，已有保底进度会继续累计。' },
       { title: '#金谦指定 虹鳟 / #金谦目标 rare', desc: '拥有金满而谦虚之竿后，每天可指定1次目标鱼或整个稀有度；清除目标需发送 #金谦指定 确认清除。' },
@@ -1424,7 +1424,7 @@ export class fishing extends plugin {
         { reg: '^#钓鱼次数$', fnc: 'checkFishingLimit' },
         { reg: '^#查看鱼缸(?:\\s*.*)?$', fnc: 'checkFishTank' },
         { reg: '^#彩蛋收藏$', fnc: 'checkEasterEggCollection' },
-        { reg: '^#切换彩蛋\\s+.+$', fnc: 'scheduleActiveEasterEgg' },
+        { reg: '^#(?:切换|装备|启用|使用)彩蛋\\s*.+$', fnc: 'scheduleActiveEasterEgg' },
         { reg: '^#钓鱼祈愿(?:大奖|目标|切换|选择)\\s*.*$', fnc: 'setFishingLotteryGrandPrize' },
         { reg: '^#钓鱼(?:祈愿(?:\\s*\\d{0,2}|\\s*(?:十|\\d{1,2})连|清单|列表|概率|说明)?|(?:十|\\d{1,2})连)$', fnc: 'handleFishingLottery' },
         { reg: '^#(?:金谦指定|金谦目标)\\s*.*$', fnc: 'setGoldHumbleRodTarget' },
@@ -3942,7 +3942,7 @@ async checkEasterEggCollection(e) {
         { badge: '已收', title: `已收集 ${status.owned.length} 条`, desc: ownedText, tone: 'positive' },
         { badge: '生效', title: status.activeName || '当前无生效彩蛋', desc: status.activeDescription || '暂无效果', tone: status.activeName ? 'active' : 'neutral' },
         { badge: '待切', title: status.pendingName || '暂无待切换彩蛋', desc: pendingText, tone: status.pendingName ? 'warning' : 'neutral' },
-        { badge: '切换', title: '#切换彩蛋 彩蛋名', desc: '每天只能安排一次，次日生效。', tone: 'note' }
+        { badge: '切换', title: '#切换彩蛋 彩蛋名 / #装备彩蛋 端午', desc: '每天只能安排一次，次日生效。', tone: 'note' }
       ]
     }, {
       group: '彩蛋条目',
@@ -3969,7 +3969,7 @@ async checkEasterEggCollection(e) {
       `当前生效：${status.activeDescription}`,
       `待切换：${pendingText}`,
       `收藏列表：${ownedText}`,
-      '切换方式：#切换彩蛋 彩蛋名'
+      '切换方式：#切换彩蛋 彩蛋名 / #装备彩蛋 端午'
     ].join('\n');
 
     await replyWithPanel(this, {
@@ -3987,24 +3987,25 @@ async checkEasterEggCollection(e) {
     const userData = this.getOrCreateUser(data, userId);
     normalizeUserData(userData);
 
-    const targetName = String(e.msg || '').replace(/^#切换彩蛋\s+/, '').trim();
+    const targetName = String(e.msg || '').replace(/^#(?:切换|装备|启用|使用)彩蛋\s*/, '').trim();
     if (!targetName) {
-      await this.reply(`${userDisplay}\n请填写要切换的彩蛋鱼名称，例如：#切换彩蛋 愿望锦鲤`);
+      await this.reply(`${userDisplay}\n请填写要切换的彩蛋鱼名称，例如：#切换彩蛋 愿望锦鲤 / #装备彩蛋 端午`);
       return;
     }
 
     const result = scheduleEasterEggSwitch(userData, targetName, getFishingDayKey(this.config));
+    const resolvedName = result.pendingName || result.name || targetName;
     if (!result.ok) {
       if (result.reason === 'not_owned') {
         await this.reply(`${userDisplay}\n你还没有收集到 ${targetName}。可先用 #彩蛋收藏 查看已收集列表。`);
         return;
       }
       if (result.reason === 'already_active') {
-        await this.reply(`${userDisplay}\n${targetName} 当前已经在生效。`);
+        await this.reply(`${userDisplay}\n${resolvedName} 当前已经在生效。`);
         return;
       }
       if (result.reason === 'already_pending') {
-        await this.reply(`${userDisplay}\n${targetName} 已经安排为明日生效。`);
+        await this.reply(`${userDisplay}\n${resolvedName} 已经安排为明日生效。`);
         return;
       }
       if (result.reason === 'already_scheduled_today') {
@@ -4018,7 +4019,7 @@ async checkEasterEggCollection(e) {
     saveFishData(data);
     const currentText = describeEasterEggEffects(userData);
     const nextText = getEasterEggStatusSummary(userData).pendingDescription;
-    await this.reply(`${userDisplay}\n已安排明天切换为 ${targetName}。\n当前生效：${currentText}\n明日生效后将改为：${nextText}`);
+    await this.reply(`${userDisplay}\n已安排明天切换为 ${resolvedName}。\n当前生效：${currentText}\n明日生效后将改为：${nextText}`);
   }
 
   parseGoldHumbleTargetCommand(msg = '') {
