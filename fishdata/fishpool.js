@@ -66,7 +66,13 @@ export const commonFish = [
   { name: '斑马石鲷', size: { min: 15, max: 35 }, weight: { min: 0.1, max: 1 } },
   { name: '日本鳀', size: { min: 8, max: 15 }, weight: { min: 0.01, max: 0.03 } },
   { name: '鳀鱼', size: { min: 8, max: 20 }, weight: { min: 0.01, max: 0.05 } },
-  { name: '晒网银鱼', size: { min: 6, max: 16 }, weight: { min: 0.01, max: 0.08 }, seasonal: { eventId: 'summer_tide_2026', startDate: '2026-07-04', endDateExclusive: '2026-09-01' } }
+  { name: '晒网银鱼', size: { min: 6, max: 16 }, weight: { min: 0.01, max: 0.08 }, seasonal: { eventId: 'summer_tide_2026', startDate: '2026-07-04', endDateExclusive: '2026-09-01' } },
+  { name: '绿茵鳞鱼', size: { min: 8, max: 22 }, weight: { min: 0.02, max: 0.16 }, seasonal: { eventId: 'world_cup_2026', startDate: '2026-07-03', endDateExclusive: '2026-08-01' } },
+  { name: '鹊桥银鱼', size: { min: 5, max: 18 }, weight: { min: 0.01, max: 0.1 }, seasonal: { eventId: 'qixi_2026', startDate: '2026-08-01', endDateExclusive: '2026-09-01' } },
+  { name: '月影桂鲫', size: { min: 12, max: 34 }, weight: { min: 0.06, max: 1.1 }, seasonal: { eventId: 'mid_autumn_2026', startDate: '2026-09-01', endDateExclusive: '2026-10-01' } },
+  { name: '彩旗鲤', size: { min: 25, max: 82 }, weight: { min: 0.5, max: 11 }, seasonal: { eventId: 'golden_october_2026', startDate: '2026-10-01', endDateExclusive: '2026-11-01' } },
+  { name: '清空袋鱼', size: { min: 9, max: 24 }, weight: { min: 0.03, max: 0.2 }, seasonal: { eventId: 'double_eleven_2026', startDate: '2026-11-01', endDateExclusive: '2026-12-01' } },
+  { name: '雪灯鱼', size: { min: 7, max: 20 }, weight: { min: 0.02, max: 0.14 }, seasonal: { eventId: 'winter_festival_2026', startDate: '2026-12-01', endDateExclusive: '2027-01-01' } }
 ];
 
 export const uncommonFish = [
@@ -100,6 +106,12 @@ export const uncommonFish = [
   { name: '欧洲鳗鲡', size: { min: 40, max: 120 }, weight: { min: 0.5, max: 6 } },
   { name: '鲣鱼', size: { min: 40, max: 110 }, weight: { min: 2, max: 25 } },
   { name: '海风青鳞', size: { min: 22, max: 58 }, weight: { min: 0.2, max: 3.5 }, seasonal: { eventId: 'summer_tide_2026', startDate: '2026-07-04', endDateExclusive: '2026-09-01' } },
+  { name: '冠军潮鲈', size: { min: 28, max: 72 }, weight: { min: 0.4, max: 5.5 }, seasonal: { eventId: 'world_cup_2026', startDate: '2026-07-03', endDateExclusive: '2026-08-01' } },
+  { name: '星河织鳞', size: { min: 24, max: 62 }, weight: { min: 0.3, max: 4.2 }, seasonal: { eventId: 'qixi_2026', startDate: '2026-08-01', endDateExclusive: '2026-09-01' } },
+  { name: '桂影鳜鱼', size: { min: 30, max: 78 }, weight: { min: 0.7, max: 8.5 }, seasonal: { eventId: 'mid_autumn_2026', startDate: '2026-09-01', endDateExclusive: '2026-10-01' } },
+  { name: '亚运潮鲈', size: { min: 42, max: 115 }, weight: { min: 1.5, max: 18 }, seasonal: { eventId: 'golden_october_2026', startDate: '2026-10-01', endDateExclusive: '2026-11-01' } },
+  { name: '秒杀鳗', size: { min: 45, max: 128 }, weight: { min: 0.7, max: 8 }, seasonal: { eventId: 'double_eleven_2026', startDate: '2026-11-01', endDateExclusive: '2026-12-01' } },
+  { name: '冬至团圆鲤', size: { min: 35, max: 100 }, weight: { min: 1, max: 14 }, seasonal: { eventId: 'winter_festival_2026', startDate: '2026-12-01', endDateExclusive: '2027-01-01' } },
   { name: '马鲛鱼', size: { min: 50, max: 150 }, weight: { min: 2, max: 45 } },
   { name: '乌鳢', size: { min: 30, max: 100 }, weight: { min: 0.5, max: 10 } },
   { name: '月鳢', size: { min: 20, max: 60 }, weight: { min: 0.3, max: 4 } },
@@ -143,7 +155,11 @@ export const rareFish = [
   { name: '南方蓝鳍金枪鱼', size: { min: 120, max: 250 }, weight: { min: 50, max: 260 } },
   { name: '欧鲇', size: { min: 100, max: 300 }, weight: { min: 20, max: 200 } },
   { name: '鳄雀鳝', size: { min: 100, max: 300 }, weight: { min: 20, max: 150 } },
-  { name: '白斑狗鱼', size: { min: 70, max: 180 }, weight: { min: 5, max: 30 } }
+  { name: '白斑狗鱼', size: { min: 70, max: 180 }, weight: { min: 5, max: 30 } },
+  { name: '金杯旗鱼', size: { min: 100, max: 260 }, weight: { min: 12, max: 150 }, seasonal: { eventId: 'world_cup_2026', startDate: '2026-07-03', endDateExclusive: '2026-08-01' } },
+  { name: '星河鳞鲤', size: { min: 45, max: 120 }, weight: { min: 2, max: 18 }, seasonal: { eventId: 'qixi_2026', startDate: '2026-08-01', endDateExclusive: '2026-09-01' } },
+  { name: '桂香月鳊', size: { min: 42, max: 105 }, weight: { min: 1.5, max: 16 }, seasonal: { eventId: 'mid_autumn_2026', startDate: '2026-09-01', endDateExclusive: '2026-10-01' } },
+  { name: '尾款巨鲳', size: { min: 70, max: 180 }, weight: { min: 4, max: 36 }, seasonal: { eventId: 'double_eleven_2026', startDate: '2026-11-01', endDateExclusive: '2026-12-01' } }
 ];
 
 export const epicFish = [
@@ -166,7 +182,9 @@ export const epicFish = [
   { name: '巨型黄貂鱼', size: { min: 160, max: 400 }, weight: { min: 80, max: 350 } },
   { name: '大西洋鲟', size: { min: 150, max: 430 }, weight: { min: 80, max: 370 } },
   { name: '短尾真鲨', size: { min: 180, max: 400 }, weight: { min: 80, max: 500 } },
-  { name: '澳洲肺鱼', size: { min: 80, max: 180 }, weight: { min: 10, max: 45 } }
+  { name: '澳洲肺鱼', size: { min: 80, max: 180 }, weight: { min: 10, max: 45 } },
+  { name: '织女月鲟', size: { min: 120, max: 280 }, weight: { min: 18, max: 150 }, seasonal: { eventId: 'qixi_2026', startDate: '2026-08-01', endDateExclusive: '2026-09-01' } },
+  { name: '金牌跃鲤', size: { min: 150, max: 330 }, weight: { min: 35, max: 260 }, seasonal: { eventId: 'golden_october_2026', startDate: '2026-10-01', endDateExclusive: '2026-11-01' } }
 ];
 
 export const legendaryFish = [
@@ -196,7 +214,8 @@ export const legendaryFish = [
   { name: '鲸鲨', size: { min: 600, max: 1200 }, weight: { min: 3000, max: 19000 } },
 
   // 程序员梗传说鱼：编码污染与调试填充值合体，保持 legendary 稀有感。
-  { name: '锟斤拷烫烫鱼', size: { min: 256, max: 1024 }, weight: { min: 404, max: 4096 } }
+  { name: '锟斤拷烫烫鱼', size: { min: 256, max: 1024 }, weight: { min: 404, max: 4096 } },
+  { name: '圣诞极光鱼', size: { min: 260, max: 720 }, weight: { min: 90, max: 720 }, seasonal: { eventId: 'winter_festival_2026', startDate: '2026-12-01', endDateExclusive: '2027-01-01' } }
 ];
 
 // 彩蛋鱼类 - 稀有度文本为 “？”，高于 legendary。

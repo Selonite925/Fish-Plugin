@@ -3819,8 +3819,13 @@ export class fishing extends plugin {
       if (season.id === activeSeason?.id) continue;
       const progress = getSeasonProgress(userData, this.fishTypes, season.id, todayKey);
       if (!progress) continue;
+      const status = season.archived
+        ? '历史赛季'
+        : todayKey < season.startDate
+          ? '尚未开始'
+          : '已结束';
       lines.push('');
-      lines.push(`${season.name}：${progress.ownedCount}/${progress.totalCount}（已结束或未开始）`);
+      lines.push(`${season.name}：${progress.ownedCount}/${progress.totalCount}（${status}）`);
     }
     await this.reply(lines.join('\n'));
   }
