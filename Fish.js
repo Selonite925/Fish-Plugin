@@ -173,6 +173,22 @@ import {
   parseMarketPurchaseKeyword,
   parseRodIndex
 } from './lib/command-parsers.js';
+import { FISH_COMMAND_RULES } from './lib/command-rules.js';
+import {
+  ensureSeasonalCollections,
+  SEASON_CATALOG,
+  getActiveSeason,
+  getSeasonProgress,
+  recordSeasonalFishCatch
+} from './lib/seasonal-fish.js';
+import {
+  applyHarborDonation,
+  ensureHarborState,
+  getHarborEffect,
+  getHarborFishPoints,
+  getHarborProgressText,
+  getHarborLevel
+} from './lib/harbor.js';
 
 // 模块导航：
 // - lib/constants.js：鱼竿、鱼饵、商店、活动和基础数值配置
@@ -182,6 +198,9 @@ import {
 // - lib/fishing-day.js：每日刷新时间、钓鱼日和分段返还
 // - lib/lottery.js：钓鱼祈愿、奖池和大奖偏好
 // - lib/command-parsers.js：换竿/换饵、购买、炼竿和自动续饵等指令解析
+// - lib/command-rules.js：Fish-plugin 命令规则清单
+// - lib/seasonal-fish.js：赛季目录、限定鱼收集和赛季进度
+// - lib/harbor.js：群共享渔港、捐赠和公共加成
 // - lib/user.js：玩家数据归一化、每日次数、彩蛋与持有物状态
 // - lib/panel.js：图片面板渲染入口
 
@@ -215,6 +234,8 @@ const HELP_GROUPS = [
       { title: '#钓鱼极速版', desc: '一口气钓完当前能用次数，优先发图汇总结果。' },
       { title: '#今日鱼获 / #查看鱼获 @某人', desc: '查看自己或别人的当日鱼获记录。' },
       { title: '#钓鱼图鉴 / #钓鱼排行 / #每周钓鱼榜 / #每月钓鱼榜', desc: '看收藏、总排行、本周排行和本月排行。' },
+      { title: '#赛季鱼', desc: '查看当前赛季的限定鱼、收集进度和已完成赛季。' },
+      { title: '#渔港', desc: '查看本群共享渔港；使用 #渔港建设 100 或 #渔港捐鱼 1 贡献建设值。' },
       { title: '#鱼王榜 / #空军榜', desc: '看鱼缸综合质量和今日空军情况。' }
     ]
   },
@@ -1403,57 +1424,7 @@ export class fishing extends plugin {
       dsc: '独立钓鱼小游戏插件',
       event: 'message',
       priority: 5000,
-      rule: [
-        { reg: '^#钓鱼$', fnc: 'startFishing' },
-        { reg: '^#钓鱼极速版$', fnc: 'startFastFishing' },
-        { reg: '^#钓鱼帮助$', fnc: 'showHelp' },
-        { reg: '^#钓鱼管理$', fnc: 'showManagementHelp' },
-        { reg: '^#今日鱼获$', fnc: 'checkTodayFishRecord' },
-        { reg: '^#查看鱼获.*', fnc: 'checkOthersFishRecord' },
-        { reg: '^#空军榜$', fnc: 'checkEmptyHandsList' },
-        { reg: '^#钓鱼图鉴$', fnc: 'checkFishCollection' },
-        { reg: '^#钓鱼排行$', fnc: 'checkFishingRank' },
-        { reg: '^#(?:每周钓鱼(?:排行|榜)|本周钓鱼(?:排行|榜)|钓鱼周榜)$', fnc: 'checkWeeklyFishingRank' },
-        { reg: '^#(?:每月钓鱼(?:排行|榜)|本月钓鱼(?:排行|榜)|钓鱼月榜)$', fnc: 'checkMonthlyFishingRank' },
-        { reg: '^#鱼王榜$', fnc: 'checkFishKingRank' },
-        { reg: '^#设置钓鱼次数(\\d+)$', fnc: 'setFishingLimit' },
-        { reg: '^#(?:设置)?钓鱼(?:每日)?刷新(?:时间|小时)?\\s*.*$', fnc: 'setDailyResetHour' },
-        { reg: '^#(?:钓鱼)?分段(?:式)?(?:返还|次数|钓鱼)?\\s*.*$', fnc: 'toggleSegmentedCastReturn' },
-        { reg: '^#(?:钓鱼券|额外钓鱼券)(?:使用)?(?:限制|上限)\\s*.*$', fnc: 'toggleDailyTicketUseLimit' },
-        { reg: '^#重置钓鱼次数\\s*(全体|全部|@?.*)?$', fnc: 'resetFishingCount' },
-        { reg: '^#钓鱼次数$', fnc: 'checkFishingLimit' },
-        { reg: '^#查看鱼缸(?:\\s*.*)?$', fnc: 'checkFishTank' },
-        { reg: '^#彩蛋收藏$', fnc: 'checkEasterEggCollection' },
-        { reg: '^#(?:切换|装备|启用|使用)彩蛋\\s*.+$', fnc: 'scheduleActiveEasterEgg' },
-        { reg: '^#钓鱼祈愿(?:大奖|目标|切换|选择)\\s*.*$', fnc: 'setFishingLotteryGrandPrize' },
-        { reg: '^#钓鱼(?:祈愿(?:\\s*\\d{0,2}|\\s*(?:十|\\d{1,2})连|清单|列表|概率|说明)?|(?:十|\\d{1,2})连)$', fnc: 'handleFishingLottery' },
-        { reg: '^#(?:金谦指定|金谦目标)\\s*.*$', fnc: 'setGoldHumbleRodTarget' },
-        { reg: '^#升级鱼缸\\s+(legendary|epic)\\s+.+', fnc: 'upgradeFishTank' },
-        { reg: '^#放生鱼\\s+\\d+(?:\\s+.*)?$', fnc: 'releaseFish' },
-        { reg: '^#(?:赠鱼|赠渔|送鱼)\\s*.+$', fnc: 'giftFish' },
-        { reg: '^#锁定鱼\\s*.+$', fnc: 'lockFishCommand' },
-        { reg: '^#解锁鱼\\s*.+$', fnc: 'unlockFishCommand' },
-        { reg: '^#炼竿预览.*$', fnc: 'previewLegendaryRod' },
-        { reg: '^#炼竿.*$', fnc: 'craftLegendaryRod' },
-        { reg: '^#打窝', fnc: 'addBait' },
-        { reg: '^#同步鱼缸$', fnc: 'syncAllFishTanks' },
-        { reg: '^#修复鱼数据$', fnc: 'repairFishData' },
-        { reg: '^#(鱼市|售鱼)(.*)$', fnc: 'handleMarketCommand' },
-        { reg: '^#鱼竿(?:详情|属性)\\s*.+$', fnc: 'showRodDetailsCommand' },
-        { reg: '^#鱼饵(?:详情|属性)\\s*.+$', fnc: 'showBaitDetailsCommand' },
-        { reg: '^#\\s*(?:自动\\s*续\\s*(?:鱼)?饵?|续\\s*(?:鱼)?饵|(?:鱼饵|换饵)\\s*自动\\s*续(?:饵)?|自动\\s*(?:换|补)\\s*(?:鱼)?饵)\\s*.*$', fnc: 'toggleAutoRenewBait' },
-        { reg: '^#(鱼竿|换竿|换杆)(.*)$', fnc: 'handleRodCommand' },
-        { reg: '^#(鱼饵|换饵)(.*)$', fnc: 'handleBaitCommand' },
-        { reg: '^#限时鱼讯$', fnc: 'showDailySignal' },
-        { reg: '^#钓鱼成就$', fnc: 'showAchievements' },
-        { reg: '^#鱼蛋补偿\\s*.*$', fnc: 'compensateFishCoins' },
-        { reg: '^#补鱼.*$', fnc: 'compensateFish' },
-        { reg: '^#强制刷新钓鱼日$', fnc: 'forceRefreshFishingDay' },
-        { reg: '^#钓鱼更新$', fnc: 'updateFishPlugin' },
-        { reg: '^#钓鱼更新代理(?:\\s*.*)?$', fnc: 'setFishUpdateProxy' },
-        { reg: '^#封竿$', fnc: 'sealFishingGroup' },
-        { reg: '^#解封竿$', fnc: 'unsealFishingGroup' }
-      ]
+      rule: FISH_COMMAND_RULES
     });
 
     this.fishTypes = fishTypes;
@@ -1496,6 +1467,7 @@ export class fishing extends plugin {
       world.lastDailyResetDate = getFishingDayKey(this.config);
     }
     ensureDailySignal(world, this.fishTypes, getFishingDayKey(this.config));
+    ensureHarborState(world, null);
     saveWorldState(world);
     return world;
   }
@@ -1506,6 +1478,7 @@ export class fishing extends plugin {
     let changed = normalizeAllUsers(data);
     const fishingDay = getFishingDayKey(this.config);
     for (const userData of Object.values(data)) {
+      if (ensureSeasonalCollections(userData)) changed = true;
       if (ensureTodayCastHistorySeed(userData, fishingDay, {
         dateKeyResolver: date => getFishingDayKey(this.config, date)
       })) changed = true;
@@ -2223,6 +2196,18 @@ export class fishing extends plugin {
     return ensureDailySignal(world, this.fishTypes, getFishingDayKey(this.config));
   }
 
+  getHarborEffect(groupId) {
+    if (!groupId) return getHarborEffect({}, '');
+    const world = this.ensureWorldState();
+    const effect = getHarborEffect(world, groupId);
+    saveWorldState(world);
+    return effect;
+  }
+
+  getFishingHarborEffect(groupId) {
+    return groupId ? this.getHarborEffect(groupId) : { catchRateBonus: 0, signalBonusCoins: 0, rarityBias: {} };
+  }
+
   applyRarityBias(baseWeights, bias = {}) {
     const adjusted = {};
     for (const [rarity, weight] of Object.entries(baseWeights)) {
@@ -2783,6 +2768,7 @@ export class fishing extends plugin {
     userData.today.fish.push(fishWithTimestamp);
     userData.today.catches = Number(userData.today.catches || 0) + 1;
     addFishHistory(userData, fishWithTimestamp);
+    const seasonalResult = recordSeasonalFishCatch(userData, fishWithTimestamp);
     let tankResult = addFishToTank(userData, fishWithTimestamp, { autoSellReplacedFish: true });
     let tankUpdateMsg = tankResult.message;
 
@@ -2798,7 +2784,7 @@ export class fishing extends plugin {
     }
     userData.hasEasterEgg = getOwnedEasterEggCollection(userData).length > 0;
 
-    return { fishWithTimestamp, tankUpdateMsg, tankResult };
+    return { fishWithTimestamp, tankUpdateMsg, tankResult, seasonalResult };
   }
 
   applySpecialRodCatchEffect(userData, fish, options = {}) {
@@ -2917,11 +2903,10 @@ export class fishing extends plugin {
     for (const name of getOwnedEasterEggCollection(userData)) {
       collectedNames.add(name);
     }
-    const collectionDateKey = getFishingDayKey(this.config);
     const collectionFishTypes = {};
     for (const rarity of visibleRarities) {
       collectionFishTypes[rarity] = (this.fishTypes[rarity] || [])
-        .filter(fish => isSeasonalFishActive(fish, collectionDateKey) || collectedNames.has(fish.name));
+        .filter(fish => !fish.seasonal);
     }
     const visibleSpeciesNames = new Set(Object.values(collectionFishTypes).flat().map(fish => fish.name));
     const totalSpecies = visibleRarities.reduce((sum, rarity) => sum + (collectionFishTypes[rarity] || []).length, 0);
@@ -3223,12 +3208,13 @@ export class fishing extends plugin {
           hiddenPityBonus = HIDDEN_PITY_CATCH_BONUS;
         }
 
-        const mergedBias = mergeRarityBias(rod.rarityBias, shopBait.rarityBias, easterEggEffect.rarityBias);
+        const harborEffect = this.getFishingHarborEffect(e.group_id);
+        const mergedBias = mergeRarityBias(rod.rarityBias, shopBait.rarityBias, easterEggEffect.rarityBias, harborEffect.rarityBias);
         const bodyModifiers = mergeFishBodyModifiers(rod, shopBait.bodyModifiers);
         const rodTarget = resolveRodTarget(userData, rod);
         const targetCatchRateBonus = getGoldHumbleCatchRateBonus(rod, rodTarget);
         const rodCatchRateBonus = Number(rod.catchRateBonus || 0) + targetCatchRateBonus;
-        const catchRate = Math.max(0.05, getCatchRate(userData, manualBait.bonus + shopBait.bonus + hiddenPityBonus, rodCatchRateBonus) - FAST_FISHING_CATCH_RATE_PENALTY);
+        const catchRate = Math.max(0.05, getCatchRate(userData, manualBait.bonus + shopBait.bonus + hiddenPityBonus + harborEffect.catchRateBonus, rodCatchRateBonus) - FAST_FISHING_CATCH_RATE_PENALTY);
         const failRescueChance = Math.max(0, Math.min(0.45, Number(rod.failProtection || 0) + easterEggEffect.failProtection));
         const missedCatch = Math.random() >= catchRate;
         const duanwuEvent = missedCatch && shouldTriggerDuanwuQuyuanEvent(shopBait)
@@ -3282,13 +3268,16 @@ export class fishing extends plugin {
         summary.catches += 1;
         const fish = this.catchFish(userData, mergedBias, bodyModifiers);
         const specialRodEffect = this.applySpecialRodCatchEffect(userData, fish, { compact: true });
-        const { fishWithTimestamp, tankResult } = this.addCaughtFishToUser(userData, fish);
+        const { fishWithTimestamp, tankResult, seasonalResult } = this.addCaughtFishToUser(userData, fish);
         this.recordFastFish(summary, fishWithTimestamp);
         resetEmptyCastStreak(userData);
         userData.stats.lastCatchRarity = fishWithTimestamp.rarity;
         if (tankResult?.added) summary.tankAdded += 1;
         if (tankResult?.replaced) summary.tankReplaced += 1;
         if (tankResult?.soldCoins > 0) summary.autoSellCoins += tankResult.soldCoins;
+        if (seasonalResult?.newlyCollected) {
+          summary.specialEffects.push(`[赛季鱼] 首次收集 ${fishWithTimestamp.name}`);
+        }
 
         if (specialRodEffect.message) {
           summary.specialEffects.push(specialRodEffect.message);
@@ -3297,7 +3286,7 @@ export class fishing extends plugin {
         const signalHit = signal.targets.some(item => item.name === fishWithTimestamp.name);
         if (signalHit) {
           const equippedRod = getEquippedRod(userData);
-          const signalCoins = signal.bonusCoins + getSignalRodBonusCoins(equippedRod, fishWithTimestamp);
+          const signalCoins = signal.bonusCoins + getSignalRodBonusCoins(equippedRod, fishWithTimestamp) + harborEffect.signalBonusCoins;
           if (!suppressExtraCoinBonuses) userData.coins += signalCoins;
           userData.stats.signalFishCaught += 1;
           summary.signalHits += 1;
@@ -3377,13 +3366,14 @@ export class fishing extends plugin {
         hiddenPityBonus = HIDDEN_PITY_CATCH_BONUS;
       }
 
-      const mergedBias = mergeRarityBias(rod.rarityBias, shopBait.rarityBias, easterEggEffect.rarityBias);
+      const harborEffect = this.getFishingHarborEffect(e.group_id);
+      const mergedBias = mergeRarityBias(rod.rarityBias, shopBait.rarityBias, easterEggEffect.rarityBias, harborEffect.rarityBias);
       const bodyModifiers = mergeFishBodyModifiers(rod, shopBait.bodyModifiers);
 
       const settleRod = getEquippedRod(settleUser);
       const settleRodTarget = resolveRodTarget(settleUser, settleRod);
       const settleRodCatchRateBonus = Number(settleRod.catchRateBonus || 0) + getGoldHumbleCatchRateBonus(settleRod, settleRodTarget);
-      const catchRate = getCatchRate(settleUser, manualBait.bonus + shopBait.bonus + hiddenPityBonus, settleRodCatchRateBonus);
+      const catchRate = getCatchRate(settleUser, manualBait.bonus + shopBait.bonus + hiddenPityBonus + harborEffect.catchRateBonus, settleRodCatchRateBonus);
       const easterEggMsg = easterEggEffect.descriptions.length ? `\n[彩蛋加成] ${easterEggEffect.descriptions.join('；')}` : '';
       const failRescueChance = Math.max(0, Math.min(0.45, Number(rod.failProtection || 0) + easterEggEffect.failProtection));
       const missedCatch = Math.random() >= catchRate;
@@ -3430,7 +3420,7 @@ export class fishing extends plugin {
       const fish = this.catchFish(settleUser, mergedBias, bodyModifiers);
       const specialRodEffect = this.applySpecialRodCatchEffect(settleUser, fish);
       const suppressExtraCoinBonuses = specialRodEffect.suppressExtraCoinBonuses;
-      const { fishWithTimestamp, tankUpdateMsg } = this.addCaughtFishToUser(settleUser, fish);
+      const { fishWithTimestamp, tankUpdateMsg, seasonalResult } = this.addCaughtFishToUser(settleUser, fish);
       resetEmptyCastStreak(settleUser);
       settleUser.stats.lastCatchRarity = fishWithTimestamp.rarity;
 
@@ -3438,10 +3428,13 @@ export class fishing extends plugin {
         ? '但你猛的一提，看似空钩的一口被稳住了，鱼钩重新咬牢，成功上鱼。\n'
         : '';
       let signalMsg = '';
+      if (seasonalResult?.newlyCollected) {
+        signalMsg += `\n[赛季鱼] 首次收集 ${fishWithTimestamp.name}，已计入赛季图鉴。`;
+      }
       const signalHit = signal.targets.some(item => item.name === fishWithTimestamp.name);
       if (signalHit) {
         const equippedRod = getEquippedRod(settleUser);
-        const signalCoins = signal.bonusCoins + getSignalRodBonusCoins(equippedRod, fishWithTimestamp);
+        const signalCoins = signal.bonusCoins + getSignalRodBonusCoins(equippedRod, fishWithTimestamp) + harborEffect.signalBonusCoins;
         if (!suppressExtraCoinBonuses) settleUser.coins += signalCoins;
         settleUser.stats.signalFishCaught += 1;
         signalMsg += suppressExtraCoinBonuses
@@ -3799,6 +3792,119 @@ export class fishing extends plugin {
     normalizeUserData(userData);
     const result = this.buildCollectionPanel(userData);
     await replyWithPanel(this, result.panel, result.fallback);
+  }
+
+  async showSeasonalFish(e) {
+    const data = this.loadData();
+    const userId = String(e.user_id);
+    const userData = this.getOrCreateUser(data, userId);
+    ensureSeasonalCollections(userData);
+    const todayKey = getFishingDayKey(this.config);
+    const activeSeason = getActiveSeason(todayKey);
+    const lines = ['赛季鱼'];
+    if (activeSeason) {
+      const progress = getSeasonProgress(userData, this.fishTypes, activeSeason.id, todayKey);
+      lines.push(`${activeSeason.name}（${activeSeason.startDate} 至 ${activeSeason.endDateExclusive}）`);
+      lines.push(activeSeason.description);
+      lines.push(`当前进度：${progress.ownedCount}/${progress.totalCount}（${progress.progress.toFixed(1)}%）`);
+      lines.push('');
+      for (const fish of progress.fishList) {
+        lines.push(`${progress.owned.has(fish.name) ? '[已收集]' : '[未收集]'} ${fish.name}（${fish.rarity}）`);
+      }
+    } else {
+      lines.push('当前没有进行中的赛季。');
+    }
+
+    for (const season of Object.values(SEASON_CATALOG)) {
+      if (season.id === activeSeason?.id) continue;
+      const progress = getSeasonProgress(userData, this.fishTypes, season.id, todayKey);
+      if (!progress) continue;
+      lines.push('');
+      lines.push(`${season.name}：${progress.ownedCount}/${progress.totalCount}（已结束或未开始）`);
+    }
+    await this.reply(lines.join('\n'));
+  }
+
+  async showHarbor(e) {
+    if (!e.group_id) {
+      await this.reply('渔港建设只能在群聊中进行。');
+      return;
+    }
+    const world = this.ensureWorldState();
+    const harbor = ensureHarborState(world, e.group_id);
+    const effect = getHarborLevel(harbor.constructionPoints);
+    const contributorList = Object.entries(harbor.contributors || {})
+      .sort(([, left], [, right]) => Number(right.coins || 0) + Number(right.fishPoints || 0) - Number(left.coins || 0) - Number(left.fishPoints || 0))
+      .slice(0, 5);
+    saveWorldState(world);
+    const lines = [
+      `本群渔港：${effect.name} Lv.${effect.level}`,
+      getHarborProgressText(harbor),
+      `累计建设值：${harbor.constructionPoints}`,
+      `公共效果：上鱼率+${(Number(effect.catchRateBonus || 0) * 100).toFixed(1)}%${effect.signalBonusCoins ? `，命中鱼讯额外+${effect.signalBonusCoins}鱼蛋` : ''}`,
+      '',
+      '贡献方式：#渔港建设 100 / #渔港捐鱼 1',
+      contributorList.length ? '贡献榜：' : '暂时还没有贡献记录。'
+    ];
+    for (const [userId, contributor] of contributorList) {
+      lines.push(`${getDisplayNameForUser(e, userId)}：${Number(contributor.coins || 0) + Number(contributor.fishPoints || 0)}建设值`);
+    }
+    await this.reply(lines.join('\n'));
+  }
+
+  async donateHarborCoins(e) {
+    if (!e.group_id) {
+      await this.reply('渔港建设只能在群聊中进行。');
+      return;
+    }
+    const amount = Math.floor(Number(String(e.msg).match(/(\d+)$/)?.[1] || 0));
+    const { userId, text: userDisplay } = getUserDisplay(e);
+    const data = this.loadData();
+    const userData = this.getOrCreateUser(data, userId);
+    if (amount <= 0 || userData.coins < amount) {
+      await this.reply(`${userDisplay}\n请输入不超过当前鱼蛋的正整数，例如：#渔港建设 100。当前鱼蛋：${userData.coins}`);
+      return;
+    }
+    const world = this.ensureWorldState();
+    userData.coins -= amount;
+    const result = applyHarborDonation(world, e.group_id, userId, { coins: amount });
+    saveFishData(data);
+    saveWorldState(world);
+    const levelText = result.levelAfter > result.levelBefore ? `\n渔港升级：Lv.${result.levelBefore} -> Lv.${result.levelAfter}` : '';
+    await this.reply(`${userDisplay}\n已捐赠 ${amount} 鱼蛋，获得 ${result.points} 建设值。${levelText}\n${getHarborProgressText(result.harbor)}\n当前鱼蛋：${userData.coins}`);
+  }
+
+  async donateHarborFish(e) {
+    if (!e.group_id) {
+      await this.reply('渔港建设只能在群聊中进行。');
+      return;
+    }
+    const { userId, text: userDisplay } = getUserDisplay(e);
+    const data = this.loadData();
+    const userData = this.getOrCreateUser(data, userId);
+    const selectorText = String(e.msg).replace(/^#渔港(?:捐鱼|贡献鱼)\s*/u, '').trim();
+    const resolved = this.resolveTankFishSelection(userData, this.parseTankFishSelector(selectorText));
+    if (resolved.error) {
+      await this.reply(`${userDisplay}\n${resolved.error}`);
+      return;
+    }
+    const fish = resolved.fish;
+    const points = getHarborFishPoints(fish);
+    if (points <= 0) {
+      await this.reply(`${userDisplay}\n只有 common 到 legendary 鱼可以捐给渔港，彩蛋鱼不能捐赠。`);
+      return;
+    }
+    if (isFishLocked(userData, fish)) {
+      await this.reply(`${userDisplay}\n${this.getLockedFishMessage(fish, '捐给渔港')}`);
+      return;
+    }
+    removeOwnedFish(userData, [fish], { today: true, tank: true });
+    const world = this.ensureWorldState();
+    const result = applyHarborDonation(world, e.group_id, userId, { fishPoints: points });
+    saveFishData(data);
+    saveWorldState(world);
+    const levelText = result.levelAfter > result.levelBefore ? `\n渔港升级：Lv.${result.levelBefore} -> Lv.${result.levelAfter}` : '';
+    await this.reply(`${userDisplay}\n已将 ${fish.name}（${fish.rarity}）捐给渔港，获得 ${points} 建设值。${levelText}\n${getHarborProgressText(result.harbor)}`);
   }
 
   async checkFishingRank(e) {

@@ -65,7 +65,8 @@ export const commonFish = [
   { name: '黄鳍鲷', size: { min: 15, max: 45 }, weight: { min: 0.15, max: 2 } },
   { name: '斑马石鲷', size: { min: 15, max: 35 }, weight: { min: 0.1, max: 1 } },
   { name: '日本鳀', size: { min: 8, max: 15 }, weight: { min: 0.01, max: 0.03 } },
-  { name: '鳀鱼', size: { min: 8, max: 20 }, weight: { min: 0.01, max: 0.05 } }
+  { name: '鳀鱼', size: { min: 8, max: 20 }, weight: { min: 0.01, max: 0.05 } },
+  { name: '晒网银鱼', size: { min: 6, max: 16 }, weight: { min: 0.01, max: 0.08 }, seasonal: { eventId: 'summer_tide_2026', startDate: '2026-07-04', endDateExclusive: '2026-09-01' } }
 ];
 
 export const uncommonFish = [
@@ -98,6 +99,7 @@ export const uncommonFish = [
   { name: '虹鳟', size: { min: 30, max: 80 }, weight: { min: 0.5, max: 8 } },
   { name: '欧洲鳗鲡', size: { min: 40, max: 120 }, weight: { min: 0.5, max: 6 } },
   { name: '鲣鱼', size: { min: 40, max: 110 }, weight: { min: 2, max: 25 } },
+  { name: '海风青鳞', size: { min: 22, max: 58 }, weight: { min: 0.2, max: 3.5 }, seasonal: { eventId: 'summer_tide_2026', startDate: '2026-07-04', endDateExclusive: '2026-09-01' } },
   { name: '马鲛鱼', size: { min: 50, max: 150 }, weight: { min: 2, max: 45 } },
   { name: '乌鳢', size: { min: 30, max: 100 }, weight: { min: 0.5, max: 10 } },
   { name: '月鳢', size: { min: 20, max: 60 }, weight: { min: 0.3, max: 4 } },
