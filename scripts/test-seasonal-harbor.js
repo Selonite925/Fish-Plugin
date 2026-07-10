@@ -42,6 +42,13 @@ ensureHarborState(worldState, 'group-1');
 const harborDonation = applyHarborDonation(worldState, 'group-1', 'user-1', { coins: 2000 });
 assert.equal(harborDonation.levelAfter, 1);
 assert.equal(getHarborEffect(worldState, 'group-1').level, 1);
+assert.equal(getHarborEffect(worldState, 'group-1').active, true);
 assert.equal(getHarborFishPoints({ rarity: 'epic' }), 350);
+
+worldState.harbors['group-1'].buffExpiresAt = Date.now() - 1;
+const expiredEffect = getHarborEffect(worldState, 'group-1');
+assert.equal(expiredEffect.active, false);
+assert.equal(expiredEffect.catchRateBonus, 0);
+assert.equal(expiredEffect.signalBonusCoins, 0);
 
 console.log('seasonal fish and harbor ok');

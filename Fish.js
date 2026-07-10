@@ -176,7 +176,6 @@ import {
 import { FISH_COMMAND_RULES } from './lib/command-rules.js';
 import {
   ensureSeasonalCollections,
-  SEASON_CATALOG,
   getActiveSeason,
   getSeasonProgress,
   recordSeasonalFishCatch
@@ -186,8 +185,8 @@ import {
   ensureHarborState,
   getHarborEffect,
   getHarborFishPoints,
-  getHarborProgressText,
-  getHarborLevel
+  formatHarborBuffRemaining,
+  getHarborProgressText
 } from './lib/harbor.js';
 
 // 模块导航：
@@ -234,8 +233,8 @@ const HELP_GROUPS = [
       { title: '#钓鱼极速版', desc: '一口气钓完当前能用次数，优先发图汇总结果。' },
       { title: '#今日鱼获 / #查看鱼获 @某人', desc: '查看自己或别人的当日鱼获记录。' },
       { title: '#钓鱼图鉴 / #钓鱼排行 / #每周钓鱼榜 / #每月钓鱼榜', desc: '看收藏、总排行、本周排行和本月排行。' },
-      { title: '#赛季鱼', desc: '查看当前赛季的限定鱼、收集进度和已完成赛季。' },
-      { title: '#渔港', desc: '查看本群共享渔港；使用 #渔港建设 100 或 #渔港捐鱼 1 贡献建设值。' },
+      { title: '#赛季鱼', desc: '发送当前赛季限定鱼图鉴面板；不提前展示后续赛季。' },
+      { title: '#渔港', desc: '发送本群渔港面板；建设值永久保留，公共 Buff 按倒计时生效。' },
       { title: '#鱼王榜 / #空军榜', desc: '看鱼缸综合质量和今日空军情况。' }
     ]
   },
@@ -2984,6 +2983,140 @@ export class fishing extends plugin {
     };
   }
 
+  buildSeasonalFishPanel(userData, dateKey = getFishingDayKey(this.config)) {
+    const season = getActiveSeason(dateKey);
+    if (!season) {
+      return {
+        panel: {
+          key: `seasonal-fish-empty-${getNowTimestamp()}`,
+          title: '赛季鱼',
+          subtitle: '当前没有进行中的赛季',
+          sections: [{
+            type: 'help-grid',
+            title: '赛季状态',
+            html: '<div class="help-grid"><div class="help-grid-row"><div class="help-grid-item help-grid-item-note"><div class="help-grid-item-title">潮汐休整中</div><div class="help-grid-item-desc">新的限定鱼会在活动开始后出现在钓鱼池。</div></div><div class="help-grid-item help-grid-item-empty" aria-hidden="true"></div></div></div>'
+          }],
+          footer: '当前只展示正在进行的赛季，不预告后续活动。'
+        },
+        fallback: '赛季鱼\n当前没有进行中的赛季。\n新的限定鱼会在活动开始后出现。'
+      };
+    }
+
+    const progress = getSeasonProgress(userData, this.fishTypes, season.id, dateKey);
+    const byRarity = new Map();
+    for (const fish of progress.fishList) {
+      if (!byRarity.has(fish.rarity)) byRarity.set(fish.rarity, []);
+      byRarity.get(fish.rarity).push(fish);
+    }
+    const summaryGroups = applyGroupThemes([{
+      group: '当前赛季',
+      list: [
+        { badge: '季', title: season.name, desc: season.description, meta: `${season.startDate} 至 ${season.endDateExclusive}`, tone: 'active', fullWidth: true },
+        { badge: '进度', title: `${progress.ownedCount}/${progress.totalCount} 种`, desc: '个人赛季图鉴完成度', meta: `${progress.progress.toFixed(1)}%`, tone: progress.ownedCount === progress.totalCount ? 'positive' : 'note' },
+        { badge: '提示', title: '限定鱼', desc: '只在当前赛季鱼池中出现', meta: '不计入永久图鉴', tone: 'sky' }
+      ]
+    }], ['sea']);
+    const sections = buildCardGridSections(summaryGroups, { badgePrefix: '季' });
+    const fallbackLines = [
+      '赛季鱼',
+      `${season.name}：${season.startDate} 至 ${season.endDateExclusive}`,
+      season.description,
+      `收集进度：${progress.ownedCount}/${progress.totalCount}（${progress.progress.toFixed(1)}%）`,
+      ''
+    ];
+
+    for (const rarity of RARITY_ORDER) {
+      const fishList = byRarity.get(rarity) || [];
+      if (!fishList.length) continue;
+      const theme = COLLECTION_RARITY_THEMES[rarity] || COLLECTION_RARITY_THEMES.common;
+      const chips = fishList.map(fish => {
+        const owned = progress.owned.has(fish.name);
+        const style = owned
+          ? `--chip-bg:${theme.chipBg};--chip-border:${theme.chipBorder};--chip-color:${theme.ownedTextColor || theme.textColor};--chip-shadow:${theme.accentSoft};`
+          : '';
+        return `<span class="collection-chip${owned ? ' owned' : ''}" style="${style}">${escapePanelHtml(owned ? fish.name : '未收集')}</span>`;
+      }).join('');
+      sections.push({
+        type: 'collection',
+        title: `${rarityLabel(rarity)} ${fishList.filter(fish => progress.owned.has(fish.name)).length}/${fishList.length}`,
+        titleStyle: `--collection-accent:${theme.accent};--collection-accent-soft:${theme.accentSoft};--collection-text:${theme.textColor};`,
+        html: `<div class="collection-group">${chips}</div>`
+      });
+      fallbackLines.push(`${rarityLabel(rarity)}：${fishList.map(fish => `${progress.owned.has(fish.name) ? '已收集' : '未收集'} ${fish.name}`).join('、')}`);
+    }
+
+    return {
+      panel: {
+        key: `seasonal-fish-${season.id}-${getNowTimestamp()}`,
+        title: '赛季鱼',
+        subtitle: `${season.name} | 已收集 ${progress.ownedCount}/${progress.totalCount} 种`,
+        sections,
+        footer: progress.ownedCount === progress.totalCount
+          ? '本赛季图鉴已集齐。'
+          : `还差 ${progress.totalCount - progress.ownedCount} 种；当前面板只展示正在进行的赛季。`
+      },
+      fallback: fallbackLines.join('\n')
+    };
+  }
+
+  buildHarborPanel(e, worldState, groupId, options = {}) {
+    const harbor = ensureHarborState(worldState, groupId);
+    const effect = getHarborEffect(worldState, groupId);
+    const contributorList = Object.entries(harbor.contributors || {})
+      .sort(([, left], [, right]) => Number(right.coins || 0) + Number(right.fishPoints || 0) - Number(left.coins || 0) - Number(left.fishPoints || 0))
+      .slice(0, 5);
+    const effectText = effect.active
+      ? `生效中：上鱼率 +${(Number(effect.catchRateBonus || 0) * 100).toFixed(1)}%${effect.signalBonusCoins ? `，鱼讯额外 +${effect.signalBonusCoins} 鱼蛋` : ''}`
+      : '当前 Buff 已过期，捐赠鱼蛋或鱼可重新激活。';
+    const notice = String(options.notice || '').trim();
+    const groups = applyGroupThemes([
+      {
+        group: '渔港状态',
+        list: [
+          ...(notice ? [{ badge: '新', title: '建设记录', desc: notice, tone: 'positive', fullWidth: true }] : []),
+          { badge: '港', title: `${effect.name} Lv.${effect.level}`, desc: getHarborProgressText(harbor), meta: `累计建设值 ${harbor.constructionPoints}`, tone: effect.active ? 'active' : 'note', fullWidth: true },
+          { badge: 'Buff', title: effect.active ? '限时生效' : '已过期', desc: effectText, meta: formatHarborBuffRemaining(harbor), tone: effect.active ? 'positive' : 'warning' },
+          { badge: '捐赠', title: '建设渔港', desc: '#渔港建设 100 或 #渔港捐鱼 1', meta: '每次捐赠延长 7 天，最多 30 天', tone: 'sky' }
+        ]
+      },
+      {
+        group: '贡献榜',
+        list: contributorList.length
+          ? contributorList.map(([userId, contributor], index) => ({
+            badge: `#${index + 1}`,
+            title: getDisplayNameForUser(e, userId),
+            desc: `贡献 ${Number(contributor.coins || 0) + Number(contributor.fishPoints || 0)} 建设值`,
+            meta: `鱼蛋 ${Number(contributor.coins || 0)} | 鱼 ${Number(contributor.fishPoints || 0)}`,
+            tone: index === 0 ? 'positive' : 'note'
+          }))
+          : [{ badge: '空', title: '暂无贡献记录', desc: '成为第一个建设渔港的钓友吧。', tone: 'note', fullWidth: true }]
+      }
+    ], ['harbor', 'slate']);
+    const sections = buildCardGridSections(groups, { badgePrefix: '港' });
+    const fallback = [
+      `本群渔港：${effect.name} Lv.${effect.level}`,
+      ...(notice ? [`建设记录：${notice}`] : []),
+      getHarborProgressText(harbor),
+      `Buff：${effect.active ? effectText : '已过期'}`,
+      `剩余时间：${formatHarborBuffRemaining(harbor)}`,
+      '',
+      '贡献榜：',
+      ...(contributorList.length
+        ? contributorList.map(([userId, contributor], index) => `${index + 1}. ${getDisplayNameForUser(e, userId)}：${Number(contributor.coins || 0) + Number(contributor.fishPoints || 0)}建设值`)
+        : ['暂无贡献记录'])
+    ];
+    return {
+      panel: {
+        key: `harbor-${groupId}-${getNowTimestamp()}`,
+        title: '群渔港',
+        subtitle: `${effect.name} | ${effect.active ? formatHarborBuffRemaining(harbor) : 'Buff 已过期'}`,
+        sections,
+        footer: '渔港建设值永久保留，公共 Buff 只在倒计时内生效。'
+      },
+      fallback: fallback.join('\n')
+    };
+  }
+
   buildFastFishingResultPanel(userDisplay, summary, userData, rod, usageOptions = getFishingUsageOptions(this.config)) {
     const rarityLines = RARITY_ORDER
       .filter(rarity => summary.rarityCounts[rarity] > 0)
@@ -3800,34 +3933,9 @@ export class fishing extends plugin {
     const userData = this.getOrCreateUser(data, userId);
     ensureSeasonalCollections(userData);
     const todayKey = getFishingDayKey(this.config);
-    const activeSeason = getActiveSeason(todayKey);
-    const lines = ['赛季鱼'];
-    if (activeSeason) {
-      const progress = getSeasonProgress(userData, this.fishTypes, activeSeason.id, todayKey);
-      lines.push(`${activeSeason.name}（${activeSeason.startDate} 至 ${activeSeason.endDateExclusive}）`);
-      lines.push(activeSeason.description);
-      lines.push(`当前进度：${progress.ownedCount}/${progress.totalCount}（${progress.progress.toFixed(1)}%）`);
-      lines.push('');
-      for (const fish of progress.fishList) {
-        lines.push(`${progress.owned.has(fish.name) ? '[已收集]' : '[未收集]'} ${fish.name}（${fish.rarity}）`);
-      }
-    } else {
-      lines.push('当前没有进行中的赛季。');
-    }
-
-    for (const season of Object.values(SEASON_CATALOG)) {
-      if (season.id === activeSeason?.id) continue;
-      const progress = getSeasonProgress(userData, this.fishTypes, season.id, todayKey);
-      if (!progress) continue;
-      const status = season.archived
-        ? '历史赛季'
-        : todayKey < season.startDate
-          ? '尚未开始'
-          : '已结束';
-      lines.push('');
-      lines.push(`${season.name}：${progress.ownedCount}/${progress.totalCount}（${status}）`);
-    }
-    await this.reply(lines.join('\n'));
+    const result = this.buildSeasonalFishPanel(userData, todayKey);
+    saveFishData(data);
+    await replyWithPanel(this, result.panel, result.fallback);
   }
 
   async showHarbor(e) {
@@ -3836,25 +3944,9 @@ export class fishing extends plugin {
       return;
     }
     const world = this.ensureWorldState();
-    const harbor = ensureHarborState(world, e.group_id);
-    const effect = getHarborLevel(harbor.constructionPoints);
-    const contributorList = Object.entries(harbor.contributors || {})
-      .sort(([, left], [, right]) => Number(right.coins || 0) + Number(right.fishPoints || 0) - Number(left.coins || 0) - Number(left.fishPoints || 0))
-      .slice(0, 5);
+    const result = this.buildHarborPanel(e, world, e.group_id);
     saveWorldState(world);
-    const lines = [
-      `本群渔港：${effect.name} Lv.${effect.level}`,
-      getHarborProgressText(harbor),
-      `累计建设值：${harbor.constructionPoints}`,
-      `公共效果：上鱼率+${(Number(effect.catchRateBonus || 0) * 100).toFixed(1)}%${effect.signalBonusCoins ? `，命中鱼讯额外+${effect.signalBonusCoins}鱼蛋` : ''}`,
-      '',
-      '贡献方式：#渔港建设 100 / #渔港捐鱼 1',
-      contributorList.length ? '贡献榜：' : '暂时还没有贡献记录。'
-    ];
-    for (const [userId, contributor] of contributorList) {
-      lines.push(`${getDisplayNameForUser(e, userId)}：${Number(contributor.coins || 0) + Number(contributor.fishPoints || 0)}建设值`);
-    }
-    await this.reply(lines.join('\n'));
+    await replyWithPanel(this, result.panel, result.fallback);
   }
 
   async donateHarborCoins(e) {
@@ -3876,7 +3968,9 @@ export class fishing extends plugin {
     saveFishData(data);
     saveWorldState(world);
     const levelText = result.levelAfter > result.levelBefore ? `\n渔港升级：Lv.${result.levelBefore} -> Lv.${result.levelAfter}` : '';
-    await this.reply(`${userDisplay}\n已捐赠 ${amount} 鱼蛋，获得 ${result.points} 建设值。${levelText}\n${getHarborProgressText(result.harbor)}\n当前鱼蛋：${userData.coins}`);
+    const notice = `${userDisplay} 已捐赠 ${amount} 鱼蛋，获得 ${result.points} 建设值。${levelText} 当前鱼蛋：${userData.coins}`;
+    const panel = this.buildHarborPanel(e, world, e.group_id, { notice });
+    await replyWithPanel(this, panel.panel, panel.fallback);
   }
 
   async donateHarborFish(e) {
@@ -3909,7 +4003,9 @@ export class fishing extends plugin {
     saveFishData(data);
     saveWorldState(world);
     const levelText = result.levelAfter > result.levelBefore ? `\n渔港升级：Lv.${result.levelBefore} -> Lv.${result.levelAfter}` : '';
-    await this.reply(`${userDisplay}\n已将 ${fish.name}（${fish.rarity}）捐给渔港，获得 ${points} 建设值。${levelText}\n${getHarborProgressText(result.harbor)}`);
+    const notice = `${userDisplay} 已将 ${fish.name}（${fish.rarity}）捐给渔港，获得 ${points} 建设值。${levelText}`;
+    const panel = this.buildHarborPanel(e, world, e.group_id, { notice });
+    await replyWithPanel(this, panel.panel, panel.fallback);
   }
 
   async checkFishingRank(e) {
