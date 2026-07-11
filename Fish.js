@@ -22,6 +22,8 @@ import {
   EASTER_EGG_RARITY,
   HIDDEN_PITY_CATCH_BONUS,
   LEGENDARY_ROD_RECIPES,
+  MAX_TANK_CAPACITY,
+  MAX_TANK_LEVEL,
   RARITY_LABELS,
   RARITY_ORDER,
   ROD_CATALOG,
@@ -177,6 +179,7 @@ import { FISH_COMMAND_RULES } from './lib/command-rules.js';
 import {
   ensureSeasonalCollections,
   getActiveSeason,
+  getHistoricalSeasons,
   getSeasonProgress,
   recordSeasonalFishCatch
 } from './lib/seasonal-fish.js';
@@ -233,7 +236,7 @@ const HELP_GROUPS = [
       { title: '#钓鱼极速版', desc: '一口气钓完当前能用次数，优先发图汇总结果。' },
       { title: '#今日鱼获 / #查看鱼获 @某人', desc: '查看自己或别人的当日鱼获记录。' },
       { title: '#钓鱼图鉴 / #钓鱼排行 / #每周钓鱼榜 / #每月钓鱼榜', desc: '看收藏、总排行、本周排行和本月排行。' },
-      { title: '#赛季鱼', desc: '发送当前赛季限定鱼图鉴面板；不提前展示后续赛季。' },
+      { title: '#赛季鱼 / #历史赛季鱼', desc: '查看当前赛季或历史赛季限定鱼图鉴面板；不提前展示后续赛季。' },
       { title: '#渔港', desc: '发送本群渔港面板；建设值永久保留，公共 Buff 按倒计时生效。' },
       { title: '#鱼王榜 / #空军榜', desc: '看鱼缸综合质量和今日空军情况。' }
     ]
@@ -269,7 +272,7 @@ const HELP_GROUPS = [
       { title: '#彩蛋收藏', desc: '查看已收集彩蛋、当前生效项和待切换项。' },
       { title: '#切换彩蛋 愿望锦鲤 / #装备彩蛋 端午', desc: '安排彩蛋效果切换；每天只能安排一次，次日生效。' },
       { title: '#钓鱼祈愿 / #钓鱼祈愿10 / #钓鱼十连 / #钓鱼祈愿清单', desc: '100鱼蛋祈愿1次，可获得限定鱼竿、限定鱼饵和免费祈愿。' },
-      { title: '#钓鱼祈愿大奖 金满竿 / #钓鱼祈愿大奖 鱼饵配送员', desc: '切换当前想抽的祈愿大奖，已有保底进度会继续累计。' },
+      { title: '#钓鱼祈愿大奖 大奖名', desc: '切换当前想抽的祈愿大奖，已有保底进度会继续累计。' },
       { title: '#金谦指定 虹鳟 / #金谦目标 rare', desc: '拥有金满而谦虚之竿后，每天可指定1次目标鱼或整个稀有度；清除目标需发送 #金谦指定 确认清除。' },
       { title: '#钓鱼成就', desc: '查看成就进度和永久加成。' },
       { title: '#打窝 文本 / #打窝 @某人', desc: '投放临时窝料，效果持续2竿。' },
@@ -2520,7 +2523,7 @@ export class fishing extends plugin {
       `来源：全局基础${limit.base} + 鱼缸${limit.tankBonus} + 成就${limit.achievementBonus} + 鱼竿${limit.rodBonus}${easterEggSourceText}\n` +
       `${getSegmentedCastReturnStatusText(this.config, limit.total, usageOptions)}\n` +
       `钓鱼券：今日已用${ticketUsed}张，剩余${Number(userData.tickets || 0)}张\n` +
-      `说明：鱼缸每升1级，玩家本人永久额外+${TANK_UPGRADE_EXTRA_CASTS}竿；钓鱼券只记录为额外竿，不会占用鱼缸升级后新增的基础次数。`
+      `说明：鱼缸每升1级，玩家本人永久额外+${TANK_UPGRADE_EXTRA_CASTS}竿，最高 ${MAX_TANK_LEVEL} 级、容量 ${MAX_TANK_CAPACITY} 格；钓鱼券只记录为额外竿，不会占用鱼缸升级后新增的基础次数。`
     );
   }
 
@@ -3054,6 +3057,91 @@ export class fishing extends plugin {
         footer: progress.ownedCount === progress.totalCount
           ? '本赛季图鉴已集齐。'
           : `还差 ${progress.totalCount - progress.ownedCount} 种；当前面板只展示正在进行的赛季。`
+      },
+      fallback: fallbackLines.join('\n')
+    };
+  }
+
+  buildHistoricalSeasonalFishPanel(userData, dateKey = getFishingDayKey(this.config)) {
+    const seasons = getHistoricalSeasons(dateKey);
+    if (!seasons.length) {
+      return {
+        panel: {
+          key: `historical-seasonal-fish-empty-${getNowTimestamp()}`,
+          title: '历史赛季鱼',
+          subtitle: '暂时没有已经结束的赛季',
+          sections: [{
+            type: 'help-grid',
+            title: '历史记录',
+            html: '<div class="help-grid"><div class="help-grid-row"><div class="help-grid-item help-grid-item-note"><div class="help-grid-item-title">还没有历史赛季</div><div class="help-grid-item-desc">赛季结束后，限定鱼会自动归档到这里。</div></div><div class="help-grid-item help-grid-item-empty" aria-hidden="true"></div></div></div>'
+          }],
+          footer: '这里只展示已经结束或已归档的赛季，不展示未来赛季。'
+        },
+        fallback: '历史赛季鱼\n暂时没有已经结束的赛季。'
+      };
+    }
+
+    const sections = [];
+    const fallbackLines = ['历史赛季鱼'];
+    for (const season of seasons) {
+      const progress = getSeasonProgress(userData, this.fishTypes, season.id, dateKey);
+      if (!progress || progress.totalCount <= 0) continue;
+      const seasonGroups = applyGroupThemes([{
+        group: season.name,
+        list: [
+          { badge: '史', title: season.name, desc: season.description, meta: `${season.startDate} 至 ${season.endDateExclusive}`, tone: 'note', fullWidth: true },
+          { badge: '进度', title: `${progress.ownedCount}/${progress.totalCount} 种`, desc: '个人历史赛季收集进度', meta: `${progress.progress.toFixed(1)}%`, tone: progress.ownedCount === progress.totalCount ? 'positive' : 'sky' }
+        ]
+      }], ['history']);
+      sections.push(...buildCardGridSections(seasonGroups, { badgePrefix: '史' }));
+      fallbackLines.push('', `${season.name}：${progress.ownedCount}/${progress.totalCount}（${progress.progress.toFixed(1)}%）`);
+
+      const byRarity = new Map();
+      for (const fish of progress.fishList) {
+        if (!byRarity.has(fish.rarity)) byRarity.set(fish.rarity, []);
+        byRarity.get(fish.rarity).push(fish);
+      }
+      for (const rarity of RARITY_ORDER) {
+        const fishList = byRarity.get(rarity) || [];
+        if (!fishList.length) continue;
+        const theme = COLLECTION_RARITY_THEMES[rarity] || COLLECTION_RARITY_THEMES.common;
+        const chips = fishList.map(fish => {
+          const owned = progress.owned.has(fish.name);
+          const style = owned
+            ? `--chip-bg:${theme.chipBg};--chip-border:${theme.chipBorder};--chip-color:${theme.ownedTextColor || theme.textColor};--chip-shadow:${theme.accentSoft};`
+            : '';
+          return `<span class="collection-chip${owned ? ' owned' : ''}" style="${style}">${escapePanelHtml(owned ? fish.name : '未收集')}</span>`;
+        }).join('');
+        sections.push({
+          type: 'collection',
+          title: `${season.name} · ${rarityLabel(rarity)} ${fishList.filter(fish => progress.owned.has(fish.name)).length}/${fishList.length}`,
+          titleStyle: `--collection-accent:${theme.accent};--collection-accent-soft:${theme.accentSoft};--collection-text:${theme.textColor};`,
+          html: `<div class="collection-group">${chips}</div>`
+        });
+        fallbackLines.push(`${rarityLabel(rarity)}：${fishList.map(fish => `${progress.owned.has(fish.name) ? '已收集' : '未收集'} ${fish.name}`).join('、')}`);
+      }
+    }
+
+    if (!sections.length) {
+      return {
+        panel: {
+          key: `historical-seasonal-fish-empty-${getNowTimestamp()}`,
+          title: '历史赛季鱼',
+          subtitle: '暂无可展示的历史赛季鱼',
+          sections: [],
+          footer: '这里只展示已经结束或已归档的赛季，不展示未来赛季。'
+        },
+        fallback: '历史赛季鱼\n暂无可展示的历史赛季鱼。'
+      };
+    }
+
+    return {
+      panel: {
+        key: `historical-seasonal-fish-${getNowTimestamp()}`,
+        title: '历史赛季鱼',
+        subtitle: `已归档 ${seasons.length} 个赛季 | 不展示未来赛季`,
+        sections,
+        footer: '历史赛季只供查看和纪念，限定鱼不会重新进入当前鱼池。'
       },
       fallback: fallbackLines.join('\n')
     };
@@ -3629,6 +3717,7 @@ export class fishing extends plugin {
 
   getTankUpgradeProgressText(userData) {
     const currentLevel = Number(userData?.tankLevel || 0);
+    if (currentLevel >= MAX_TANK_LEVEL) return `${MAX_TANK_LEVEL}/${MAX_TANK_LEVEL}级，已满级`;
     const progress = userData?.tankUpgradeProgress;
     const { targetLevel, requiredPoints } = getTankUpgradeRequiredPoints(currentLevel);
     const activeTargetLevel = Number(progress?.targetLevel || targetLevel);
@@ -3652,6 +3741,10 @@ export class fishing extends plugin {
     }
 
     const currentLevel = Number(userData.tankLevel || 0);
+    if (currentLevel >= MAX_TANK_LEVEL) {
+      await this.reply(`${userDisplay}\n你的鱼缸已经达到最高等级 ${MAX_TANK_LEVEL} 级（容量 ${userData.tankCapacity} 格），不能继续升级。`);
+      return;
+    }
     const costType = e.msg.match(/#升级鱼缸\s+(legendary|epic)/)?.[1];
     if (!costType) {
       await this.reply(`${userDisplay}\n升级消耗类型不正确，请使用 legendary 或 epic。`);
@@ -3934,6 +4027,16 @@ export class fishing extends plugin {
     ensureSeasonalCollections(userData);
     const todayKey = getFishingDayKey(this.config);
     const result = this.buildSeasonalFishPanel(userData, todayKey);
+    saveFishData(data);
+    await replyWithPanel(this, result.panel, result.fallback);
+  }
+
+  async showHistoricalSeasonalFish(e) {
+    const data = this.loadData();
+    const userId = String(e.user_id);
+    const userData = this.getOrCreateUser(data, userId);
+    ensureSeasonalCollections(userData);
+    const result = this.buildHistoricalSeasonalFishPanel(userData, getFishingDayKey(this.config));
     saveFishData(data);
     await replyWithPanel(this, result.panel, result.fallback);
   }
@@ -4496,7 +4599,7 @@ async checkEasterEggCollection(e) {
       `当前收藏 ${sortedFish.length} 条鱼`,
       ...sortedFish.map((fish, index) => formatFishLine(fish, index)),
       `鱼缸容量：${userData.fishTank.length}/${userData.tankCapacity}`,
-      `鱼缸等级：${userData.tankLevel || 0}`,
+      `鱼缸等级：${userData.tankLevel || 0}/${MAX_TANK_LEVEL}`,
       `升级进度：${progressText}`,
       `今日钓鱼次数：${getFishingLimitText(this.config, userData, rod, getFishingUsageOptions(this.config))}`,
       `鱼竿库存：${getOwnedRodsSummary(userData) || '无'}`,
@@ -4724,7 +4827,7 @@ async checkEasterEggCollection(e) {
         title: '钓鱼祈愿结果',
         subtitle: grandCount > 0 ? `${grandName} 已经入账` : '水面轻轻晃了一下',
         sections: buildCardGridSections(groups, { badgePrefix: '愿' }),
-        footer: '继续使用：#钓鱼祈愿 / #钓鱼祈愿10 / #钓鱼十连 / #钓鱼祈愿清单 / #钓鱼祈愿大奖 鱼饵配送员'
+        footer: '继续使用：#钓鱼祈愿 / #钓鱼祈愿10 / #钓鱼十连 / #钓鱼祈愿清单 / #钓鱼祈愿大奖 大奖名'
       },
       fallback
     };
@@ -4805,7 +4908,7 @@ async checkEasterEggCollection(e) {
       title: '钓鱼祈愿清单',
       subtitle: `当前大奖：${pool.grandPlugin?.name || '暂未开放'} | 100鱼蛋一次`,
       sections: buildCardGridSections(groups, { badgePrefix: '愿' }),
-      footer: '祈愿：#钓鱼祈愿 / #钓鱼祈愿10 / #钓鱼十连；切换大奖：#钓鱼祈愿大奖 金满竿 / #钓鱼祈愿大奖 鱼饵配送员'
+      footer: '祈愿：#钓鱼祈愿 / #钓鱼祈愿10 / #钓鱼十连；切换大奖：#钓鱼祈愿大奖 大奖名'
     }, fallback);
   }
 
@@ -4824,7 +4927,7 @@ async checkEasterEggCollection(e) {
         const currentMark = plugin.id === current?.id ? '当前' : '可选';
         return `${plugin.name} - ${currentMark}${owned ? '，已获得' : ''} - ${plugin.description || ''}`;
       });
-      await this.reply(`${userDisplay}\n当前祈愿大奖：${current?.name || '未设置'}\n可切换：\n${lines.join('\n')}\n格式：#钓鱼祈愿大奖 金满竿 / #钓鱼祈愿大奖 鱼饵配送员`);
+      await this.reply(`${userDisplay}\n当前祈愿大奖：${current?.name || '未设置'}\n可切换：\n${lines.join('\n')}\n格式：#钓鱼祈愿大奖 大奖名`);
       return;
     }
 
