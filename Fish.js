@@ -186,10 +186,15 @@ import {
 import {
   applyHarborDonation,
   ensureHarborState,
+  HARBOR_BUFF_DONATION_THRESHOLD,
+  HARBOR_BUFF_EXTENSION_MS,
+  HARBOR_BUFF_MAX_DURATION_MS,
+  formatHarborEffectSummary,
   getHarborEffect,
   getHarborFishPoints,
   formatHarborBuffRemaining,
-  getHarborProgressText
+  getHarborProgressText,
+  getNextHarborLevel
 } from './lib/harbor.js';
 
 // 模块导航：
@@ -237,7 +242,7 @@ const HELP_GROUPS = [
       { title: '#今日鱼获 / #查看鱼获 @某人', desc: '查看自己或别人的当日鱼获记录。' },
       { title: '#钓鱼图鉴 / #钓鱼排行 / #每周钓鱼榜 / #每月钓鱼榜', desc: '看收藏、总排行、本周排行和本月排行。' },
       { title: '#赛季鱼 / #历史赛季鱼', desc: '查看当前赛季或历史赛季限定鱼图鉴面板；不提前展示后续赛季。' },
-      { title: '#渔港', desc: '发送本群渔港面板；建设值永久保留，公共 Buff 按倒计时生效。' },
+      { title: '#渔港', desc: '发送本群渔港面板；等级加成永久生效，达标捐蛋可延长繁荣 Buff。' },
       { title: '#鱼王榜 / #空军榜', desc: '看鱼缸综合质量和今日空军情况。' }
     ]
   },
@@ -3150,21 +3155,46 @@ export class fishing extends plugin {
   buildHarborPanel(e, worldState, groupId, options = {}) {
     const harbor = ensureHarborState(worldState, groupId);
     const effect = getHarborEffect(worldState, groupId);
+    const nextLevel = getNextHarborLevel(effect.level);
+    const extensionDays = Math.round(HARBOR_BUFF_EXTENSION_MS / (24 * 60 * 60 * 1000));
+    const maxDurationDays = Math.round(HARBOR_BUFF_MAX_DURATION_MS / (24 * 60 * 60 * 1000));
+    const permanentText = formatHarborEffectSummary(effect.baseEffect);
+    const prosperityText = formatHarborEffectSummary(effect.prosperityEffect);
+    const totalEffectText = formatHarborEffectSummary(effect);
     const contributorList = Object.entries(harbor.contributors || {})
       .sort(([, left], [, right]) => Number(right.coins || 0) + Number(right.fishPoints || 0) - Number(left.coins || 0) - Number(left.fishPoints || 0))
       .slice(0, 5);
     const effectText = effect.active
-      ? `生效中：上鱼率 +${(Number(effect.catchRateBonus || 0) * 100).toFixed(1)}%${effect.signalBonusCoins ? `，鱼讯额外 +${effect.signalBonusCoins} 鱼蛋` : ''}`
-      : '当前 Buff 已过期，捐赠鱼蛋或鱼可重新激活。';
+      ? `当前总收益：${totalEffectText}`
+      : `常驻收益：${permanentText}`;
     const notice = String(options.notice || '').trim();
     const groups = applyGroupThemes([
       {
         group: '渔港状态',
         list: [
           ...(notice ? [{ badge: '新', title: '建设记录', desc: notice, tone: 'positive', fullWidth: true }] : []),
-          { badge: '港', title: `${effect.name} Lv.${effect.level}`, desc: getHarborProgressText(harbor), meta: `累计建设值 ${harbor.constructionPoints}`, tone: effect.active ? 'active' : 'note', fullWidth: true },
-          { badge: 'Buff', title: effect.active ? '限时生效' : '已过期', desc: effectText, meta: formatHarborBuffRemaining(harbor), tone: effect.active ? 'positive' : 'warning' },
-          { badge: '捐赠', title: '建设渔港', desc: '#渔港建设 100 或 #渔港捐鱼 1', meta: '每次捐赠延长 7 天，最多 30 天', tone: 'sky' }
+          { badge: '港', title: `${effect.name} Lv.${effect.level}`, desc: getHarborProgressText(harbor), meta: `常驻：${permanentText}`, tone: effect.level > 0 ? 'active' : 'note', fullWidth: true },
+          {
+            badge: '繁荣',
+            title: effect.active ? '港区繁荣中' : '常驻收益仍生效',
+            desc: effect.active ? `繁荣额外：${prosperityText}` : `繁荣待激活，激活后额外：${prosperityText}`,
+            meta: formatHarborBuffRemaining(harbor),
+            tone: effect.active ? 'positive' : 'note'
+          },
+          ...(nextLevel ? [{
+            badge: '升级',
+            title: `下一级：${nextLevel.name}`,
+            desc: `升级后常驻：${formatHarborEffectSummary(nextLevel)}`,
+            meta: `需要累计 ${nextLevel.requiredPoints} 建设值`,
+            tone: 'gold'
+          }] : []),
+          {
+            badge: '捐赠',
+            title: `每满 ${HARBOR_BUFF_DONATION_THRESHOLD} 鱼蛋续 ${extensionDays} 天`,
+            desc: '#渔港建设 500 或 #渔港捐鱼 1；捐鱼只增加建设值',
+            meta: `按单次捐赠的完整档数计算，最长 ${maxDurationDays} 天`,
+            tone: 'sky'
+          }
         ]
       },
       {
@@ -3185,8 +3215,10 @@ export class fishing extends plugin {
       `本群渔港：${effect.name} Lv.${effect.level}`,
       ...(notice ? [`建设记录：${notice}`] : []),
       getHarborProgressText(harbor),
-      `Buff：${effect.active ? effectText : '已过期'}`,
-      `剩余时间：${formatHarborBuffRemaining(harbor)}`,
+      `常驻加成：${permanentText}`,
+      `繁荣加成：${prosperityText}`,
+      `当前状态：${effectText}`,
+      `繁荣时间：${formatHarborBuffRemaining(harbor)}`,
       '',
       '贡献榜：',
       ...(contributorList.length
@@ -3197,9 +3229,9 @@ export class fishing extends plugin {
       panel: {
         key: `harbor-${groupId}-${getNowTimestamp()}`,
         title: '群渔港',
-        subtitle: `${effect.name} | ${effect.active ? formatHarborBuffRemaining(harbor) : 'Buff 已过期'}`,
+        subtitle: `${effect.name} | ${effect.active ? formatHarborBuffRemaining(harbor) : '等级加成常驻生效'}`,
         sections,
-        footer: '渔港建设值永久保留，公共 Buff 只在倒计时内生效。'
+        footer: `等级加成永久生效；每满 ${HARBOR_BUFF_DONATION_THRESHOLD} 鱼蛋为繁荣 Buff 续 ${extensionDays} 天，最多 ${maxDurationDays} 天。`
       },
       fallback: fallback.join('\n')
     };
@@ -4062,7 +4094,7 @@ export class fishing extends plugin {
     const data = this.loadData();
     const userData = this.getOrCreateUser(data, userId);
     if (amount <= 0 || userData.coins < amount) {
-      await this.reply(`${userDisplay}\n请输入不超过当前鱼蛋的正整数，例如：#渔港建设 100。当前鱼蛋：${userData.coins}`);
+      await this.reply(`${userDisplay}\n请输入不超过当前鱼蛋的正整数，例如：#渔港建设 500。少于 ${HARBOR_BUFF_DONATION_THRESHOLD} 鱼蛋也可建设，但不会延长繁荣时间。当前鱼蛋：${userData.coins}`);
       return;
     }
     const world = this.ensureWorldState();
@@ -4071,7 +4103,12 @@ export class fishing extends plugin {
     saveFishData(data);
     saveWorldState(world);
     const levelText = result.levelAfter > result.levelBefore ? `\n渔港升级：Lv.${result.levelBefore} -> Lv.${result.levelAfter}` : '';
-    const notice = `${userDisplay} 已捐赠 ${amount} 鱼蛋，获得 ${result.points} 建设值。${levelText} 当前鱼蛋：${userData.coins}`;
+    const buffText = result.buffExtensionUnits > 0
+      ? result.buffExtendedMs > 0
+        ? `繁荣 Buff 已按 ${result.buffExtensionUnits} 档续期，${formatHarborBuffRemaining(result.harbor)}。`
+        : '繁荣 Buff 已达到未来 30 天上限。'
+      : `本次未满 ${HARBOR_BUFF_DONATION_THRESHOLD} 鱼蛋，不增加繁荣时间。`;
+    const notice = `${userDisplay} 已捐赠 ${amount} 鱼蛋，获得 ${result.points} 建设值。${levelText} ${buffText} 当前鱼蛋：${userData.coins}`;
     const panel = this.buildHarborPanel(e, world, e.group_id, { notice });
     await replyWithPanel(this, panel.panel, panel.fallback);
   }
@@ -4106,7 +4143,7 @@ export class fishing extends plugin {
     saveFishData(data);
     saveWorldState(world);
     const levelText = result.levelAfter > result.levelBefore ? `\n渔港升级：Lv.${result.levelBefore} -> Lv.${result.levelAfter}` : '';
-    const notice = `${userDisplay} 已将 ${fish.name}（${fish.rarity}）捐给渔港，获得 ${points} 建设值。${levelText}`;
+    const notice = `${userDisplay} 已将 ${fish.name}（${fish.rarity}）捐给渔港，获得 ${points} 建设值。${levelText} 捐鱼不增加繁荣 Buff 时间。`;
     const panel = this.buildHarborPanel(e, world, e.group_id, { notice });
     await replyWithPanel(this, panel.panel, panel.fallback);
   }
