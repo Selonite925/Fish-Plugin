@@ -196,6 +196,7 @@ import {
   getHarborProgressText,
   getNextHarborLevel
 } from './lib/harbor.js';
+import { selectTideObserverSurvey } from './lib/tide-observer.js';
 
 // 模块导航：
 // - lib/constants.js：鱼竿、鱼饵、商店、活动和基础数值配置
@@ -656,6 +657,39 @@ function mergeRarityBias(...biasList) {
   return merged;
 }
 
+function getExternalFishingModifierMultiplier(rod = null) {
+  const configured = Number(rod?.externalModifierMultiplier);
+  return Number.isFinite(configured) ? Math.max(0, Math.min(1, configured)) : 1;
+}
+
+function scaleExternalFishingValue(rod, value = 0) {
+  return Number(value || 0) * getExternalFishingModifierMultiplier(rod);
+}
+
+function scaleExternalFishingMultiplier(rod, value = 1) {
+  const multiplier = getExternalFishingModifierMultiplier(rod);
+  return 1 + (Number(value || 1) - 1) * multiplier;
+}
+
+function scaleExternalRarityBias(rod, bias = {}) {
+  const multiplier = getExternalFishingModifierMultiplier(rod);
+  return Object.fromEntries(
+    Object.entries(bias || {}).map(([rarity, value]) => [rarity, Number(value || 0) * multiplier])
+  );
+}
+
+function scaleExternalFishBodyModifiers(rod, modifiers = {}) {
+  const multiplier = getExternalFishingModifierMultiplier(rod);
+  const scaleMultiplier = value => 1 + (Number(value || 1) - 1) * multiplier;
+  return {
+    ...modifiers,
+    sizeMultiplier: scaleMultiplier(modifiers?.sizeMultiplier),
+    weightMultiplier: scaleMultiplier(modifiers?.weightMultiplier),
+    minSizeRatio: Number(modifiers?.minSizeRatio || 0) * multiplier,
+    minWeightRatio: Number(modifiers?.minWeightRatio || 0) * multiplier
+  };
+}
+
 function clampNumber(value, min, max) {
   const number = Number(value);
   if (!Number.isFinite(number)) return min;
@@ -1082,6 +1116,7 @@ function buildRodTraitEntries(rod, options = {}) {
   if (Number(effectiveRod?.signalBonusCoins || 0) > 0) entries.push({ text: '命中鱼讯时收成会更亮眼', tone: 'positive' });
   if (Number(effectiveRod?.permanentDailyCasts || 0) > 0) entries.push({ text: '装备后每日可抛竿次数会增加', tone: 'positive' });
   if (Number(effectiveRod?.ownedPermanentDailyCasts || 0) > 0) entries.push({ text: '只要拥有这根竿，每日可抛竿次数就会增加', tone: 'positive' });
+  if (effectiveRod?.seasonalSurvey) entries.push({ text: '当前赛季未收集鱼会在同稀有度中被优先观测，命中时记录体型更佳', tone: 'positive' });
   if (rod?.targetFishEffect) entries.push({ text: '可指定单条目标鱼，也可指定整个稀有度', tone: 'positive' });
   if (rod?.targetFishEffect?.rewardCoinsByRarity) {
     const profile = options.rodTarget
@@ -1095,6 +1130,7 @@ function buildRodTraitEntries(rod, options = {}) {
     });
   }
   if (rod?.suppressExtraCoinBonuses) entries.push({ text: '目标检索生效时，其它额外鱼蛋收益会被压下去', tone: 'negative' });
+  if (getExternalFishingModifierMultiplier(rod) < 1) entries.push({ text: '鱼饵、彩蛋、渔港等外部钓鱼加成只生效一半', tone: 'negative' });
 
   return entries;
 }
@@ -2276,6 +2312,7 @@ export class fishing extends plugin {
     let candidateNames = [];
     let revealTriggered = false;
     let targetPoolSize = 0;
+    let tideObserverSurvey = null;
     const rarityTarget = isGoldHumbleRarityTarget(targetEffect?.target);
     if (targetEffect && rarity === targetEffect.target.rarity && !rarityTarget) {
       const pool = rarity === EASTER_EGG_RARITY ? availableMysteryFish : getCatchableFishPool(this.fishTypes, rarity, { baitId });
@@ -2298,7 +2335,8 @@ export class fishing extends plugin {
         ? availableMysteryFish.filter(item => item.name !== targetEffect.target.name)
         : availableMysteryFish;
       const realPool = fallbackPool.length ? fallbackPool : availableMysteryFish;
-      const template = realPool[Math.floor(Math.random() * realPool.length)];
+      tideObserverSurvey = selectTideObserverSurvey(rod, userData, realPool);
+      const template = tideObserverSurvey?.template || realPool[Math.floor(Math.random() * realPool.length)];
       fish = createFishFromTemplate(template, rarity);
     } else if (!fish) {
       const pool = getCatchableFishPool(this.fishTypes, rarity, { baitId });
@@ -2306,10 +2344,18 @@ export class fishing extends plugin {
         ? pool.filter(item => item.name !== targetEffect.target.name)
         : pool;
       const realPool = fallbackPool.length ? fallbackPool : pool;
-      const template = realPool[Math.floor(Math.random() * realPool.length)];
+      tideObserverSurvey = selectTideObserverSurvey(rod, userData, realPool);
+      const template = tideObserverSurvey?.template || realPool[Math.floor(Math.random() * realPool.length)];
       fish = template ? createFishFromTemplate(template, rarity) : generateFish(rarity);
     }
     fish = applyFishBodyBuffs(fish, bodyModifiers);
+    if (tideObserverSurvey && fish) {
+      fish = applyFishBodyBuffs(fish, rod.seasonalSurvey);
+      fish.tideObserverEffect = {
+        seasonName: tideObserverSurvey.season.name,
+        missingCount: tideObserverSurvey.missingCount
+      };
+    }
     if (targetEffect && !rarityTarget && fish?.rarity === targetEffect.target.rarity && fish?.name === targetEffect.target.name) {
       // 彩蛋鱼可能在“目标以外无可选鱼”的兜底路径中被钓上来，实际命中目标也要结算奖励。
       targetHit = true;
@@ -2358,6 +2404,7 @@ export class fishing extends plugin {
     const easterEggEffect = getEasterEggEffects(userData);
     const randomizedBait = applyBaitRandomEffectForCast(rawBait);
     const bait = amplifyBaitModifiers(randomizedBait, easterEggEffect.baitEffectAmplifier);
+    const rod = getEquippedRod(userData);
     if (!bait || bait.id === 'plain') {
       return { bonus: 0, message: '', rarityBias: {}, bodyModifiers: {} };
     }
@@ -2371,10 +2418,9 @@ export class fishing extends plugin {
           : `\n[鱼饵] ${getBaitDisplayName(bait)} 已用完，已换回清水团饵。`;
       return { bonus: 0, message, rarityBias: {}, bodyModifiers: {} };
     }
-    const rod = getEquippedRod(userData);
     const preserveChance = Math.max(0, Math.min(
       BAIT_PRESERVE_CHANCE_CAP,
-      Number(bait?.baitPreserveChance || 0) + Number(rod?.baitPreserveChance || 0) + Number(easterEggEffect.baitPreserveChance || 0)
+      scaleExternalFishingValue(rod, bait?.baitPreserveChance) + Number(rod?.baitPreserveChance || 0) + scaleExternalFishingValue(rod, easterEggEffect.baitPreserveChance)
     ));
     const preserved = Math.random() < preserveChance;
     const beforeCount = Number(userData.baitInventory[bait.id] || 0);
@@ -2400,10 +2446,10 @@ export class fishing extends plugin {
           : message;
     }
     return {
-      bonus: bait.catchRateBonus || 0,
+      bonus: scaleExternalFishingValue(rod, bait.catchRateBonus),
       message,
-      rarityBias,
-      bodyModifiers: bait,
+      rarityBias: scaleExternalRarityBias(rod, rarityBias),
+      bodyModifiers: scaleExternalFishBodyModifiers(rod, bait),
       activityEvent: isDuanwuEventActive() ? bait.activityEvent : null
     };
   }
@@ -3463,13 +3509,20 @@ export class fishing extends plugin {
         }
 
         const harborEffect = this.getFishingHarborEffect(e.group_id);
-        const mergedBias = mergeRarityBias(rod.rarityBias, shopBait.rarityBias, easterEggEffect.rarityBias, harborEffect.rarityBias);
+        const externalModifierMultiplier = getExternalFishingModifierMultiplier(rod);
+        const mergedBias = mergeRarityBias(
+          rod.rarityBias,
+          shopBait.rarityBias,
+          scaleExternalRarityBias(rod, easterEggEffect.rarityBias),
+          scaleExternalRarityBias(rod, harborEffect.rarityBias)
+        );
         const bodyModifiers = mergeFishBodyModifiers(rod, shopBait.bodyModifiers);
         const rodTarget = resolveRodTarget(userData, rod);
         const targetCatchRateBonus = getGoldHumbleCatchRateBonus(rod, rodTarget);
         const rodCatchRateBonus = Number(rod.catchRateBonus || 0) + targetCatchRateBonus;
-        const catchRate = Math.max(0.05, getCatchRate(userData, manualBait.bonus + shopBait.bonus + hiddenPityBonus + harborEffect.catchRateBonus, rodCatchRateBonus) - FAST_FISHING_CATCH_RATE_PENALTY);
-        const failRescueChance = Math.max(0, Math.min(0.45, Number(rod.failProtection || 0) + easterEggEffect.failProtection));
+        const externalCatchBonus = scaleExternalFishingValue(rod, manualBait.bonus) + shopBait.bonus + scaleExternalFishingValue(rod, harborEffect.catchRateBonus);
+        const catchRate = Math.max(0.05, getCatchRate(userData, externalCatchBonus + hiddenPityBonus, rodCatchRateBonus, { externalEffectMultiplier }) - FAST_FISHING_CATCH_RATE_PENALTY);
+        const failRescueChance = Math.max(0, Math.min(0.45, Number(rod.failProtection || 0) + scaleExternalFishingValue(rod, easterEggEffect.failProtection)));
         const missedCatch = Math.random() >= catchRate;
         const duanwuEvent = missedCatch && shouldTriggerDuanwuQuyuanEvent(shopBait)
           ? applyDuanwuQuyuanEvent(userData)
@@ -3532,6 +3585,9 @@ export class fishing extends plugin {
         if (seasonalResult?.newlyCollected) {
           summary.specialEffects.push(`[赛季鱼] 首次收集 ${fishWithTimestamp.name}`);
         }
+        if (fish.tideObserverEffect) {
+          summary.specialEffects.push(`[潮汐观测] 锁定 ${fishWithTimestamp.name}，补全 ${fish.tideObserverEffect.seasonName} 图鉴。`);
+        }
 
         if (specialRodEffect.message) {
           summary.specialEffects.push(specialRodEffect.message);
@@ -3540,16 +3596,18 @@ export class fishing extends plugin {
         const signalHit = signal.targets.some(item => item.name === fishWithTimestamp.name);
         if (signalHit) {
           const equippedRod = getEquippedRod(userData);
-          const signalCoins = signal.bonusCoins + getSignalRodBonusCoins(equippedRod, fishWithTimestamp) + harborEffect.signalBonusCoins;
+          const signalCoins = signal.bonusCoins + getSignalRodBonusCoins(equippedRod, fishWithTimestamp) + scaleExternalFishingValue(equippedRod, harborEffect.signalBonusCoins);
           if (!suppressExtraCoinBonuses) userData.coins += signalCoins;
           userData.stats.signalFishCaught += 1;
           summary.signalHits += 1;
         }
         const rodCoinBonus = Number(getEquippedRod(userData)?.catchCoinBonus || 0);
         if (!suppressExtraCoinBonuses && rodCoinBonus > 0) userData.coins += rodCoinBonus;
-        if (!suppressExtraCoinBonuses && easterEggEffect.catchCoinBonus > 0) userData.coins += easterEggEffect.catchCoinBonus;
-        if (!suppressExtraCoinBonuses && easterEggEffect.catchCoinBonusRate > 0) {
-          userData.coins += Math.floor(getFishSellValue(fishWithTimestamp) * easterEggEffect.catchCoinBonusRate);
+        const easterEggCoinBonus = scaleExternalFishingValue(getEquippedRod(userData), easterEggEffect.catchCoinBonus);
+        const easterEggCoinBonusRate = scaleExternalFishingValue(getEquippedRod(userData), easterEggEffect.catchCoinBonusRate);
+        if (!suppressExtraCoinBonuses && easterEggCoinBonus > 0) userData.coins += easterEggCoinBonus;
+        if (!suppressExtraCoinBonuses && easterEggCoinBonusRate > 0) {
+          userData.coins += Math.floor(getFishSellValue(fishWithTimestamp) * easterEggCoinBonusRate);
         }
 
         const unlocked = scanAchievements(userData, this.fishTypes);
@@ -3606,7 +3664,7 @@ export class fishing extends plugin {
 
       const minDelay = 1000;
       const maxDelay = 15000;
-      const waitMultiplier = Math.max(0.35, (rod.waitMultiplier || 1) * easterEggEffect.waitMultiplier);
+      const waitMultiplier = Math.max(0.35, (rod.waitMultiplier || 1) * scaleExternalFishingMultiplier(rod, easterEggEffect.waitMultiplier));
       const scaledDelay = Math.max(minDelay, Math.floor((Math.random() * (maxDelay - minDelay) + minDelay) * waitMultiplier));
       await new Promise(resolve => setTimeout(resolve, scaledDelay));
 
@@ -3621,15 +3679,23 @@ export class fishing extends plugin {
       }
 
       const harborEffect = this.getFishingHarborEffect(e.group_id);
-      const mergedBias = mergeRarityBias(rod.rarityBias, shopBait.rarityBias, easterEggEffect.rarityBias, harborEffect.rarityBias);
+      const externalModifierMultiplier = getExternalFishingModifierMultiplier(rod);
+      const mergedBias = mergeRarityBias(
+        rod.rarityBias,
+        shopBait.rarityBias,
+        scaleExternalRarityBias(rod, easterEggEffect.rarityBias),
+        scaleExternalRarityBias(rod, harborEffect.rarityBias)
+      );
       const bodyModifiers = mergeFishBodyModifiers(rod, shopBait.bodyModifiers);
 
       const settleRod = getEquippedRod(settleUser);
       const settleRodTarget = resolveRodTarget(settleUser, settleRod);
       const settleRodCatchRateBonus = Number(settleRod.catchRateBonus || 0) + getGoldHumbleCatchRateBonus(settleRod, settleRodTarget);
-      const catchRate = getCatchRate(settleUser, manualBait.bonus + shopBait.bonus + hiddenPityBonus + harborEffect.catchRateBonus, settleRodCatchRateBonus);
-      const easterEggMsg = easterEggEffect.descriptions.length ? `\n[彩蛋加成] ${easterEggEffect.descriptions.join('；')}` : '';
-      const failRescueChance = Math.max(0, Math.min(0.45, Number(rod.failProtection || 0) + easterEggEffect.failProtection));
+      const externalCatchBonus = scaleExternalFishingValue(rod, manualBait.bonus) + shopBait.bonus + scaleExternalFishingValue(rod, harborEffect.catchRateBonus);
+      const catchRate = getCatchRate(settleUser, externalCatchBonus + hiddenPityBonus, settleRodCatchRateBonus, { externalEffectMultiplier });
+      const externalReductionText = externalModifierMultiplier < 1 ? '\n[金谦限制] 鱼饵、彩蛋、渔港等外部钓鱼加成仅生效一半。' : '';
+      const easterEggMsg = easterEggEffect.descriptions.length ? `\n[彩蛋加成] ${easterEggEffect.descriptions.join('；')}${externalReductionText}` : externalReductionText;
+      const failRescueChance = Math.max(0, Math.min(0.45, Number(rod.failProtection || 0) + scaleExternalFishingValue(rod, easterEggEffect.failProtection)));
       const missedCatch = Math.random() >= catchRate;
       const duanwuEvent = missedCatch && shouldTriggerDuanwuQuyuanEvent(shopBait)
         ? applyDuanwuQuyuanEvent(settleUser)
@@ -3685,10 +3751,13 @@ export class fishing extends plugin {
       if (seasonalResult?.newlyCollected) {
         signalMsg += `\n[赛季鱼] 首次收集 ${fishWithTimestamp.name}，已计入赛季图鉴。`;
       }
+      if (fish.tideObserverEffect) {
+        signalMsg += `\n[潮汐观测] 已锁定未收集的 ${fishWithTimestamp.name}，并完成一次高质量记录。`;
+      }
       const signalHit = signal.targets.some(item => item.name === fishWithTimestamp.name);
       if (signalHit) {
         const equippedRod = getEquippedRod(settleUser);
-        const signalCoins = signal.bonusCoins + getSignalRodBonusCoins(equippedRod, fishWithTimestamp) + harborEffect.signalBonusCoins;
+        const signalCoins = signal.bonusCoins + getSignalRodBonusCoins(equippedRod, fishWithTimestamp) + scaleExternalFishingValue(equippedRod, harborEffect.signalBonusCoins);
         if (!suppressExtraCoinBonuses) settleUser.coins += signalCoins;
         settleUser.stats.signalFishCaught += 1;
         signalMsg += suppressExtraCoinBonuses
@@ -3700,12 +3769,14 @@ export class fishing extends plugin {
         settleUser.coins += rodCoinBonus;
         signalMsg += `\n[鱼竿效果] 本次额外收获 ${rodCoinBonus} 鱼蛋。`;
       }
-      if (!suppressExtraCoinBonuses && easterEggEffect.catchCoinBonus > 0) {
-        settleUser.coins += easterEggEffect.catchCoinBonus;
+      const easterEggCoinBonus = scaleExternalFishingValue(getEquippedRod(settleUser), easterEggEffect.catchCoinBonus);
+      const easterEggCoinBonusRate = scaleExternalFishingValue(getEquippedRod(settleUser), easterEggEffect.catchCoinBonusRate);
+      if (!suppressExtraCoinBonuses && easterEggCoinBonus > 0) {
+        settleUser.coins += easterEggCoinBonus;
         signalMsg += '\n[彩蛋加成] 本次收获被悄悄抬高了一截。';
       }
-      if (!suppressExtraCoinBonuses && easterEggEffect.catchCoinBonusRate > 0) {
-        settleUser.coins += Math.floor(getFishSellValue(fishWithTimestamp) * easterEggEffect.catchCoinBonusRate);
+      if (!suppressExtraCoinBonuses && easterEggCoinBonusRate > 0) {
+        settleUser.coins += Math.floor(getFishSellValue(fishWithTimestamp) * easterEggCoinBonusRate);
         signalMsg += '\n[彩蛋加成] 本次收获被悄悄抬高了一截。';
       }
       if (specialRodEffect.message) {

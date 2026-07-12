@@ -5,6 +5,7 @@ import { isSeasonalFishActive } from '../lib/duanwu.js';
 import {
   getActiveSeason,
   getActiveSeasons,
+  getHistoricalSeasons,
   getSeasonProgress,
   recordSeasonalFishCatch,
   SEASON_CATALOG
@@ -39,14 +40,19 @@ assert.equal(getActiveSeason('2026-11-11')?.id, 'double_eleven_2026');
 assert.equal(getActiveSeason('2026-12-24')?.id, 'winter_festival_2026');
 assert.equal(getActiveSeason('2026-07-02')?.id, 'duanwu_2026');
 assert.equal(getActiveSeason('2026-07-03')?.id, 'world_cup_2026');
-assert.equal(getActiveSeason('2026-07-05')?.id, 'world_cup_2026');
+assert.equal(getActiveSeason('2026-07-19')?.id, 'world_cup_2026');
+assert.equal(getActiveSeason('2026-07-20')?.id, 'summer_tide_2026');
+assert.equal(getActiveSeason('2026-08-09')?.id, 'summer_tide_2026');
+assert.equal(getActiveSeason('2026-08-10')?.id, 'qixi_2026');
 assert.deepEqual(getActiveSeasons('2026-07-12').map(season => season.id), ['world_cup_2026']);
-assert.equal(SEASON_CATALOG.summer_tide_2026.archived, true);
+assert.notEqual(SEASON_CATALOG.summer_tide_2026.archived, true);
+assert.ok(!getHistoricalSeasons('2026-07-12').some(season => season.id === 'summer_tide_2026'));
+assert.ok(getHistoricalSeasons('2026-08-10').some(season => season.id === 'summer_tide_2026'));
 const seasonBeforeCatch = getSeasonProgress(userData, fishTypes, 'summer_tide_2026', '2026-07-10');
 assert.equal(seasonBeforeCatch.totalCount, 2);
 assert.equal(seasonBeforeCatch.ownedCount, 0);
-assert.equal(getSeasonProgress(userData, fishTypes, 'summer_tide_2026', '2026-07-10').season.archived, true);
-assert.equal(isSeasonalFishActive({ seasonal: { eventId: 'summer_tide_2026', startDate: '2026-07-04', endDateExclusive: '2026-09-01' } }, '2026-07-10'), false);
+assert.equal(isSeasonalFishActive({ seasonal: { eventId: 'summer_tide_2026', startDate: '2026-07-20', endDateExclusive: '2026-08-10' } }, '2026-07-12'), false);
+assert.equal(isSeasonalFishActive({ seasonal: { eventId: 'summer_tide_2026', startDate: '2026-07-20', endDateExclusive: '2026-08-10' } }, '2026-07-20'), true);
 
 const seasonalResult = recordSeasonalFishCatch(userData, {
   name: '晒网银鱼',
