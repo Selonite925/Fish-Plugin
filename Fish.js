@@ -363,20 +363,20 @@ function hasActiveXianyuEffect(userData) {
 }
 const COLLECTION_RARITY_THEMES = {
   common: {
-    accent: '#16a34a',
-    accentSoft: 'rgba(22, 163, 74, 0.14)',
-    textColor: '#166534',
-    ownedTextColor: '#14532d',
-    chipBg: 'rgba(220, 252, 231, 0.92)',
-    chipBorder: 'rgba(34, 197, 94, 0.38)'
+    accent: '#15803d',
+    accentSoft: 'rgba(21, 128, 61, 0.20)',
+    textColor: '#14532d',
+    ownedTextColor: '#052e16',
+    chipBg: '#e9f9ef',
+    chipBorder: '#15803d'
   },
   uncommon: {
-    accent: '#0891b2',
-    accentSoft: 'rgba(8, 145, 178, 0.14)',
-    textColor: '#0f766e',
-    ownedTextColor: '#155e75',
-    chipBg: 'rgba(207, 250, 254, 0.92)',
-    chipBorder: 'rgba(6, 182, 212, 0.38)'
+    accent: '#0369a1',
+    accentSoft: 'rgba(3, 105, 161, 0.20)',
+    textColor: '#0c4a6e',
+    ownedTextColor: '#082f49',
+    chipBg: '#e8f4ff',
+    chipBorder: '#0369a1'
   },
   rare: {
     accent: '#d97706',
