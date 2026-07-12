@@ -3091,15 +3091,16 @@ export class fishing extends plugin {
     for (const season of seasons) {
       const progress = getSeasonProgress(userData, this.fishTypes, season.id, dateKey);
       if (!progress || progress.totalCount <= 0) continue;
+      const periodLabel = season.historyLabel || `${season.startDate} 至 ${season.endDateExclusive}`;
       const seasonGroups = applyGroupThemes([{
         group: season.name,
         list: [
-          { badge: '史', title: season.name, desc: season.description, meta: `${season.startDate} 至 ${season.endDateExclusive}`, tone: 'note', fullWidth: true },
+          { badge: '史', title: season.name, desc: season.description, meta: periodLabel, tone: 'note', fullWidth: true },
           { badge: '进度', title: `${progress.ownedCount}/${progress.totalCount} 种`, desc: '个人历史赛季收集进度', meta: `${progress.progress.toFixed(1)}%`, tone: progress.ownedCount === progress.totalCount ? 'positive' : 'sky' }
         ]
       }], ['history']);
       sections.push(...buildCardGridSections(seasonGroups, { badgePrefix: '史' }));
-      fallbackLines.push('', `${season.name}：${progress.ownedCount}/${progress.totalCount}（${progress.progress.toFixed(1)}%）`);
+      fallbackLines.push('', `${season.name}：${periodLabel}，${progress.ownedCount}/${progress.totalCount}（${progress.progress.toFixed(1)}%）`);
 
       const byRarity = new Map();
       for (const fish of progress.fishList) {
@@ -3191,7 +3192,7 @@ export class fishing extends plugin {
           {
             badge: '捐赠',
             title: `每满 ${HARBOR_BUFF_DONATION_THRESHOLD} 鱼蛋续 ${extensionDays} 天`,
-            desc: '#渔港建设 500 或 #渔港捐鱼 1；捐鱼只增加建设值',
+            desc: `#渔港建设 ${HARBOR_BUFF_DONATION_THRESHOLD} 或 #渔港捐鱼 1；捐鱼只增加建设值`,
             meta: `按单次捐赠的完整档数计算，最长 ${maxDurationDays} 天`,
             tone: 'sky'
           }

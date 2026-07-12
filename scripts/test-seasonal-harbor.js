@@ -4,8 +4,10 @@ import { createDefaultUserData } from '../lib/user.js';
 import { isSeasonalFishActive } from '../lib/duanwu.js';
 import {
   getActiveSeason,
+  getActiveSeasons,
   getSeasonProgress,
-  recordSeasonalFishCatch
+  recordSeasonalFishCatch,
+  SEASON_CATALOG
 } from '../lib/seasonal-fish.js';
 import {
   applyHarborDonation,
@@ -15,12 +17,19 @@ import {
   HARBOR_BUFF_MAX_DURATION_MS,
   HARBOR_LEVELS,
   getHarborEffect,
-  getHarborFishPoints
+  getHarborFishPoints,
+  getHarborLevel
 } from '../lib/harbor.js';
 
 const userData = createDefaultUserData();
 for (let index = 1; index < HARBOR_LEVELS.length; index += 1) {
   assert.ok(HARBOR_LEVELS[index].catchRateBonus > HARBOR_LEVELS[index - 1].catchRateBonus);
+}
+const activeSchedule = Object.values(SEASON_CATALOG)
+  .filter(season => !season.archived)
+  .sort((left, right) => left.startDate.localeCompare(right.startDate));
+for (let index = 1; index < activeSchedule.length; index += 1) {
+  assert.ok(activeSchedule[index - 1].endDateExclusive <= activeSchedule[index].startDate);
 }
 assert.equal(getActiveSeason('2026-07-10')?.id, 'world_cup_2026');
 assert.equal(getActiveSeason('2026-08-19')?.id, 'qixi_2026');
@@ -31,6 +40,8 @@ assert.equal(getActiveSeason('2026-12-24')?.id, 'winter_festival_2026');
 assert.equal(getActiveSeason('2026-07-02')?.id, 'duanwu_2026');
 assert.equal(getActiveSeason('2026-07-03')?.id, 'world_cup_2026');
 assert.equal(getActiveSeason('2026-07-05')?.id, 'world_cup_2026');
+assert.deepEqual(getActiveSeasons('2026-07-12').map(season => season.id), ['world_cup_2026']);
+assert.equal(SEASON_CATALOG.summer_tide_2026.archived, true);
 const seasonBeforeCatch = getSeasonProgress(userData, fishTypes, 'summer_tide_2026', '2026-07-10');
 assert.equal(seasonBeforeCatch.totalCount, 2);
 assert.equal(seasonBeforeCatch.ownedCount, 0);
@@ -49,8 +60,8 @@ ensureHarborState(worldState, 'group-1');
 const donationStartedAt = Date.now();
 const harborDonation = applyHarborDonation(worldState, 'group-1', 'user-1', { coins: 2000 });
 assert.equal(harborDonation.levelAfter, 1);
-assert.equal(harborDonation.buffExtensionUnits, 4);
-assert.ok(harborDonation.harbor.buffExpiresAt >= donationStartedAt + HARBOR_BUFF_EXTENSION_MS * 4 - 1000);
+assert.equal(harborDonation.buffExtensionUnits, 1);
+assert.ok(harborDonation.harbor.buffExpiresAt >= donationStartedAt + HARBOR_BUFF_EXTENSION_MS - 1000);
 assert.equal(getHarborEffect(worldState, 'group-1').level, 1);
 assert.equal(getHarborEffect(worldState, 'group-1').active, true);
 assert.equal(getHarborEffect(worldState, 'group-1').catchRateBonus, 0.005);
@@ -78,6 +89,8 @@ const permanentLevelEffect = getHarborEffect(permanentLevelState, 'group-3');
 assert.equal(permanentLevelEffect.active, false);
 assert.equal(permanentLevelEffect.catchRateBonus, 0.006);
 assert.equal(permanentLevelEffect.signalBonusCoins, 5);
+assert.equal(getHarborLevel(32000).level, 4);
+assert.equal(getHarborLevel(1500000).level, 8);
 
 const cappedState = {};
 const cappedHarbor = ensureHarborState(cappedState, 'group-4');
