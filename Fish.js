@@ -3509,7 +3509,7 @@ export class fishing extends plugin {
         }
 
         const harborEffect = this.getFishingHarborEffect(e.group_id);
-        const externalModifierMultiplier = getExternalFishingModifierMultiplier(rod);
+        const externalEffectMultiplier = getExternalFishingModifierMultiplier(rod);
         const mergedBias = mergeRarityBias(
           rod.rarityBias,
           shopBait.rarityBias,
@@ -3679,7 +3679,7 @@ export class fishing extends plugin {
       }
 
       const harborEffect = this.getFishingHarborEffect(e.group_id);
-      const externalModifierMultiplier = getExternalFishingModifierMultiplier(rod);
+      const externalEffectMultiplier = getExternalFishingModifierMultiplier(rod);
       const mergedBias = mergeRarityBias(
         rod.rarityBias,
         shopBait.rarityBias,
@@ -3693,7 +3693,7 @@ export class fishing extends plugin {
       const settleRodCatchRateBonus = Number(settleRod.catchRateBonus || 0) + getGoldHumbleCatchRateBonus(settleRod, settleRodTarget);
       const externalCatchBonus = scaleExternalFishingValue(rod, manualBait.bonus) + shopBait.bonus + scaleExternalFishingValue(rod, harborEffect.catchRateBonus);
       const catchRate = getCatchRate(settleUser, externalCatchBonus + hiddenPityBonus, settleRodCatchRateBonus, { externalEffectMultiplier });
-      const externalReductionText = externalModifierMultiplier < 1 ? '\n[金谦限制] 鱼饵、彩蛋、渔港等外部钓鱼加成仅生效一半。' : '';
+      const externalReductionText = externalEffectMultiplier < 1 ? '\n[金谦限制] 鱼饵、彩蛋、渔港等外部钓鱼加成仅生效一半。' : '';
       const easterEggMsg = easterEggEffect.descriptions.length ? `\n[彩蛋加成] ${easterEggEffect.descriptions.join('；')}${externalReductionText}` : externalReductionText;
       const failRescueChance = Math.max(0, Math.min(0.45, Number(rod.failProtection || 0) + scaleExternalFishingValue(rod, easterEggEffect.failProtection)));
       const missedCatch = Math.random() >= catchRate;
