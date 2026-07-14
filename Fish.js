@@ -6100,6 +6100,11 @@ async showAchievements(e) {
     userData.achievementDailyCastBonus = getAchievementDailyCastBonus(userData);
     saveFishData(data);
     const list = formatAchievementList(userData);
+    const newlyUnlockedCount = unlocked.filter(item => item.newlyUnlocked).length;
+    const deliveredRewardCount = unlocked.filter(item => item.rewardDelivered).length;
+    const settlementText = unlocked.length
+      ? `本次结算：新点亮 ${newlyUnlockedCount} 项，奖励发放 ${deliveredRewardCount} 项（已自动入账）`
+      : '继续钓鱼、售鱼和升级鱼缸，可以点亮更多成就。';
 
     const sections = buildCardGridSections([{
       group: '成就列表',
@@ -6113,7 +6118,9 @@ async showAchievements(e) {
     }], { badgePrefix: '成' });
     const fallback = [
       '钓鱼成就',
-      ...list.map(item => `${item.unlocked ? '已点亮' : '未完成'} | ${item.name} | ${item.description} | 奖励 ${item.rewardText}`)
+      ...list.map(item => `${item.unlocked ? '已点亮' : '未完成'} | ${item.name} | ${item.description} | 奖励 ${item.rewardText}`),
+      '',
+      settlementText
     ].join('\n');
 
     await replyWithPanel(this, {
@@ -6121,7 +6128,7 @@ async showAchievements(e) {
       title: '钓鱼成就',
       subtitle: `已完成 ${list.filter(item => item.unlocked).length}/${ACHIEVEMENT_DEFS.length}`,
       sections,
-      footer: unlocked.length ? `本次点亮：${unlocked.map(item => item.name).join('、')}` : '继续钓鱼、售鱼和升级鱼缸，可以点亮更多成就。'
+      footer: settlementText
     }, fallback);
   }
 
