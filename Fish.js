@@ -172,6 +172,7 @@ import {
   parseAutoRenewBaitToggle,
   parseLegendaryCraftTarget,
   parseLegendaryPreviewTarget,
+  parseMarketCommand,
   parseMarketPurchaseKeyword,
   parseRodIndex
 } from './lib/command-parsers.js';
@@ -262,7 +263,7 @@ const HELP_GROUPS = [
     list: [
       { title: '#鱼市 / #售鱼 1 / #售鱼 common / #售鱼 全部', desc: '卖鱼、看鱼市，也可以按今日鱼获编号、稀有度或批量处理。' },
       { title: '#售鱼 鱼缸3 / #售鱼 鱼缸 2 3 4 5 / #售鱼 鱼缸虹鳟 / #售鱼 鱼缸 uncommon', desc: '支持按鱼缸序号、同名鱼顺序、鱼缸稀有度或全部出售。' },
-      { title: '#鱼市购买 鱼饵1*5 / #鱼市购买 3*自定义鱼饵清香窝料', desc: '批量购买鱼饵、钓鱼券和自定义鱼饵。' },
+      { title: '#鱼市购买 鱼饵1*5 / #鱼市 自定义鱼饵 仙桃', desc: '批量购买普通鱼饵，或用鱼市购买简写定制鱼饵。' },
       { title: '#鱼市购买 鱼竿1 / #鱼市回收 鱼竿1', desc: '购买普通鱼竿，或按回收列表序号回收已拥有鱼竿；普通竿半价，legendary 竿回收价 750。' },
       { title: '#鱼竿 / #换竿 0', desc: '查看鱼竿库存，并切换到默认竿或指定鱼竿。' },
       { title: '#鱼竿详情 鱼竿1 / #鱼竿详情全部', desc: '查看单根鱼竿详情，或缩略查看自己拥有的全部鱼竿。' },
@@ -4751,23 +4752,33 @@ async checkEasterEggCollection(e) {
   }
 
   async handleMarketCommand(e) {
-    const tail = (e.msg.match(/^#(?:鱼市|售鱼)(.*)$/)?.[1] || '').trim();
-    if (!tail) {
+    const command = parseMarketCommand(e.msg);
+    if (!command) return;
+
+    if (command.action === 'show') {
       await this.showMarket(e);
       return;
     }
 
-    if (/^购买/.test(tail)) {
-      await this.buyMarketItem(e, tail.replace(/^购买/, '').trim());
+    if (command.action === 'buy') {
+      await this.buyMarketItem(e, command.keyword);
       return;
     }
 
-    if (/^回收/.test(tail)) {
-      await this.recycleMarketItem(e, tail.replace(/^回收/, '').trim());
+    if (command.action === 'recycle') {
+      await this.recycleMarketItem(e, command.keyword);
       return;
     }
 
-    await this.sellFish(e, tail);
+    if (command.action !== 'sell') return;
+
+    if (!command.keyword) {
+      const { text: userDisplay } = getUserDisplay(e);
+      await this.reply(`${userDisplay}\n请指定要出售的鱼，例如：#售鱼 1 / #售鱼 common / #售鱼 鱼缸虹鳟 / #售鱼 全部。`);
+      return;
+    }
+
+    await this.sellFish(e, command.keyword);
   }
 
   async showMarket(e) {
@@ -4873,7 +4884,7 @@ async checkEasterEggCollection(e) {
       title: '鱼市',
       subtitle: '卖多余鱼换鱼蛋，再购入鱼饵、额外钓鱼券和鱼竿。',
       sections,
-      footer: '购买格式：#鱼市购买 鱼饵1 / #鱼市购买 鱼饵1*5 / #鱼市购买 鱼竿1 / #鱼市购买 3*自定义鱼饵清香窝料；回收格式：#鱼市回收 鱼竿1；炼竿预览：#炼竿预览 1'
+      footer: '购买格式：#鱼市购买 鱼饵1 / #鱼市购买 鱼饵1*5 / #鱼市购买 鱼竿1 / #鱼市 自定义鱼饵 仙桃；回收格式：#鱼市回收 鱼竿1；炼竿预览：#炼竿预览 1'
     }, fallback);
   }
 
@@ -5165,12 +5176,16 @@ async checkEasterEggCollection(e) {
     const data = this.loadData();
     const { userId, text: userDisplay } = getUserDisplay(e);
     const userData = this.getOrCreateUser(data, userId);
+    const target = parseSellTarget(commandText);
+    if (target.error) {
+      await this.reply(`${userDisplay}\n${target.error}`);
+      return;
+    }
     if (!userData.fishTank.length && !userData.today.fish.length) {
       await this.reply(`${userDisplay}\n你今天和鱼缸里都没有可售卖的鱼。`);
       return;
     }
 
-    const target = parseSellTarget(commandText);
     if (target.rarity === 'legendary' || target.rarity === EASTER_EGG_RARITY) {
       await this.reply(`${userDisplay}\nlegendary 鱼和彩蛋鱼不能售卖。`);
       return;
