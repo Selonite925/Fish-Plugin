@@ -185,7 +185,6 @@ import {
   recordSeasonalFishCatch
 } from './lib/seasonal-fish.js';
 import {
-  applyHarborDonation,
   ensureHarborState,
   HARBOR_BUFF_DONATION_THRESHOLD,
   HARBOR_BUFF_EXTENSION_MS,
@@ -195,9 +194,17 @@ import {
   getHarborFishPoints,
   formatHarborBuffRemaining,
   getHarborProgressText,
-  getNextHarborLevel
+  getNextHarborLevel,
+  normalizeHarborStates
 } from './lib/harbor.js';
 import { selectTideObserverSurvey } from './lib/tide-observer.js';
+import {
+  cancelHarborDonation,
+  commitHarborDonation,
+  prepareHarborCoinDonation,
+  prepareHarborFishDonation,
+  recoverPendingHarborDonations
+} from './lib/harbor-transactions.js';
 
 // 模块导航：
 // - lib/constants.js：鱼竿、鱼饵、商店、活动和基础数值配置
@@ -210,6 +217,7 @@ import { selectTideObserverSurvey } from './lib/tide-observer.js';
 // - lib/command-rules.js：Fish-plugin 命令规则清单
 // - lib/seasonal-fish.js：赛季目录、限定鱼收集和赛季进度
 // - lib/harbor.js：群共享渔港、捐赠和公共加成
+// - lib/harbor-transactions.js：渔港跨文件捐赠事务与断电恢复
 // - lib/user.js：玩家数据归一化、每日次数、彩蛋与持有物状态
 // - lib/panel.js：图片面板渲染入口
 
@@ -221,7 +229,8 @@ const SELF_UPDATE_BACKUP_DIR = '.self-update-backups';
 const USER_BACKUP_DIR = 'user_backup';
 const USER_BACKUP_FILES = [
   'fishdata/fishData.json',
-  'fishdata/baitData.json'
+  'fishdata/baitData.json',
+  'fishdata/worldState.json'
 ];
 const SELF_UPDATE_PRESERVE_PATHS = [
   /^fishdata\/(?!fishpool\.js$).+/i,
@@ -1503,15 +1512,26 @@ export class fishing extends plugin {
   }
 
   ensureWorldState() {
-    const world = loadWorldState();
+    let world = loadWorldState();
     if (this.ensureDailyResetIfNeeded()) {
-      return loadWorldState();
+      world = loadWorldState();
     }
     if (!world.lastDailyResetDate) {
       world.lastDailyResetDate = getFishingDayKey(this.config);
     }
     ensureDailySignal(world, this.fishTypes, getFishingDayKey(this.config));
-    ensureHarborState(world, null);
+    normalizeHarborStates(world);
+    const hasPendingHarborDonations = world.pendingHarborDonations &&
+      typeof world.pendingHarborDonations === 'object' &&
+      Object.keys(world.pendingHarborDonations).length > 0;
+    const transactionRecovery = hasPendingHarborDonations
+      ? recoverPendingHarborDonations(world, loadFishData())
+      : { applied: 0, cancelled: 0 };
+    if (transactionRecovery.applied > 0 || transactionRecovery.cancelled > 0) {
+      globalThis.logger?.warn?.(
+        `[Fish-plugin] 已恢复渔港未完成结算：完成 ${transactionRecovery.applied} 笔，取消 ${transactionRecovery.cancelled} 笔`
+      );
+    }
     saveWorldState(world);
     return world;
   }
@@ -4166,19 +4186,35 @@ export class fishing extends plugin {
     const { userId, text: userDisplay } = getUserDisplay(e);
     const data = this.loadData();
     const userData = this.getOrCreateUser(data, userId);
-    if (amount <= 0 || userData.coins < amount) {
+    if (!Number.isSafeInteger(amount) || amount <= 0 || userData.coins < amount) {
       await this.reply(`${userDisplay}\n请输入不超过当前鱼蛋的正整数，例如：#渔港建设 500。少于 ${HARBOR_BUFF_DONATION_THRESHOLD} 鱼蛋也可建设，但不会延长繁荣时间。当前鱼蛋：${userData.coins}`);
       return;
     }
     const world = this.ensureWorldState();
+    const transaction = prepareHarborCoinDonation(world, {
+      groupId: e.group_id,
+      userId,
+      amount,
+      balanceBefore: userData.coins
+    });
+    if (!transaction) {
+      await this.reply(`${userDisplay}\n渔港建设结算失败，本次没有扣除鱼蛋。`);
+      return;
+    }
+    saveWorldState(world);
     userData.coins -= amount;
-    const result = applyHarborDonation(world, e.group_id, userId, { coins: amount });
     saveFishData(data);
+    const committed = commitHarborDonation(world, transaction.id);
+    if (!committed) {
+      await this.reply(`${userDisplay}\n渔港建设进入待恢复状态，请勿重复捐赠；插件会在下一条钓鱼指令时自动完成结算。`);
+      return;
+    }
+    const { result } = committed;
     saveWorldState(world);
     const levelText = result.levelAfter > result.levelBefore ? `\n渔港升级：Lv.${result.levelBefore} -> Lv.${result.levelAfter}` : '';
     const buffText = result.buffExtensionUnits > 0
       ? result.buffExtendedMs > 0
-        ? `繁荣 Buff 已按 ${result.buffExtensionUnits} 档续期，${formatHarborBuffRemaining(result.harbor)}。`
+        ? `繁荣 Buff 已续期，${formatHarborBuffRemaining(result.harbor)}。`
         : '繁荣 Buff 已达到未来 30 天上限。'
       : `本次未满 ${HARBOR_BUFF_DONATION_THRESHOLD} 鱼蛋，不增加繁荣时间。`;
     const notice = `${userDisplay} 已捐赠 ${amount} 鱼蛋，获得 ${result.points} 建设值。${levelText} ${buffText} 当前鱼蛋：${userData.coins}`;
@@ -4210,10 +4246,39 @@ export class fishing extends plugin {
       await this.reply(`${userDisplay}\n${this.getLockedFishMessage(fish, '捐给渔港')}`);
       return;
     }
-    removeOwnedFish(userData, [fish], { today: true, tank: true });
+    const fishId = String(fish.fishId || '').trim();
+    if (!fishId) {
+      await this.reply(`${userDisplay}\n这条鱼缺少唯一编号，请先使用 #修复鱼数据 后再捐赠。`);
+      return;
+    }
     const world = this.ensureWorldState();
-    const result = applyHarborDonation(world, e.group_id, userId, { fishPoints: points });
+    const transaction = prepareHarborFishDonation(world, {
+      groupId: e.group_id,
+      userId,
+      points,
+      fishId
+    });
+    if (!transaction) {
+      await this.reply(`${userDisplay}\n渔港捐鱼结算失败，这条鱼没有被消耗。`);
+      return;
+    }
+    saveWorldState(world);
+    const [removedFish] = userData.fishTank.splice(resolved.originalIndex, 1);
+    if (!removedFish || !isSameFish(removedFish, fish)) {
+      if (removedFish) userData.fishTank.splice(resolved.originalIndex, 0, removedFish);
+      cancelHarborDonation(world, transaction.id);
+      saveWorldState(world);
+      await this.reply(`${userDisplay}\n渔港捐鱼失败：鱼缸数据发生变化，请重新打开 #查看鱼缸 后再试。`);
+      return;
+    }
+    removeOwnedFish(userData, fish, { today: true, tank: false });
     saveFishData(data);
+    const committed = commitHarborDonation(world, transaction.id);
+    if (!committed) {
+      await this.reply(`${userDisplay}\n渔港捐鱼进入待恢复状态，请勿重复操作；插件会在下一条钓鱼指令时自动完成结算。`);
+      return;
+    }
+    const { result } = committed;
     saveWorldState(world);
     const levelText = result.levelAfter > result.levelBefore ? `\n渔港升级：Lv.${result.levelBefore} -> Lv.${result.levelAfter}` : '';
     const notice = `${userDisplay} 已将 ${fish.name}（${fish.rarity}）捐给渔港，获得 ${points} 建设值。${levelText} 捐鱼不增加繁荣 Buff 时间。`;

@@ -301,9 +301,9 @@ plugins/Fish-plugin/resources/backgrounds
 | `fishdata/fishConfig.json` | 基础配置、封竿群 |
 | `fishdata/baitData.json` | 手动打窝数据 |
 | `fishdata/lostItems.json` | 失败事件掉落物 |
-| `fishdata/worldState.json` | 每日鱼讯状态 |
+| `fishdata/worldState.json` | 每日鱼讯和群渔港状态 |
 
-这些运行时数据文件会在首次使用时自动生成，不跟随仓库发布，避免把现有玩家数据一起提交到 GitHub。
+这些运行时数据文件会在首次使用时自动生成，不跟随仓库发布，避免把现有玩家数据一起提交到 GitHub。保存时会先完整写入同目录临时文件并刷盘，再替换正式文件；同时保留 `*.backup.json` 和 `*.backup-1.json` 两代有效备份。正式文件因断电变为空文件、NUL 字节或无效 JSON 时，插件会自动选择最新有效副本恢复，并将损坏内容保留为 `*.corrupt-时间戳.json` 供排查。
 更新插件前建议备份 `fishdata/*.json`。
 
 ## 赛季鱼与渔港
@@ -314,7 +314,7 @@ plugins/Fish-plugin/resources/backgrounds
 - `#渔港建设 2000`：捐出鱼蛋并按 1:1 转为群建设值；单次捐赠每满 2000 鱼蛋，繁荣 Buff 延长 3 天。
 - `#渔港捐鱼 1`：把鱼缸展示序号 1 的非锁定鱼捐给渔港，按稀有度换算建设值。
 
-群渔港数据保存在 `fishdata/worldState.json` 的 `harbors` 字段；玩家赛季收藏保存在 `fishdata/fishData.json` 的 `seasonalCollections` 字段。具体赛季只在开始后通过 `#赛季鱼` 面板展示，不提前公开后续活动。2026 夏潮赛季会在世界杯决赛潮结束后开启，并与七夕星河首尾相接；后续可在 `lib/seasonal-fish.js` 和 `fishdata/fishpool.js` 增加新赛季。
+群渔港数据保存在 `fishdata/worldState.json` 的 `harbors` 字段；玩家赛季收藏保存在 `fishdata/fishData.json` 的 `seasonalCollections` 字段。渔港捐赠使用待结算事务记录：如果进程在扣除鱼蛋/移除鱼和写入建设值之间中断，重启后的下一条钓鱼指令会自动完成或取消该笔事务。具体赛季只在开始后通过 `#赛季鱼` 面板展示，不提前公开后续活动。2026 夏潮赛季会在世界杯决赛潮结束后开启，并与七夕星河首尾相接；后续可在 `lib/seasonal-fish.js` 和 `fishdata/fishpool.js` 增加新赛季。
 
 渔港升级会逐级解锁更好的常驻加成，当前最高为 Lv.8、累计 150 万建设值；繁荣 Buff 只提供额外收益。单次捐赠每满 2000 鱼蛋延长 3 天，最多保留未来 30 天；捐鱼只增加建设值，不延长时间。繁荣结束后，渔港等级提供的上鱼率、鱼讯鱼蛋和稀有鱼影倾向仍会继续生效。
 

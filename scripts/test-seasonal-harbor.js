@@ -19,8 +19,15 @@ import {
   HARBOR_LEVELS,
   getHarborEffect,
   getHarborFishPoints,
-  getHarborLevel
+  getHarborLevel,
+  normalizeHarborStates
 } from '../lib/harbor.js';
+import {
+  commitHarborDonation,
+  prepareHarborCoinDonation,
+  prepareHarborFishDonation,
+  recoverPendingHarborDonations
+} from '../lib/harbor-transactions.js';
 
 const userData = createDefaultUserData();
 for (let index = 1; index < HARBOR_LEVELS.length; index += 1) {
@@ -105,5 +112,99 @@ cappedHarbor.buffExpiresAt = capStartedAt + 29 * 24 * 60 * 60 * 1000;
 applyHarborDonation(cappedState, 'group-4', 'user-1', { coins: HARBOR_BUFF_DONATION_THRESHOLD * 10 });
 assert.ok(cappedHarbor.buffExpiresAt <= capStartedAt + HARBOR_BUFF_MAX_DURATION_MS + 1000);
 assert.ok(cappedHarbor.buffExpiresAt >= capStartedAt + HARBOR_BUFF_MAX_DURATION_MS - 1000);
+
+const malformedState = {
+  harbors: {
+    'group-bad': {
+      level: 99,
+      constructionPoints: '7000.9',
+      contributors: {
+        'user-1': { coins: '10', fishPoints: 'invalid' },
+        'user-2': null
+      },
+      buffExpiresAt: 'invalid'
+    },
+    'group-non-finite': {
+      constructionPoints: Number.NaN,
+      contributors: {
+        'user-3': { coins: Number.POSITIVE_INFINITY, fishPoints: -50 }
+      },
+      buffExpiresAt: Number.POSITIVE_INFINITY
+    }
+  }
+};
+assert.equal(normalizeHarborStates(malformedState), true);
+const repairedHarbor = malformedState.harbors['group-bad'];
+assert.equal(repairedHarbor.constructionPoints, 7000);
+assert.equal(repairedHarbor.level, 2);
+assert.equal(repairedHarbor.buffExpiresAt, 0);
+assert.deepEqual(repairedHarbor.contributors['user-1'], { coins: 10, fishPoints: 0 });
+assert.deepEqual(repairedHarbor.contributors['user-2'], { coins: 0, fishPoints: 0 });
+const repairedDonation = applyHarborDonation(malformedState, 'group-bad', 'user-1', { coins: 2000 });
+assert.equal(repairedDonation.harbor.constructionPoints, 9000);
+assert.equal(repairedDonation.harbor.contributors['user-1'].coins, 2010);
+assert.equal(typeof repairedDonation.harbor.contributors['user-1'].coins, 'number');
+assert.equal(malformedState.harbors['group-non-finite'].constructionPoints, 0);
+assert.equal(malformedState.harbors['group-non-finite'].buffExpiresAt, 0);
+assert.equal(malformedState.harbors['group-non-finite'].contributors['user-3'].coins, 0);
+assert.equal(applyHarborDonation({}, 'group-invalid', 'user-1', { coins: Number.POSITIVE_INFINITY }).points, 0);
+
+const cancelledCoinWorld = {};
+const cancelledCoinData = { 'user-1': { coins: 5000, fishTank: [] } };
+prepareHarborCoinDonation(cancelledCoinWorld, {
+  groupId: 'group-tx-cancel',
+  userId: 'user-1',
+  amount: 2000,
+  balanceBefore: 5000
+});
+const cancelledCoinRecovery = recoverPendingHarborDonations(cancelledCoinWorld, cancelledCoinData);
+assert.equal(cancelledCoinRecovery.applied, 0);
+assert.equal(cancelledCoinRecovery.cancelled, 1);
+assert.equal(cancelledCoinWorld.harbors, undefined);
+
+const recoveredCoinWorld = {};
+const recoveredCoinData = { 'user-1': { coins: 5000, fishTank: [] } };
+prepareHarborCoinDonation(recoveredCoinWorld, {
+  groupId: 'group-tx-coins',
+  userId: 'user-1',
+  amount: 2000,
+  balanceBefore: 5000
+});
+recoveredCoinData['user-1'].coins = 3000;
+const recoveredCoinSummary = recoverPendingHarborDonations(recoveredCoinWorld, recoveredCoinData);
+assert.equal(recoveredCoinSummary.applied, 1);
+assert.equal(recoveredCoinSummary.cancelled, 0);
+assert.equal(recoveredCoinWorld.harbors['group-tx-coins'].constructionPoints, 2000);
+assert.equal(recoverPendingHarborDonations(recoveredCoinWorld, recoveredCoinData).changed, false);
+
+const directCommitWorld = {};
+const directTransaction = prepareHarborCoinDonation(directCommitWorld, {
+  groupId: 'group-tx-direct',
+  userId: 'user-1',
+  amount: 2000,
+  balanceBefore: 3000
+});
+const directCommit = commitHarborDonation(directCommitWorld, directTransaction.id);
+assert.equal(directCommit.result.points, 2000);
+assert.equal(directCommitWorld.harbors['group-tx-direct'].constructionPoints, 2000);
+assert.equal(Object.keys(directCommitWorld.pendingHarborDonations).length, 0);
+
+const recoveredFishWorld = {};
+const recoveredFishData = {
+  'user-2': {
+    coins: 0,
+    fishTank: [{ fishId: 'fish-tx-1', name: '测试鱼', rarity: 'epic' }]
+  }
+};
+prepareHarborFishDonation(recoveredFishWorld, {
+  groupId: 'group-tx-fish',
+  userId: 'user-2',
+  points: 350,
+  fishId: 'fish-tx-1'
+});
+recoveredFishData['user-2'].fishTank = [];
+const recoveredFishSummary = recoverPendingHarborDonations(recoveredFishWorld, recoveredFishData);
+assert.equal(recoveredFishSummary.applied, 1);
+assert.equal(recoveredFishWorld.harbors['group-tx-fish'].constructionPoints, 350);
 
 console.log('seasonal fish and harbor ok');
