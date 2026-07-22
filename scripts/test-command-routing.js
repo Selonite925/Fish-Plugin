@@ -32,6 +32,10 @@ assertRoute('#炼竿预览 1', 'previewLegendaryRod');
 assertRoute('#炼竿 1', 'craftLegendaryRod');
 assertRoute('#打窝 仙桃', 'addBait');
 assertRoute('#补鱼 @123456 rare 鳗鱼', 'compensateFish');
+assertRoute('#渔港建设 2000', 'donateHarborCoins');
+assertRoute('#渔港捐蛋 2000', 'donateHarborCoins');
+assertRoute('#渔港捐鱼 1', 'donateHarborFish');
+assertRoute('#渔港捐鱼 虹鳟2', 'donateHarborFish');
 
 assert.deepEqual(getMatches('#鱼市场'), []);
 assert.deepEqual(getMatches('#打窝棚'), []);

@@ -16,6 +16,7 @@ import {
   HARBOR_BUFF_DONATION_THRESHOLD,
   HARBOR_BUFF_EXTENSION_MS,
   HARBOR_BUFF_MAX_DURATION_MS,
+  HARBOR_FISH_POINT_VALUES,
   HARBOR_LEVELS,
   getHarborEffect,
   getHarborFishPoints,
@@ -78,7 +79,10 @@ assert.ok(harborDonation.harbor.buffExpiresAt >= donationStartedAt + HARBOR_BUFF
 assert.equal(getHarborEffect(worldState, 'group-1').level, 1);
 assert.equal(getHarborEffect(worldState, 'group-1').active, true);
 assert.equal(getHarborEffect(worldState, 'group-1').catchRateBonus, 0.005);
-assert.equal(getHarborFishPoints({ rarity: 'epic' }), 350);
+for (const [rarity, points] of Object.entries(HARBOR_FISH_POINT_VALUES)) {
+  assert.equal(getHarborFishPoints({ rarity }), points);
+}
+assert.equal(getHarborFishPoints({ rarity: 'easteregg' }), 0);
 
 worldState.harbors['group-1'].buffExpiresAt = Date.now() - 1;
 const expiredEffect = getHarborEffect(worldState, 'group-1');

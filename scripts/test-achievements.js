@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 
-import { scanAchievements } from '../lib/achievements.js';
+import { formatAchievementList, getAchievementProgress, scanAchievements } from '../lib/achievements.js';
 import { ACHIEVEMENT_DEFS } from '../lib/constants.js';
 import { createDefaultUserData } from '../lib/user.js';
 import { fishTypes } from '../fishdata/fishpool.js';
@@ -25,6 +25,30 @@ const permanentCommon = fishTypes.common.filter(fish => !fish.seasonal);
 const seasonalCommon = fishTypes.common.filter(fish => fish.seasonal);
 assert.ok(permanentCommon.length > 0);
 assert.ok(seasonalCommon.length > 0);
+
+const progressUser = createDefaultUserData();
+progressUser.allTimeFish = Array.from({ length: 432 }, () => ({ rarity: 'common', name: permanentCommon[0].name }));
+assert.deepEqual(getAchievementProgress(progressUser, 'thousand_catches'), {
+  current: 432,
+  target: 1000,
+  percent: 43.2,
+  completed: false,
+  label: '432/1000 条 · 43.2%'
+});
+assert.equal(getAchievementProgress(progressUser, 'hundred_catches'), null);
+assert.deepEqual(
+  formatAchievementList(progressUser).find(item => item.id === 'thousand_catches')?.progress,
+  getAchievementProgress(progressUser, 'thousand_catches')
+);
+
+progressUser.allTimeFish.push(...Array.from({ length: 600 }, () => ({ rarity: 'common', name: permanentCommon[0].name })));
+assert.deepEqual(getAchievementProgress(progressUser, 'thousand_catches'), {
+  current: 1032,
+  target: 1000,
+  percent: 100,
+  completed: true,
+  label: '1000/1000 条 · 已达成（累计 1032 条）'
+});
 
 const collector = createDefaultUserData();
 markOtherAchievementsClaimed(collector, 'common_master');

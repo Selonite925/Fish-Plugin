@@ -189,6 +189,7 @@ import {
   HARBOR_BUFF_DONATION_THRESHOLD,
   HARBOR_BUFF_EXTENSION_MS,
   HARBOR_BUFF_MAX_DURATION_MS,
+  HARBOR_FISH_POINT_VALUES,
   formatHarborEffectSummary,
   getHarborEffect,
   getHarborFishPoints,
@@ -243,6 +244,9 @@ const COMPENSATE_COMMAND_FILLER_TOKENS = new Set(['给', '给到', '补给', '�
 const XIANYU_EASTER_EGG_NAME = '闲鱼';
 const CUSTOM_BAIT_PURCHASE_PATTERN = '(?:自定义鱼饵|定制鱼饵|手作鱼饵)';
 const ALL_DETAILS_KEYWORD_REG = /^(?:全部|所有|全量|一览|all)$/i;
+const HARBOR_FISH_POINT_TEXT = Object.entries(HARBOR_FISH_POINT_VALUES)
+  .map(([rarity, points]) => `${rarity} ${points}`)
+  .join(' / ');
 
 const HELP_GROUPS = [
   {
@@ -253,7 +257,6 @@ const HELP_GROUPS = [
       { title: '#今日鱼获 / #查看鱼获 @某人', desc: '查看自己或别人的当日鱼获记录。' },
       { title: '#钓鱼图鉴 / #钓鱼排行 / #每周钓鱼榜 / #每月钓鱼榜', desc: '看收藏、总排行、本周排行和本月排行。' },
       { title: '#赛季鱼 / #历史赛季鱼', desc: '查看当前赛季或历史赛季限定鱼图鉴面板；不提前展示后续赛季。' },
-      { title: '#渔港', desc: '发送本群渔港面板；等级加成永久生效，达标捐蛋可延长繁荣 Buff。' },
       { title: '#鱼王榜 / #空军榜', desc: '看鱼缸综合质量和今日空军情况。' }
     ]
   },
@@ -265,6 +268,14 @@ const HELP_GROUPS = [
       { title: '#放生鱼 1', desc: '从鱼缸放生指定鱼。彩蛋鱼属于收藏，不在鱼缸里。' },
       { title: '#赠鱼 @某人 1 / #赠鱼 1 @某人', desc: '把指定鱼送给别人，支持按鱼缸序号或鱼名赠送。' },
       { title: '#锁定鱼 3 / #锁定鱼 虹鳟2 / #解锁鱼 3', desc: '支持按鱼缸序号或鱼名锁定；已锁定的鱼不能出售、升级、炼竿、放生、赠送或被自动替换。' }
+    ]
+  },
+  {
+    group: '渔港建设',
+    list: [
+      { title: '#渔港', desc: '查看本群渔港等级、建设值、常驻加成、繁荣 Buff 和贡献榜。' },
+      { title: '#渔港建设 2000 / #渔港捐蛋 2000', desc: '捐鱼蛋增加等量建设值；单次每满 2000 鱼蛋，繁荣 Buff 延长 3 天。' },
+      { title: '#渔港捐鱼 1 / #渔港捐鱼 虹鳟2', desc: `先用 #查看鱼缸 确认序号或鱼名；锁定鱼和彩蛋鱼不能捐。建设值：${HARBOR_FISH_POINT_TEXT}。` }
     ]
   },
   {
@@ -918,6 +929,19 @@ function buildCardGridSections(groups = [], options = {}) {
     const renderItem = (item, badgeText) => {
       const title = escapePanelHtml(item.title || '');
       const desc = escapePanelHtml(item.desc || '');
+      const progressCurrent = Math.max(0, Number(item.progress?.current || 0));
+      const progressTarget = Math.max(0, Number(item.progress?.target || 0));
+      const progressPercent = progressTarget > 0
+        ? Math.max(0, Math.min(100, Number(item.progress?.percent ?? ((progressCurrent / progressTarget) * 100))))
+        : 0;
+      const progressLabel = escapePanelHtml(item.progress?.label || '');
+      const progressHtml = item.progress && progressTarget > 0
+        ? `<div class="achievement-progress${item.progress.completed ? ' complete' : ''}">` +
+          `<div class="achievement-progress-label"><span>千尾进度</span><span>${progressLabel}</span></div>` +
+          `<div class="achievement-progress-track" role="progressbar" aria-valuemin="0" aria-valuemax="${progressTarget}" aria-valuenow="${Math.min(progressCurrent, progressTarget)}">` +
+          `<span class="achievement-progress-fill" style="width:${progressPercent.toFixed(1)}%"></span>` +
+          '</div></div>'
+        : '';
       const meta = item.meta ? `<div class="help-grid-item-meta">${escapePanelHtml(item.meta)}</div>` : '';
       const toneClass = item.tone ? ` help-grid-item-${item.tone}` : '';
       return (
@@ -925,6 +949,7 @@ function buildCardGridSections(groups = [], options = {}) {
         renderGridBadge(badgeText, item.badgeOverlay) +
         `<div class="help-grid-item-title">${title}</div>` +
         `<div class="help-grid-item-desc">${desc}</div>` +
+        progressHtml +
         meta +
         '</div>'
       );
@@ -3256,12 +3281,32 @@ export class fishing extends plugin {
             meta: `需要累计 ${nextLevel.requiredPoints} 建设值`,
             tone: 'gold'
           }] : []),
+        ]
+      },
+      {
+        group: '如何建设',
+        list: [
           {
-            badge: '捐赠',
-            title: `每满 ${HARBOR_BUFF_DONATION_THRESHOLD} 鱼蛋续 ${extensionDays} 天`,
-            desc: `#渔港建设 ${HARBOR_BUFF_DONATION_THRESHOLD} 或 #渔港捐鱼 1；捐鱼只增加建设值`,
-            meta: `按单次捐赠的完整档数计算，最长 ${maxDurationDays} 天`,
+            badge: '捐蛋',
+            title: `#渔港建设 ${HARBOR_BUFF_DONATION_THRESHOLD}`,
+            desc: `捐出鱼蛋并获得等量建设值；别名：#渔港捐蛋 ${HARBOR_BUFF_DONATION_THRESHOLD}`,
+            meta: `单次每满 ${HARBOR_BUFF_DONATION_THRESHOLD} 鱼蛋续 ${extensionDays} 天繁荣 Buff，最长保留 ${maxDurationDays} 天`,
             tone: 'sky'
+          },
+          {
+            badge: '捐鱼',
+            title: '#渔港捐鱼 1 / #渔港捐鱼 虹鳟2',
+            desc: '先发送 #查看鱼缸，使用面板里的鱼缸序号；也可按鱼名和同名顺序捐赠。',
+            meta: '捐鱼只增加建设值，不延长繁荣 Buff；锁定鱼和彩蛋鱼不能捐。',
+            tone: 'active'
+          },
+          {
+            badge: '换算',
+            title: '捐鱼建设值',
+            desc: HARBOR_FISH_POINT_TEXT,
+            meta: '鱼会从鱼缸和今日鱼获中移除，捐赠前请确认鱼缸序号。',
+            tone: 'note',
+            fullWidth: true
           }
         ]
       },
@@ -3277,7 +3322,7 @@ export class fishing extends plugin {
           }))
           : [{ badge: '空', title: '暂无贡献记录', desc: '成为第一个建设渔港的钓友吧。', tone: 'note', fullWidth: true }]
       }
-    ], ['harbor', 'slate']);
+    ], ['harbor', 'sky', 'slate']);
     const sections = buildCardGridSections(groups, { badgePrefix: '港' });
     const fallback = [
       `本群渔港：${effect.name} Lv.${effect.level}`,
@@ -3287,6 +3332,12 @@ export class fishing extends plugin {
       `繁荣加成：${prosperityText}`,
       `当前状态：${effectText}`,
       `繁荣时间：${formatHarborBuffRemaining(harbor)}`,
+      '',
+      '建设指令：',
+      `捐鱼蛋：#渔港建设 ${HARBOR_BUFF_DONATION_THRESHOLD} / #渔港捐蛋 ${HARBOR_BUFF_DONATION_THRESHOLD}`,
+      '捐鱼：先用 #查看鱼缸 确认序号，再发送 #渔港捐鱼 1；也可用 #渔港捐鱼 虹鳟2',
+      `捐鱼建设值：${HARBOR_FISH_POINT_TEXT}`,
+      '锁定鱼和彩蛋鱼不能捐；捐鱼不延长繁荣 Buff。',
       '',
       '贡献榜：',
       ...(contributorList.length
@@ -3299,7 +3350,7 @@ export class fishing extends plugin {
         title: '群渔港',
         subtitle: `${effect.name} | ${effect.active ? formatHarborBuffRemaining(harbor) : '等级加成常驻生效'}`,
         sections,
-        footer: `等级加成永久生效；每满 ${HARBOR_BUFF_DONATION_THRESHOLD} 鱼蛋为繁荣 Buff 续 ${extensionDays} 天，最多 ${maxDurationDays} 天。`
+        footer: `捐鱼先用 #查看鱼缸 确认序号，再发送 #渔港捐鱼 1；等级加成永久生效。`
       },
       fallback: fallback.join('\n')
     };
@@ -6193,12 +6244,13 @@ async showAchievements(e) {
         title: item.name,
         desc: item.description,
         meta: `奖励：${item.rewardText}`,
+        progress: item.progress,
         tone: item.unlocked ? 'achievement-done' : 'achievement-pending'
       }))
     }], { badgePrefix: '成' });
     const fallback = [
       '钓鱼成就',
-      ...list.map(item => `${item.unlocked ? '已点亮' : '未完成'} | ${item.name} | ${item.description} | 奖励 ${item.rewardText}`),
+      ...list.map(item => `${item.unlocked ? '已点亮' : '未完成'} | ${item.name} | ${item.description}${item.progress ? ` | 进度 ${item.progress.label}` : ''} | 奖励 ${item.rewardText}`),
       '',
       settlementText
     ].join('\n');
