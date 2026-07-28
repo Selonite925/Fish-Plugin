@@ -3,7 +3,32 @@ import fs from 'fs';
 import os from 'os';
 import path from 'path';
 
-import { readJson, writeJson } from '../lib/storage.js';
+import { mergeChangedRecords, readJson, writeJson } from '../lib/storage.js';
+
+const sharedSnapshot = {
+  playerA: { today: { fish: [] }, fishTank: [], achievements: {} },
+  playerB: { today: { fish: [] }, fishTank: [], stats: { consecutiveEmpty: 0 } }
+};
+const playerACatch = structuredClone(sharedSnapshot);
+playerACatch.playerA.today.fish.push({ fishId: 'bluegill-1', name: '蓝鳃太阳鱼' });
+playerACatch.playerA.fishTank.push({ fishId: 'bluegill-1', name: '蓝鳃太阳鱼' });
+playerACatch.playerA.achievements.common_master = { unlocked: true };
+const afterPlayerACatch = mergeChangedRecords(sharedSnapshot, playerACatch, sharedSnapshot);
+
+const playerBEmptyCast = structuredClone(sharedSnapshot);
+playerBEmptyCast.playerB.stats.consecutiveEmpty = 1;
+const afterInterleavedSave = mergeChangedRecords(sharedSnapshot, playerBEmptyCast, afterPlayerACatch);
+assert.deepEqual(afterInterleavedSave.playerA, playerACatch.playerA);
+assert.deepEqual(afterInterleavedSave.playerB, playerBEmptyCast.playerB);
+
+const withConcurrentNewPlayer = structuredClone(afterInterleavedSave);
+withConcurrentNewPlayer.playerC = { coins: 100 };
+const playerBFollowUp = structuredClone(playerBEmptyCast);
+playerBFollowUp.playerB.stats.consecutiveEmpty = 2;
+assert.deepEqual(
+  mergeChangedRecords(playerBEmptyCast, playerBFollowUp, withConcurrentNewPlayer).playerC,
+  { coins: 100 }
+);
 
 const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'fish-storage-recovery-'));
 
@@ -48,4 +73,4 @@ try {
   fs.rmSync(tempDir, { recursive: true, force: true });
 }
 
-console.log('atomic JSON write and corruption recovery ok');
+console.log('atomic JSON write, recovery, and concurrent player merge ok');

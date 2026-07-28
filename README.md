@@ -303,7 +303,7 @@ plugins/Fish-plugin/resources/backgrounds
 | `fishdata/lostItems.json` | 失败事件掉落物 |
 | `fishdata/worldState.json` | 每日鱼讯和群渔港状态 |
 
-这些运行时数据文件会在首次使用时自动生成，不跟随仓库发布，避免把现有玩家数据一起提交到 GitHub。保存时会先完整写入同目录临时文件并刷盘，再替换正式文件；同时保留 `*.backup.json` 和 `*.backup-1.json` 两代有效备份。正式文件因断电变为空文件、NUL 字节或无效 JSON 时，插件会自动选择最新有效副本恢复，并将损坏内容保留为 `*.corrupt-时间戳.json` 供排查。
+这些运行时数据文件会在首次使用时自动生成，不跟随仓库发布，避免把现有玩家数据一起提交到 GitHub。保存时会先完整写入同目录临时文件并刷盘，再替换正式文件；同时保留 `*.backup.json` 和 `*.backup-1.json` 两代有效备份。多人命令交错结算时，`fishData.json` 只合并本次命令实际改动的玩家，避免旧快照覆盖其他玩家刚写入的鱼获、鱼缸和成就。正式文件因断电变为空文件、NUL 字节或无效 JSON 时，插件会自动选择最新有效副本恢复，并将损坏内容保留为 `*.corrupt-时间戳.json` 供排查。
 更新插件前建议备份 `fishdata/*.json`。
 
 ## 赛季鱼与渔港
