@@ -18,6 +18,9 @@ userData.activeEasterEgg = '愿望锦鲤';
 assert.equal(resolveOwnedEasterEggName(userData, duanwuName), duanwuName);
 assert.equal(resolveOwnedEasterEggName(userData, '端午'), duanwuName);
 assert.equal(resolveOwnedEasterEggName(userData, '端午彩蛋鱼'), duanwuName);
+assert.equal(resolveOwnedEasterEggName(userData, '端午鮟鱇'), duanwuName);
+assert.equal(resolveOwnedEasterEggName(userData, '端午鮟鱇鱼'), duanwuName);
+assert.equal(resolveOwnedEasterEggName(userData, '端午鮟鱇魚'), duanwuName);
 assert.equal(resolveOwnedEasterEggName(userData, '粽叶鱼'), duanwuName);
 
 const result = scheduleEasterEggSwitch(userData, '端午', '2026-07-02');
@@ -27,6 +30,13 @@ assert.deepEqual(result, {
   pendingName: duanwuName
 });
 assert.equal(userData.pendingEasterEgg, duanwuName);
+
+const fullAliasUser = createDefaultUserData();
+unlockEasterEgg(fullAliasUser, '愿望锦鲤');
+unlockEasterEgg(fullAliasUser, duanwuName);
+const fullAliasResult = scheduleEasterEggSwitch(fullAliasUser, '端午鮟鱇鱼', '2026-07-02');
+assert.equal(fullAliasResult.ok, true);
+assert.equal(fullAliasResult.pendingName, duanwuName);
 
 const alreadyPending = scheduleEasterEggSwitch(userData, '端午鱼', '2026-07-03');
 assert.equal(alreadyPending.ok, false);
