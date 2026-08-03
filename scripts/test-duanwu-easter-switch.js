@@ -21,6 +21,9 @@ assert.equal(resolveOwnedEasterEggName(userData, '端午彩蛋鱼'), duanwuName)
 assert.equal(resolveOwnedEasterEggName(userData, '端午鮟鱇'), duanwuName);
 assert.equal(resolveOwnedEasterEggName(userData, '端午鮟鱇鱼'), duanwuName);
 assert.equal(resolveOwnedEasterEggName(userData, '端午鮟鱇魚'), duanwuName);
+assert.equal(resolveOwnedEasterEggName(userData, '2'), duanwuName);
+assert.equal(resolveOwnedEasterEggName(userData, '彩蛋2'), duanwuName);
+assert.equal(resolveOwnedEasterEggName(userData, '彩蛋鱼2'), duanwuName);
 assert.equal(resolveOwnedEasterEggName(userData, '粽叶鱼'), duanwuName);
 
 const result = scheduleEasterEggSwitch(userData, '端午', '2026-07-02');
@@ -38,6 +41,13 @@ const fullAliasResult = scheduleEasterEggSwitch(fullAliasUser, '端午鮟鱇鱼'
 assert.equal(fullAliasResult.ok, true);
 assert.equal(fullAliasResult.pendingName, duanwuName);
 
+const indexedUser = createDefaultUserData();
+unlockEasterEgg(indexedUser, '愿望锦鲤');
+unlockEasterEgg(indexedUser, duanwuName);
+const indexedResult = scheduleEasterEggSwitch(indexedUser, '2', '2026-07-02');
+assert.equal(indexedResult.ok, true);
+assert.equal(indexedResult.pendingName, duanwuName);
+
 const alreadyPending = scheduleEasterEggSwitch(userData, '端午鱼', '2026-07-03');
 assert.equal(alreadyPending.ok, false);
 assert.equal(alreadyPending.reason, 'already_pending');
@@ -47,6 +57,10 @@ const commandRules = new fishing().rule || [];
 assert.ok(commandRules.some(rule =>
   rule.fnc === 'scheduleActiveEasterEgg' &&
   new RegExp(rule.reg).test('#装备彩蛋端午')
+));
+assert.ok(commandRules.some(rule =>
+  rule.fnc === 'scheduleActiveEasterEgg' &&
+  new RegExp(rule.reg).test('#装备彩蛋 1')
 ));
 
 console.log('duanwu easter switch aliases ok');

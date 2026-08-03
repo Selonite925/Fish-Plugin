@@ -298,7 +298,7 @@ const HELP_GROUPS = [
     list: [
       { title: '#限时鱼讯', desc: '查看当天高活跃鱼讯与命中奖励。' },
       { title: '#彩蛋收藏', desc: '查看已收集彩蛋、当前生效项和待切换项。' },
-      { title: '#切换彩蛋 愿望锦鲤 / #装备彩蛋 端午', desc: '安排彩蛋效果切换；每天只能安排一次，次日生效。' },
+      { title: '#切换彩蛋 1 / #装备彩蛋 1', desc: '按彩蛋收藏列表序号或名称安排切换；每天只能安排一次，次日生效。' },
       { title: '#钓鱼祈愿 / #钓鱼祈愿10 / #钓鱼十连 / #钓鱼祈愿清单', desc: '100鱼蛋祈愿1次，可获得限定鱼竿、限定鱼饵和免费祈愿。' },
       { title: '#钓鱼祈愿大奖 大奖名', desc: '切换当前想抽的祈愿大奖，已有保底进度会继续累计。' },
       { title: '#金谦指定 虹鳟 / #金谦目标 rare', desc: '拥有金满而谦虚之竿后，每天可指定1次目标鱼或整个稀有度；清除目标需发送 #金谦指定 确认清除。' },
@@ -4457,20 +4457,23 @@ async checkEasterEggCollection(e) {
     const userData = this.getOrCreateUser(data, String(e.user_id));
     normalizeUserData(userData);
     const status = getEasterEggStatusSummary(userData);
-    const ownedText = status.owned.length ? status.owned.join('、') : '暂无';
+    const ownedText = status.owned.length
+      ? status.owned.map((name, index) => `彩蛋${index + 1}：${name}`).join('、')
+      : '暂无';
     const pendingText = status.pendingName ? `${status.pendingName}（明日生效）` : '无';
     const hiddenCount = Math.max(0, Object.keys(EASTER_EGG_EFFECTS).length - status.owned.length);
-    const effectItems = status.owned.map(name => {
+    const effectItems = status.owned.map((name, index) => {
       const effect = EASTER_EGG_EFFECTS[name] || {};
       const isActive = status.activeName === name;
       const isPending = status.pendingName === name;
       const badges = [
+        `第${index + 1}条`,
         '已收集',
         isActive ? '当前生效' : null,
         isPending ? '待切换' : null
       ].filter(Boolean).join(' | ');
       return {
-        badge: isActive ? '生效' : isPending ? '待切' : '已收',
+        badge: `彩${index + 1}`,
         title: name,
         desc: effect.description || '效果已记录',
         meta: badges,
@@ -4483,7 +4486,7 @@ async checkEasterEggCollection(e) {
         { badge: '已收', title: `已收集 ${status.owned.length} 条`, desc: ownedText, tone: 'positive' },
         { badge: '生效', title: status.activeName || '当前无生效彩蛋', desc: status.activeDescription || '暂无效果', tone: status.activeName ? 'active' : 'neutral' },
         { badge: '待切', title: status.pendingName || '暂无待切换彩蛋', desc: pendingText, tone: status.pendingName ? 'warning' : 'neutral' },
-        { badge: '切换', title: '#切换彩蛋 彩蛋名 / #装备彩蛋 端午', desc: '每天只能安排一次，次日生效。', tone: 'note' }
+        { badge: '切换', title: '#切换彩蛋 编号 / #装备彩蛋 编号', desc: '也可直接填写彩蛋名称；每天只能安排一次，次日生效。', tone: 'note' }
       ]
     }, {
       group: '彩蛋条目',
@@ -4510,7 +4513,7 @@ async checkEasterEggCollection(e) {
       `当前生效：${status.activeDescription}`,
       `待切换：${pendingText}`,
       `收藏列表：${ownedText}`,
-      '切换方式：#切换彩蛋 彩蛋名 / #装备彩蛋 端午'
+      '切换方式：#切换彩蛋 编号 / #装备彩蛋 编号，也可填写彩蛋名称'
     ].join('\n');
 
     await replyWithPanel(this, {
@@ -4530,7 +4533,7 @@ async checkEasterEggCollection(e) {
 
     const targetName = String(e.msg || '').replace(/^#(?:切换|装备|启用|使用)彩蛋\s*/, '').trim();
     if (!targetName) {
-      await this.reply(`${userDisplay}\n请填写要切换的彩蛋鱼名称，例如：#切换彩蛋 愿望锦鲤 / #装备彩蛋 端午`);
+      await this.reply(`${userDisplay}\n请填写彩蛋收藏序号或名称，例如：#切换彩蛋 1 / #装备彩蛋 愿望锦鲤`);
       return;
     }
 
