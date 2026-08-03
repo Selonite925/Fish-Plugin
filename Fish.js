@@ -94,6 +94,7 @@ import {
   parseTankIndexes
 } from './lib/tank.js';
 import { buildSellPreview, canSellFish, findShopItem, getFishSellValue, parseSellTarget } from './lib/economy.js';
+import { scaleCoinReward } from './lib/currency.js';
 import { formatAchievementList, getAchievementCatchRateBonus, getAchievementDailyCastBonus, getCollectionStats, scanAchievements } from './lib/achievements.js';
 import { ensureDailySignal } from './lib/signals.js';
 import { ensureResourceDirs, replyWithPanel } from './lib/panel.js';
@@ -685,6 +686,10 @@ function getExternalFishingModifierMultiplier(rod = null) {
 
 function scaleExternalFishingValue(rod, value = 0) {
   return Number(value || 0) * getExternalFishingModifierMultiplier(rod);
+}
+
+function scaleExternalCoinReward(rod, value = 0) {
+  return scaleCoinReward(value, getExternalFishingModifierMultiplier(rod));
 }
 
 function scaleExternalFishingMultiplier(rod, value = 1) {
@@ -3668,14 +3673,14 @@ export class fishing extends plugin {
         const signalHit = signal.targets.some(item => item.name === fishWithTimestamp.name);
         if (signalHit) {
           const equippedRod = getEquippedRod(userData);
-          const signalCoins = signal.bonusCoins + getSignalRodBonusCoins(equippedRod, fishWithTimestamp) + scaleExternalFishingValue(equippedRod, harborEffect.signalBonusCoins);
+          const signalCoins = signal.bonusCoins + getSignalRodBonusCoins(equippedRod, fishWithTimestamp) + scaleExternalCoinReward(equippedRod, harborEffect.signalBonusCoins);
           if (!suppressExtraCoinBonuses) userData.coins += signalCoins;
           userData.stats.signalFishCaught += 1;
           summary.signalHits += 1;
         }
         const rodCoinBonus = Number(getEquippedRod(userData)?.catchCoinBonus || 0);
         if (!suppressExtraCoinBonuses && rodCoinBonus > 0) userData.coins += rodCoinBonus;
-        const easterEggCoinBonus = scaleExternalFishingValue(getEquippedRod(userData), easterEggEffect.catchCoinBonus);
+        const easterEggCoinBonus = scaleExternalCoinReward(getEquippedRod(userData), easterEggEffect.catchCoinBonus);
         const easterEggCoinBonusRate = scaleExternalFishingValue(getEquippedRod(userData), easterEggEffect.catchCoinBonusRate);
         if (!suppressExtraCoinBonuses && easterEggCoinBonus > 0) userData.coins += easterEggCoinBonus;
         if (!suppressExtraCoinBonuses && easterEggCoinBonusRate > 0) {
@@ -3829,7 +3834,7 @@ export class fishing extends plugin {
       const signalHit = signal.targets.some(item => item.name === fishWithTimestamp.name);
       if (signalHit) {
         const equippedRod = getEquippedRod(settleUser);
-        const signalCoins = signal.bonusCoins + getSignalRodBonusCoins(equippedRod, fishWithTimestamp) + scaleExternalFishingValue(equippedRod, harborEffect.signalBonusCoins);
+        const signalCoins = signal.bonusCoins + getSignalRodBonusCoins(equippedRod, fishWithTimestamp) + scaleExternalCoinReward(equippedRod, harborEffect.signalBonusCoins);
         if (!suppressExtraCoinBonuses) settleUser.coins += signalCoins;
         settleUser.stats.signalFishCaught += 1;
         signalMsg += suppressExtraCoinBonuses
@@ -3841,7 +3846,7 @@ export class fishing extends plugin {
         settleUser.coins += rodCoinBonus;
         signalMsg += `\n[鱼竿效果] 本次额外收获 ${rodCoinBonus} 鱼蛋。`;
       }
-      const easterEggCoinBonus = scaleExternalFishingValue(getEquippedRod(settleUser), easterEggEffect.catchCoinBonus);
+      const easterEggCoinBonus = scaleExternalCoinReward(getEquippedRod(settleUser), easterEggEffect.catchCoinBonus);
       const easterEggCoinBonusRate = scaleExternalFishingValue(getEquippedRod(settleUser), easterEggEffect.catchCoinBonusRate);
       if (!suppressExtraCoinBonuses && easterEggCoinBonus > 0) {
         settleUser.coins += easterEggCoinBonus;

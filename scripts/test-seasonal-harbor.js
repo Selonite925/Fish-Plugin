@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { fishTypes } from '../fishdata/fishpool.js';
-import { createDefaultUserData } from '../lib/user.js';
+import { normalizeCoinAmount, scaleCoinReward } from '../lib/currency.js';
+import { createDefaultUserData, normalizeUserData } from '../lib/user.js';
 import { isSeasonalFishActive } from '../lib/duanwu.js';
 import {
   getActiveSeason,
@@ -31,6 +32,11 @@ import {
 } from '../lib/harbor-transactions.js';
 
 const userData = createDefaultUserData();
+assert.equal(normalizeCoinAmount(5000.5), 5000);
+assert.equal(scaleCoinReward(5, 0.5), 2);
+userData.coins = 5000.5;
+normalizeUserData(userData);
+assert.equal(userData.coins, 5000);
 for (let index = 1; index < HARBOR_LEVELS.length; index += 1) {
   assert.ok(HARBOR_LEVELS[index].catchRateBonus > HARBOR_LEVELS[index - 1].catchRateBonus);
 }
@@ -192,6 +198,16 @@ const directCommit = commitHarborDonation(directCommitWorld, directTransaction.i
 assert.equal(directCommit.result.points, 2000);
 assert.equal(directCommitWorld.harbors['group-tx-direct'].constructionPoints, 2000);
 assert.equal(Object.keys(directCommitWorld.pendingHarborDonations).length, 0);
+
+const repairedBalanceWorld = {};
+const repairedBalanceTransaction = prepareHarborCoinDonation(repairedBalanceWorld, {
+  groupId: 'group-tx-repaired-balance',
+  userId: 'user-1',
+  amount: 2000,
+  balanceBefore: userData.coins
+});
+assert.ok(repairedBalanceTransaction);
+assert.equal(commitHarborDonation(repairedBalanceWorld, repairedBalanceTransaction.id).result.points, 2000);
 
 const recoveredFishWorld = {};
 const recoveredFishData = {
