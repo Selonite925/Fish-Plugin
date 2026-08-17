@@ -88,13 +88,19 @@ import {
   addFishToTank,
   applyTankUpgrade,
   getFishUpgradePoints,
-  getOriginalIndexByDisplayIndex,
   getSortedTankWithIndex,
   getTankUpgradeRequiredPoints,
   parseTankIndexes
 } from './lib/tank.js';
 import { buildSellPreview, canSellFish, findShopItem, getFishSellValue, parseSellTarget } from './lib/economy.js';
 import { scaleCoinReward } from './lib/currency.js';
+import {
+  applyReleaseEcho,
+  getReleaseEchoEffect,
+  getReleaseEchoGift,
+  getReleaseEchoRepeatGift,
+  getReleaseEchoStatus
+} from './lib/release-echo.js';
 import { formatAchievementList, getAchievementCatchRateBonus, getAchievementDailyCastBonus, getCollectionStats, scanAchievements } from './lib/achievements.js';
 import { ensureDailySignal } from './lib/signals.js';
 import { ensureResourceDirs, replyWithPanel } from './lib/panel.js';
@@ -220,6 +226,7 @@ import {
 // - lib/seasonal-fish.js：赛季目录、限定鱼收集和赛季进度
 // - lib/harbor.js：群共享渔港、捐赠和公共加成
 // - lib/harbor-transactions.js：渔港跨文件捐赠事务与断电恢复
+// - lib/release-echo.js：放生回响阶段、生态效果和里程碑礼物
 // - lib/user.js：玩家数据归一化、每日次数、彩蛋与持有物状态
 // - lib/panel.js：图片面板渲染入口
 
@@ -266,7 +273,7 @@ const HELP_GROUPS = [
     list: [
       { title: '#查看鱼缸 / #查看鱼缸 @某人', desc: '查看自己或群友的鱼缸容量、升级进度、库存和当前收藏。' },
       { title: '#升级鱼缸 legendary 1 / #升级鱼缸 epic 1 2 3', desc: '按鱼缸展示序号提交材料，支持分次提交；legendary 模式只收传说鱼，epic 模式只收史诗鱼。' },
-      { title: '#放生鱼 1', desc: '从鱼缸放生指定鱼。彩蛋鱼属于收藏，不在鱼缸里。' },
+      { title: '#放生鱼 1 2 3 / #放生回响', desc: '放生会让水域逐渐回应你；查看回响阶段，彩蛋鱼属于收藏，不在鱼缸里。' },
       { title: '#赠鱼 @某人 1 / #赠鱼 1 @某人', desc: '把指定鱼送给别人，支持按鱼缸序号或鱼名赠送。' },
       { title: '#锁定鱼 3 / #锁定鱼 虹鳟2 / #解锁鱼 3', desc: '支持按鱼缸序号或鱼名锁定；已锁定的鱼不能出售、升级、炼竿、放生、赠送或被自动替换。' }
     ]
@@ -714,6 +721,36 @@ function scaleExternalFishBodyModifiers(rod, modifiers = {}) {
     minSizeRatio: Number(modifiers?.minSizeRatio || 0) * multiplier,
     minWeightRatio: Number(modifiers?.minWeightRatio || 0) * multiplier
   };
+}
+
+function grantReleaseEchoGifts(userData, promotedTiers = [], repeatGifts = []) {
+  const received = [];
+  const gifts = [
+    ...promotedTiers.map(tier => getReleaseEchoGift(tier)),
+    ...repeatGifts.map((gift, index) => gift || getReleaseEchoRepeatGift(index + 1))
+  ].filter(Boolean);
+  for (const gift of gifts) {
+    if (!gift) continue;
+    if (gift.type === 'ticket') {
+      userData.tickets = Math.max(0, Number(userData.tickets || 0)) + 1;
+      received.push(gift.label);
+      continue;
+    }
+    if (gift.type === 'bait' && gift.baitId) {
+      if (!userData.baitInventory || typeof userData.baitInventory !== 'object') userData.baitInventory = {};
+      userData.baitInventory[gift.baitId] = Math.max(0, Number(userData.baitInventory[gift.baitId] || 0)) + 1;
+      received.push(gift.label);
+    }
+  }
+  return received;
+}
+
+function describeReleaseEchoMemory(releasedCount = 0) {
+  const count = Number(releasedCount || 0);
+  if (count <= 0) return '水面还没有留下你的放生回声。';
+  if (count < 5) return '水面刚刚有了回应，鱼群正在认出你的脚步。';
+  if (count < 20) return '回声已经沿着岸线传开，水域开始记住你的善意。';
+  return '这片水域已经记住你的善意，回声会在每次抛竿时陪着你。';
 }
 
 function clampNumber(value, min, max) {
@@ -2453,6 +2490,7 @@ export class fishing extends plugin {
   consumeShopBait(userData, lockedBait = null) {
     const rawBait = lockedBait || getEquippedBait(userData);
     const easterEggEffect = getEasterEggEffects(userData);
+    const releaseEchoEffect = getReleaseEchoEffect(userData);
     const randomizedBait = applyBaitRandomEffectForCast(rawBait);
     const bait = amplifyBaitModifiers(randomizedBait, easterEggEffect.baitEffectAmplifier);
     const rod = getEquippedRod(userData);
@@ -2472,6 +2510,7 @@ export class fishing extends plugin {
     const preserveChance = Math.max(0, Math.min(
       BAIT_PRESERVE_CHANCE_CAP,
       scaleExternalFishingValue(rod, bait?.baitPreserveChance) + Number(rod?.baitPreserveChance || 0) + scaleExternalFishingValue(rod, easterEggEffect.baitPreserveChance)
+        + scaleExternalFishingValue(rod, releaseEchoEffect.baitPreserveChance)
     ));
     const preserved = Math.random() < preserveChance;
     const beforeCount = Number(userData.baitInventory[bait.id] || 0);
@@ -3580,6 +3619,7 @@ export class fishing extends plugin {
         if (manualBait.message) summary.manualBaitCasts += 1;
 
         const easterEggEffect = getEasterEggEffects(userData);
+        const releaseEchoEffect = getReleaseEchoEffect(userData);
         let hiddenPityBonus = 0;
         if (Number(userData?.stats?.consecutiveEmpty || 0) >= 9) {
           hiddenPityBonus = HIDDEN_PITY_CATCH_BONUS;
@@ -3591,6 +3631,7 @@ export class fishing extends plugin {
           rod.rarityBias,
           shopBait.rarityBias,
           scaleExternalRarityBias(rod, easterEggEffect.rarityBias),
+          scaleExternalRarityBias(rod, releaseEchoEffect.rarityBias),
           scaleExternalRarityBias(rod, harborEffect.rarityBias)
         );
         const bodyModifiers = mergeFishBodyModifiers(rod, shopBait.bodyModifiers);
@@ -3673,7 +3714,7 @@ export class fishing extends plugin {
         const signalHit = signal.targets.some(item => item.name === fishWithTimestamp.name);
         if (signalHit) {
           const equippedRod = getEquippedRod(userData);
-          const signalCoins = signal.bonusCoins + getSignalRodBonusCoins(equippedRod, fishWithTimestamp) + scaleExternalCoinReward(equippedRod, harborEffect.signalBonusCoins);
+          const signalCoins = signal.bonusCoins + getSignalRodBonusCoins(equippedRod, fishWithTimestamp) + scaleExternalCoinReward(equippedRod, harborEffect.signalBonusCoins) + scaleExternalCoinReward(equippedRod, releaseEchoEffect.signalBonusCoins);
           if (!suppressExtraCoinBonuses) userData.coins += signalCoins;
           userData.stats.signalFishCaught += 1;
           summary.signalHits += 1;
@@ -3747,6 +3788,7 @@ export class fishing extends plugin {
 
       const settleData = this.loadData();
       const settleUser = this.getOrCreateUser(settleData, userId);
+      const releaseEchoEffect = getReleaseEchoEffect(settleUser);
       const baitData = loadBaitData();
       const manualBait = this.consumeManualBait(userId, baitData);
 
@@ -3761,6 +3803,7 @@ export class fishing extends plugin {
         rod.rarityBias,
         shopBait.rarityBias,
         scaleExternalRarityBias(rod, easterEggEffect.rarityBias),
+        scaleExternalRarityBias(rod, releaseEchoEffect.rarityBias),
         scaleExternalRarityBias(rod, harborEffect.rarityBias)
       );
       const bodyModifiers = mergeFishBodyModifiers(rod, shopBait.bodyModifiers);
@@ -3834,7 +3877,7 @@ export class fishing extends plugin {
       const signalHit = signal.targets.some(item => item.name === fishWithTimestamp.name);
       if (signalHit) {
         const equippedRod = getEquippedRod(settleUser);
-        const signalCoins = signal.bonusCoins + getSignalRodBonusCoins(equippedRod, fishWithTimestamp) + scaleExternalCoinReward(equippedRod, harborEffect.signalBonusCoins);
+        const signalCoins = signal.bonusCoins + getSignalRodBonusCoins(equippedRod, fishWithTimestamp) + scaleExternalCoinReward(equippedRod, harborEffect.signalBonusCoins) + scaleExternalCoinReward(equippedRod, releaseEchoEffect.signalBonusCoins);
         if (!suppressExtraCoinBonuses) settleUser.coins += signalCoins;
         settleUser.stats.signalFishCaught += 1;
         signalMsg += suppressExtraCoinBonuses
@@ -4025,22 +4068,136 @@ export class fishing extends plugin {
     }
     normalizeUserData(userData);
 
-    const [displayIndex] = parseTankIndexes(e.msg, 1);
-    const originalIndex = getOriginalIndexByDisplayIndex(userData, displayIndex);
-    if (!Number.isInteger(originalIndex)) {
+    const displayIndexes = [...new Set(parseTankIndexes(e.msg))];
+    if (displayIndexes.length === 0) {
+      await this.reply(`${userDisplay}\n请带上鱼缸序号放生，例如：#放生鱼 1，多个序号可一起放生。`);
+      return;
+    }
+
+    const sortedTank = getSortedTankWithIndex(userData.fishTank);
+    const selectedEntries = displayIndexes.map(index => sortedTank[index]).filter(Boolean);
+    if (selectedEntries.length !== displayIndexes.length) {
       await this.reply(`${userDisplay}\n鱼缸序号不存在，请先用 #查看鱼缸 确认序号。`);
       return;
     }
 
-    const releasedFish = userData.fishTank[originalIndex];
-    if (isFishLocked(userData, releasedFish)) {
-      await this.reply(`${userDisplay}\n${this.getLockedFishMessage(releasedFish, '放生')}`);
+    const lockedFish = selectedEntries.find(item => isFishLocked(userData, item.fish));
+    if (lockedFish) {
+      await this.reply(`${userDisplay}\n${this.getLockedFishMessage(lockedFish.fish, '放生')}`);
       return;
     }
-    userData.fishTank.splice(originalIndex, 1);
+
+    const releasedFish = selectedEntries.map(item => item.fish);
+    for (const { originalIndex } of [...selectedEntries].sort((left, right) => right.originalIndex - left.originalIndex)) {
+      userData.fishTank.splice(originalIndex, 1);
+    }
     removeOwnedFish(userData, releasedFish, { today: true, tank: false });
+    const echoResult = applyReleaseEcho(userData, releasedFish);
+    const gifts = grantReleaseEchoGifts(userData, echoResult?.promotedTiers || [], echoResult?.repeatGifts || []);
+    const namesText = releasedFish.length <= 3
+      ? releasedFish.map(fish => fish.name).join('、')
+      : `${releasedFish.slice(0, 3).map(fish => fish.name).join('、')} 等 ${releasedFish.length} 条鱼`;
+    const promotionText = echoResult?.promotedTiers?.length
+      ? `\n水域回响晋阶：${echoResult.tierBefore.name} -> ${echoResult.tierAfter.name}。${echoResult.tierAfter.description}`
+      : `\n水域回响：${echoResult?.tierAfter?.name || '静水'}。${echoResult?.tierAfter?.description || ''}`;
+    const giftText = gifts.length ? `\n${gifts.join('；')}。` : '';
     saveFishData(data);
-    await this.reply(`${userDisplay}\n已放生 ${releasedFish.name}（${releasedFish.rarity}）。`);
+    await this.reply(`${userDisplay}\n已放生 ${namesText}。${promotionText}${giftText}\n可用 #放生回响 查看水域回应。`);
+  }
+
+  async showReleaseEcho(e) {
+    const data = this.loadData();
+    const { userId, text: userDisplay } = getUserDisplay(e);
+    const userData = this.getOrCreateUser(data, userId);
+    normalizeUserData(userData);
+    const status = getReleaseEchoStatus(userData);
+    const effect = getReleaseEchoEffect(userData);
+    const nextText = status.nextTier
+      ? `下一道水声：${status.nextTier.name}`
+      : '海歌已入海，后续放生仍会留下回礼。';
+    const recentText = status.lastRarity
+      ? `最近一次回声来自${rarityLabel(status.lastRarity)}鱼。`
+      : '还没有记录到最近的放生回声。';
+    const sections = buildCardGridSections(applyGroupThemes([
+      {
+        group: '水域回响',
+        list: [
+          {
+            badge: '潮',
+            title: status.tier.name,
+            desc: status.tier.description,
+            meta: effect.summary,
+            tone: status.tier.level > 0 ? 'active' : 'note',
+            fullWidth: true
+          },
+          {
+            badge: '远',
+            title: nextText,
+            desc: describeReleaseEchoMemory(status.releasedCount),
+            meta: recentText,
+            tone: status.nextTier ? 'sky' : 'gold',
+            fullWidth: true
+          }
+        ]
+      },
+      {
+        group: '当前回应',
+        list: [
+          {
+            badge: '鱼群',
+            title: '鱼群会回应你的脚步',
+            desc: '水域亲和会在抛竿时持续生效，不需要额外装备。',
+            tone: status.tier.level >= 1 ? 'positive' : 'neutral'
+          },
+          {
+            badge: '潮礼',
+            title: status.nextTier ? '阶段晋阶会有潮礼' : '海歌之后仍有回礼',
+            desc: '回礼会自动放进你的钓鱼券或鱼饵库存。',
+            meta: '不占鱼缸，也不会打断正常钓鱼。',
+            tone: 'amber'
+          }
+        ]
+      },
+      {
+        group: '继续探索',
+        list: [
+          {
+            badge: '放',
+            title: '#放生鱼 1 2 3',
+            desc: '按 #查看鱼缸 的展示序号一次放生多条鱼；锁定鱼会被保护。',
+            tone: 'lake',
+            fullWidth: true
+          },
+          {
+            badge: '听',
+            title: '让水域自己讲故事',
+            desc: '不同稀有度会留下不同重量的回声，但具体回应不会提前写在面板上。',
+            tone: 'note',
+            fullWidth: true
+          }
+        ]
+      }
+    ], ['lake', 'amber', 'sky']), { badgePrefix: '潮' });
+    const fallback = [
+      `${userDisplay}的放生回响`,
+      `当前水域：${status.tier.name}`,
+      status.tier.description,
+      effect.summary,
+      nextText,
+      describeReleaseEchoMemory(status.releasedCount),
+      recentText,
+      '',
+      '玩法：#放生鱼 1 2 3',
+      '放生会积累水域亲和，阶段晋阶和后续回礼都会自动结算。'
+    ].join('\n');
+    saveFishData(data);
+    await replyWithPanel(this, {
+      key: `release-echo-${userId}`,
+      title: '放生回响',
+      subtitle: `${status.tier.name} | ${status.tier.description}`,
+      sections,
+      footer: '使用 #放生鱼 配合鱼缸序号，让水域继续回应你。'
+    }, fallback);
   }
 
   async giftFish(e) {
@@ -4741,6 +4898,8 @@ async checkEasterEggCollection(e) {
     const rod = getEquippedRod(userData);
     const progressText = this.getTankUpgradeProgressText(userData);
     const easterEggStatus = getEasterEggStatusSummary(userData);
+    const releaseEchoStatus = getReleaseEchoStatus(userData);
+    const releaseEchoEffect = getReleaseEchoEffect(userData);
     const easterEggOwnedText = easterEggStatus.owned.length ? easterEggStatus.owned.join('、') : '暂无';
     const easterEggPendingText = easterEggStatus.pendingName ? `${easterEggStatus.pendingName}（明日生效）` : '无';
     const baitInventoryText = getOwnedBaitsDisplaySummary(userData) || '无';
@@ -4799,6 +4958,19 @@ async checkEasterEggCollection(e) {
         ]
       },
       {
+        group: '水域回响',
+        list: [{
+          badge: '潮',
+          title: releaseEchoStatus.tier.name,
+          desc: releaseEchoEffect.summary,
+          meta: releaseEchoStatus.nextTier
+            ? `下一道水声：${releaseEchoStatus.nextTier.name} | 使用 #放生回响 查看详情`
+            : '海歌仍会在后续放生中留下回礼 | 使用 #放生回响 查看详情',
+          tone: releaseEchoStatus.tier.level > 0 ? 'sky' : 'note',
+          fullWidth: true
+        }]
+      },
+      {
         group: '鱼缸鱼获',
         list: sortedEntries.length
           ? [
@@ -4826,7 +4998,7 @@ async checkEasterEggCollection(e) {
             fullWidth: true
           }]
       }
-    ], ['lake', 'plum', 'amber', 'sky']), { badgePrefix: '缸' });
+    ], ['lake', 'plum', 'amber', 'sky', 'sky']), { badgePrefix: '缸' });
 
     const fallbackText = [
       ownerTitle,
@@ -4839,6 +5011,7 @@ async checkEasterEggCollection(e) {
       `鱼竿库存：${getOwnedRodsSummary(userData) || '无'}`,
       `彩蛋加成：${describeEasterEggEffects(userData)}`,
       `彩蛋收藏：${easterEggOwnedText}`,
+      `水域回响：${releaseEchoStatus.tier.name}（${releaseEchoEffect.summary}）`,
       `待切换：${easterEggPendingText}`,
       `总共钓鱼次数：${userData.total || 0}`
     ].join('\n');
@@ -4848,7 +5021,7 @@ async checkEasterEggCollection(e) {
       title: ownerTitle,
       subtitle: `当前鱼竿：${rod.name} | 当前鱼饵：${getBaitDisplayName(getEquippedBait(userData))} | 鱼蛋 ${userData.coins}`,
       sections,
-      footer: `总钓鱼次数：${userData.total || 0} | 彩蛋加成：${describeEasterEggEffects(userData)}`
+      footer: `总钓鱼次数：${userData.total || 0} | 彩蛋加成：${describeEasterEggEffects(userData)} | #放生回响 查看水域回应`
     }, fallbackText);
   }
 
