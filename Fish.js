@@ -101,6 +101,22 @@ import {
   getReleaseEchoRepeatGift,
   getReleaseEchoStatus
 } from './lib/release-echo.js';
+import {
+  applyMapEvent,
+  canAccessMap,
+  consumeMapEventBonus,
+  ensureMapState,
+  getCurrentMapId,
+  getMapContext,
+  getMapFishTemplateByName,
+  getMapInfluence,
+  getMapProfile,
+  getVeteranProgress,
+  normalizeMapId,
+  recordMapCatch,
+  recordMapEvent,
+  recordMapVisit
+} from './lib/maps.js';
 import { formatAchievementList, getAchievementCatchRateBonus, getAchievementDailyCastBonus, getCollectionStats, scanAchievements } from './lib/achievements.js';
 import { ensureDailySignal } from './lib/signals.js';
 import { ensureResourceDirs, replyWithPanel } from './lib/panel.js';
@@ -264,6 +280,7 @@ const HELP_GROUPS = [
       { title: '#钓鱼极速版', desc: '一口气钓完当前能用次数，优先发图汇总结果。' },
       { title: '#今日鱼获 / #查看鱼获 @某人', desc: '查看自己或别人的当日鱼获记录。' },
       { title: '#钓鱼图鉴 / #钓鱼排行 / #每周钓鱼榜 / #每月钓鱼榜', desc: '看收藏、总排行、本周排行和本月排行。' },
+      { title: '#地图 / #地图 深海裂谷 / #地图 鱼塘', desc: '查看并切换钓鱼航线；深海裂谷只开放给已经熟悉初始鱼塘的钓友。' },
       { title: '#赛季鱼 / #历史赛季鱼', desc: '查看当前赛季或历史赛季限定鱼图鉴面板；不提前展示后续赛季。' },
       { title: '#鱼王榜 / #空军榜', desc: '看鱼缸综合质量和今日空军情况。' }
     ]
@@ -384,7 +401,8 @@ const FAIL_RESULT_LABELS = {
   lost_item: '捞回失物',
   trash: '钓到垃圾',
   lost_event: '物品落水',
-  random_event: '普通失手'
+  random_event: '普通失手',
+  map_event: '地图事件'
 };
 
 function hasActiveXianyuEffect(userData) {
@@ -1587,6 +1605,9 @@ export class fishing extends plugin {
       world.lastDailyResetDate = getFishingDayKey(this.config);
     }
     ensureDailySignal(world, this.fishTypes, getFishingDayKey(this.config));
+    if (!world.mapSignals || typeof world.mapSignals !== 'object' || Array.isArray(world.mapSignals)) {
+      world.mapSignals = {};
+    }
     normalizeHarborStates(world);
     const hasPendingHarborDonations = world.pendingHarborDonations &&
       typeof world.pendingHarborDonations === 'object' &&
@@ -1649,6 +1670,9 @@ export class fishing extends plugin {
     const world = loadWorldState();
     world.lastDailyResetDate = targetDate;
     world.todaySignal = null;
+    if (world.mapSignals && typeof world.mapSignals === 'object') {
+      for (const mapId of Object.keys(world.mapSignals)) world.mapSignals[mapId] = null;
+    }
     ensureDailySignal(world, this.fishTypes, targetDate);
     saveWorldState(world);
   }
@@ -2327,6 +2351,38 @@ export class fishing extends plugin {
     return ensureDailySignal(world, this.fishTypes, getFishingDayKey(this.config));
   }
 
+  getUserMapContext(userData = null, mapId = null) {
+    if (userData) ensureMapState(userData);
+    return getMapContext(userData || {}, mapId);
+  }
+
+  getMapFishTypesForUser(userData = null, mapId = null) {
+    const context = this.getUserMapContext(userData, mapId);
+    return context.fishTypes || this.fishTypes;
+  }
+
+  getDailySignalForUser(userData = null) {
+    const context = this.getUserMapContext(userData);
+    if (!context.isAlternate) return this.getDailySignal();
+
+    const world = this.ensureWorldState();
+    if (!world.mapSignals || typeof world.mapSignals !== 'object' || Array.isArray(world.mapSignals)) {
+      world.mapSignals = {};
+    }
+    const scopedWorld = { todaySignal: world.mapSignals[context.id] || null };
+    const signal = ensureDailySignal(scopedWorld, context.fishTypes, getFishingDayKey(this.config));
+    world.mapSignals[context.id] = signal;
+    saveWorldState(world);
+    return signal;
+  }
+
+  getMapEventSettlement(userData, failResult, mapContext = null) {
+    if (!failResult || failResult.type !== 'map_event' || !mapContext?.isAlternate) return '';
+    const result = applyMapEvent(userData, failResult.event, getNowTimestamp());
+    recordMapEvent(userData, mapContext.id);
+    return result ? `\n${mapContext.eventPrefix} ${result.label}，${result.nextCastHint}` : '';
+  }
+
   getHarborEffect(groupId) {
     if (!groupId) return getHarborEffect({}, '');
     const world = this.ensureWorldState();
@@ -2361,7 +2417,7 @@ export class fishing extends plugin {
     const band = FISH_KING_SCORE_BANDS[fish?.rarity];
     if (!band) return 0;
 
-    const template = fishTemplateByName[fish.name];
+    const template = fishTemplateByName[fish.name] || getMapFishTemplateByName(fish.mapId, fish.name);
     const normalizeValue = (value, range) => {
       const min = Number(range?.min);
       const max = Number(range?.max);
@@ -2376,7 +2432,10 @@ export class fishing extends plugin {
     return Math.max(band.min, Math.min(band.max, Number(score.toFixed(2))));
   }
 
-  catchFish(userData = null, extraBias = {}, bodyModifiers = {}) {
+  catchFish(userData = null, extraBias = {}, bodyModifiers = {}, mapContext = null) {
+    const context = mapContext || this.getUserMapContext(userData);
+    const fishTypesForMap = context.fishTypes || this.fishTypes;
+    const rarityWeightsForMap = context.rarityWeights || rarityWeights;
     const rod = getEquippedRod(userData);
     const rodTarget = resolveRodTarget(userData, rod);
     const baitId = bodyModifiers?.id || '';
@@ -2384,11 +2443,11 @@ export class fishing extends plugin {
       ...rod.targetFishEffect,
       target: rodTarget
     } : null;
-    let rarities = Object.keys(this.fishTypes);
+    let rarities = Object.keys(fishTypesForMap);
     const targetRarityBias = getGoldHumbleRarityBias(rod, rodTarget);
-    const weights = this.applyRarityBias(rarityWeights, mergeRarityBias(extraBias, targetRarityBias));
+    const weights = this.applyRarityBias(rarityWeightsForMap, mergeRarityBias(extraBias, targetRarityBias));
     const ownedEggs = new Set(getOwnedEasterEggCollection(userData));
-    const availableMysteryFish = getCatchableFishPool(this.fishTypes, EASTER_EGG_RARITY, { baitId }).filter(fish => !ownedEggs.has(fish.name));
+    const availableMysteryFish = getCatchableFishPool(fishTypesForMap, EASTER_EGG_RARITY, { baitId }).filter(fish => !ownedEggs.has(fish.name));
     if (availableMysteryFish.length === 0) {
       weights.legendary = (weights.legendary || 0) + (weights[EASTER_EGG_RARITY] || 0);
       rarities = rarities.filter(rarity => rarity !== EASTER_EGG_RARITY);
@@ -2403,7 +2462,7 @@ export class fishing extends plugin {
     let tideObserverSurvey = null;
     const rarityTarget = isGoldHumbleRarityTarget(targetEffect?.target);
     if (targetEffect && rarity === targetEffect.target.rarity && !rarityTarget) {
-      const pool = rarity === EASTER_EGG_RARITY ? availableMysteryFish : getCatchableFishPool(this.fishTypes, rarity, { baitId });
+      const pool = rarity === EASTER_EGG_RARITY ? availableMysteryFish : getCatchableFishPool(fishTypesForMap, rarity, { baitId });
       targetPoolSize = pool.length;
       const profile = getGoldHumbleTargetProfile(targetEffect, rarity, targetEffect.target, pool.length);
       candidateNames = resolveGoldHumbleCandidateNames(targetEffect, pool, targetEffect.target);
@@ -2427,7 +2486,7 @@ export class fishing extends plugin {
       const template = tideObserverSurvey?.template || realPool[Math.floor(Math.random() * realPool.length)];
       fish = createFishFromTemplate(template, rarity);
     } else if (!fish) {
-      const pool = getCatchableFishPool(this.fishTypes, rarity, { baitId });
+      const pool = getCatchableFishPool(fishTypesForMap, rarity, { baitId });
       const fallbackPool = targetEffect?.target?.rarity === rarity && !rarityTarget
         ? pool.filter(item => item.name !== targetEffect.target.name)
         : pool;
@@ -2450,7 +2509,7 @@ export class fishing extends plugin {
     }
     if (targetEffect && rarityTarget && fish?.rarity === targetEffect.target.rarity) {
       targetHit = true;
-      targetPoolSize = getCatchableFishPool(this.fishTypes, rarity, { baitId }).length;
+      targetPoolSize = getCatchableFishPool(fishTypesForMap, rarity, { baitId }).length;
     }
     if (targetEffect) {
       fish.specialRodEffect = {
@@ -2468,6 +2527,7 @@ export class fishing extends plugin {
         suppressExtraCoinBonuses: Boolean(rod.suppressExtraCoinBonuses && targetHit)
       };
     }
+    if (fish) fish.mapId = context.id;
     return fish;
   }
 
@@ -2553,6 +2613,128 @@ export class fishing extends plugin {
       sections: buildHelpGridSections(HELP_GROUPS),
       footer: ''
     }, HELP_TEXT);
+  }
+
+  async handleMapCommand(e) {
+    const raw = String(e.msg || '').replace(/^#地图\s*/u, '').trim();
+    if (raw) {
+      await this.switchFishingMap(e, raw);
+      return;
+    }
+    await this.showMaps(e);
+  }
+
+  async showMaps(e) {
+    const data = this.loadData();
+    const { userId, text: userDisplay } = getUserDisplay(e);
+    const userData = this.getOrCreateUser(data, userId);
+    const current = this.getUserMapContext(userData);
+    const veteran = getVeteranProgress(userData);
+    const deepAvailable = canAccessMap(userData, 'abyss');
+    const deepInfluence = getMapInfluence(userData, 'abyss');
+    const sections = buildCardGridSections(applyGroupThemes([
+      {
+        group: '当前航线',
+        list: [{
+          badge: '当前',
+          title: current.name,
+          desc: current.description,
+          meta: current.isAlternate ? `旧鱼塘的水声：${deepInfluence.label}` : '熟悉的鱼塘仍然保留原有鱼池。',
+          tone: 'active',
+          fullWidth: true
+        }]
+      },
+      {
+        group: '可去海域',
+        list: [
+          {
+            badge: '岸',
+            title: getMapProfile('pond').name,
+            desc: getMapProfile('pond').description,
+            meta: current.id === 'pond' ? '当前航线' : '可用 #地图 鱼塘 返回',
+            tone: current.id === 'pond' ? 'active' : 'positive'
+          },
+          {
+            badge: '谷',
+            title: getMapProfile('abyss').name,
+            desc: getMapProfile('abyss').description,
+            meta: deepAvailable
+              ? current.id === 'abyss' ? '当前航线' : '可用 #地图 深海裂谷 前往'
+              : '潮声还没有回应你，先在鱼塘继续积累经验。',
+            tone: deepAvailable ? current.id === 'abyss' ? 'active' : 'legendary' : 'slate'
+          }
+        ]
+      },
+      {
+        group: '旧航线的回声',
+        list: [{
+          badge: '声',
+          title: deepInfluence.label,
+          desc: veteran.unlocked
+            ? '初始鱼塘的经历会让深海偶尔认出你的手法。'
+            : '等你在鱼塘留下足够多的脚印，深海才会回应。',
+          meta: deepAvailable ? '只影响手感和少量潮声，不会带走鱼塘鱼池。' : '暂未开放',
+          tone: deepAvailable ? 'sky' : 'slate',
+          fullWidth: true
+        }]
+      }
+    ], ['lake', 'abyss', 'sky']), { badgePrefix: '图' });
+    const fallback = [
+      `${userDisplay}的钓鱼地图`,
+      `当前航线：${current.name}`,
+      '',
+      `初始鱼塘：${current.id === 'pond' ? '当前' : '可返回'}`,
+      `深海裂谷：${deepAvailable ? current.id === 'abyss' ? '当前' : '已开放' : '尚未开放'}`,
+      `旧航线回声：${deepInfluence.label}`,
+      '',
+      '切换：#地图 深海裂谷 / #地图 鱼塘'
+    ].join('\n');
+    saveFishData(data);
+    await replyWithPanel(this, {
+      key: `maps-${userId}`,
+      title: '钓鱼地图',
+      subtitle: `当前航线：${current.name}`,
+      sections,
+      footer: '前往深海裂谷：#地图 深海裂谷；返回岸边：#地图 鱼塘'
+    }, fallback);
+  }
+
+  async switchFishingMap(e, keyword = '') {
+    const data = this.loadData();
+    const { userId, text: userDisplay } = getUserDisplay(e);
+    const userData = this.getOrCreateUser(data, userId);
+    const raw = String(keyword || '').trim();
+    const mapId = /^(?:深海|深海裂谷|裂谷|abyss|deep(?:\s*sea)?)$/i.test(raw)
+      ? 'abyss'
+      : /^(?:鱼塘|初始鱼塘|岸边|pond|返回)$/i.test(raw)
+        ? 'pond'
+        : null;
+    if (!mapId) {
+      await this.reply(`${userDisplay}\n没有找到这条航线。可用：#地图 鱼塘 / #地图 深海裂谷`);
+      return;
+    }
+    if (!canAccessMap(userData, mapId)) {
+      await this.reply(`${userDisplay}\n深海裂谷还没有回应你。先回到初始鱼塘，把自己的钓鱼手感磨亮一些吧。`);
+      return;
+    }
+    const previous = getCurrentMapId(userData);
+    ensureMapState(userData).current = normalizeMapId(mapId);
+    const visitCount = recordMapVisit(userData, mapId);
+    saveFishData(data);
+    const context = this.getUserMapContext(userData);
+    const firstVisitText = context.isAlternate && visitCount === 1
+      ? '\n远处的裂谷灯已经为你亮起，第一道潮声正在等你。'
+      : '';
+    const previousText = previous === context.id ? '你已经在这条航线上了。' : `已切换到${context.name}。`;
+    await this.reply(`${userDisplay}\n${previousText}${firstVisitText}\n${context.description}`);
+  }
+
+  async goToDeepSea(e) {
+    await this.switchFishingMap(e, '深海裂谷');
+  }
+
+  async returnToPond(e) {
+    await this.switchFishingMap(e, '鱼塘');
   }
 
   async showManagementHelp() {
@@ -2759,33 +2941,49 @@ export class fishing extends plugin {
     await this.reply(`${actionText}。\n${effectMsg}\n效果将持续2竿钓鱼。`);
   }
 
-  async handleSpecialFishEvent(fish) {
+  async handleSpecialFishEvent(fish, mapContext = null) {
     const rarity = fish.rarity;
     if (rarity !== 'epic' && rarity !== 'legendary' && rarity !== EASTER_EGG_RARITY) return;
 
-    await this.reply(epicMessages[Math.floor(Math.random() * epicMessages.length)]);
+    const context = mapContext || this.getUserMapContext(null, fish.mapId);
+    const mapMessages = context.specialMessages?.[rarity];
+    const introMessages = context.isAlternate && Array.isArray(mapMessages) && mapMessages.length
+      ? mapMessages
+      : epicMessages;
+
+    await this.reply(introMessages[Math.floor(Math.random() * introMessages.length)]);
     await new Promise(resolve => setTimeout(resolve, Math.floor(Math.random() * 3000) + 1200));
 
     if (rarity === 'legendary' || rarity === EASTER_EGG_RARITY) {
       const legendaryMessage = rarity === EASTER_EGG_RARITY
-        ? defaultLegendaryMessage
-        : (legendaryMessages[fish.name] || defaultLegendaryMessage);
+        ? context.isAlternate
+          ? '深海的光没有散去，像有一整片海沟在替这条鱼屏住呼吸。'
+          : defaultLegendaryMessage
+        : context.isAlternate
+          ? (mapMessages?.[Math.min(1, Math.max(0, mapMessages.length - 1))] || defaultLegendaryMessage)
+          : (legendaryMessages[fish.name] || defaultLegendaryMessage);
       await this.reply(legendaryMessage);
       await new Promise(resolve => setTimeout(resolve, Math.floor(Math.random() * 2000) + 1500));
     }
     if (rarity === EASTER_EGG_RARITY) {
-      await this.reply(mysteryMessages[fish.name] || defaultMysteryMessage);
+      await this.reply(context.isAlternate
+        ? `海图上凭空多出了一颗新星，${fish.name}已经把自己的航迹留在裂谷里。`
+        : (mysteryMessages[fish.name] || defaultMysteryMessage));
       await new Promise(resolve => setTimeout(resolve, Math.floor(Math.random() * 1500) + 1000));
     }
   }
 
   async getRandomFailResult(userId, groupId, e, rod = null, options = {}) {
+    const mapContext = options.mapContext || this.getUserMapContext(options.userData, options.mapId);
+    const trashItems = mapContext.trashItems || this.trashItems;
+    const randomEvents = mapContext.randomEvents || this.randomEvents;
+    const lostItemEvents = mapContext.lostItemEvents || this.lostItemEvents;
     const lostItems = options.lostItemsData || loadLostItems();
     const persistLostItems = () => {
       if (options.autoSaveLostItems !== false) saveLostItems(lostItems);
     };
     const buildTrashFailResult = () => {
-      const trashItem = this.trashItems[Math.floor(Math.random() * this.trashItems.length)];
+      const trashItem = trashItems[Math.floor(Math.random() * trashItems.length)];
       const messageTemplate = trashCatchMessages[Math.floor(Math.random() * trashCatchMessages.length)];
       return {
         type: 'trash',
@@ -2809,7 +3007,7 @@ export class fishing extends plugin {
     const randomEventThreshold = xianyuTrashThreshold + FAIL_RANDOM_EVENT_POST_EMPTY_RATE;
 
     if (failRoll < lostEventThreshold) {
-      const lostEvent = this.lostItemEvents[Math.floor(Math.random() * this.lostItemEvents.length)];
+      const lostEvent = lostItemEvents[Math.floor(Math.random() * lostItemEvents.length)];
       if (!lostItems[groupId]) lostItems[groupId] = [];
       lostItems[groupId].push({
         ownerId: userId,
@@ -2856,15 +3054,33 @@ export class fishing extends plugin {
     }
 
     if (failRoll < randomEventThreshold) {
+      const event = randomEvents[Math.floor(Math.random() * randomEvents.length)];
+      if (typeof event === 'object') {
+        return {
+          type: 'map_event',
+          event,
+          mapId: mapContext.id,
+          message: event.message || '深处的潮声把这一口鱼带走了。'
+        };
+      }
       return {
         type: 'random_event',
-        message: this.randomEvents[Math.floor(Math.random() * this.randomEvents.length)]
+        message: event
       };
     }
 
+    const event = randomEvents[Math.floor(Math.random() * randomEvents.length)];
+    if (typeof event === 'object') {
+      return {
+        type: 'map_event',
+        event,
+        mapId: mapContext.id,
+        message: event.message || '深处的潮声把这一口鱼带走了。'
+      };
+    }
     return {
       type: 'random_event',
-      message: this.randomEvents[Math.floor(Math.random() * this.randomEvents.length)]
+      message: event
     };
   }
 
@@ -2911,6 +3127,7 @@ export class fishing extends plugin {
     userData.today.fish.push(fishWithTimestamp);
     userData.today.catches = Number(userData.today.catches || 0) + 1;
     addFishHistory(userData, fishWithTimestamp);
+    if (fishWithTimestamp.mapId) recordMapCatch(userData, fishWithTimestamp, fishWithTimestamp.mapId);
     const seasonalResult = recordSeasonalFishCatch(userData, fishWithTimestamp);
     let tankResult = addFishToTank(userData, fishWithTimestamp, { autoSellReplacedFish: true });
     let tankUpdateMsg = tankResult.message;
@@ -3038,6 +3255,7 @@ export class fishing extends plugin {
   }
 
   buildCollectionPanel(userData) {
+    const mapContext = this.getUserMapContext(userData);
     const visibleRarities = getVisibleCollectionRarities();
     const visibleRaritySet = new Set(visibleRarities);
     const collectedNames = new Set((userData.allTimeFish || [])
@@ -3048,7 +3266,7 @@ export class fishing extends plugin {
     }
     const collectionFishTypes = {};
     for (const rarity of visibleRarities) {
-      collectionFishTypes[rarity] = (this.fishTypes[rarity] || [])
+      collectionFishTypes[rarity] = ((mapContext.fishTypes || this.fishTypes)[rarity] || [])
         .filter(fish => !fish.seasonal);
     }
     const visibleSpeciesNames = new Set(Object.values(collectionFishTypes).flat().map(fish => fish.name));
@@ -3096,7 +3314,7 @@ export class fishing extends plugin {
       : '你已经集齐当前所有可展示鱼种。';
 
     const fallbackLines = [
-      '钓鱼图鉴',
+      `${mapContext.name}图鉴`,
       `已收集：${collectedCount}/${totalSpecies} 种（${progress}%）`
     ];
     for (const rarity of visibleRarities) {
@@ -3118,8 +3336,8 @@ export class fishing extends plugin {
     return {
       panel: {
         key: `collection-${getNowTimestamp()}`,
-        title: '钓鱼图鉴',
-        subtitle: `已收集 ${collectedCount}/${totalSpecies} 种 | 完成度 ${progress}%`,
+        title: `${mapContext.name}图鉴`,
+        subtitle: `当前航线 ${mapContext.name} | 已收集 ${collectedCount}/${totalSpecies} 种 | 完成度 ${progress}%`,
         sections,
         footer
       },
@@ -3538,6 +3756,7 @@ export class fishing extends plugin {
     const fallback = [
       '钓鱼极速版结果',
       userDisplay,
+      `当前航线：${summary.mapName || '初始鱼塘'}`,
       `鱼竿：${rod.name}`,
       `总抛竿：${summary.casts}竿，上鱼${summary.catches}条，空军${summary.misses}竿`,
       `今日次数：${getFishingLimitText(this.config, userData, getEquippedRod(userData), usageOptions)}`,
@@ -3560,7 +3779,7 @@ export class fishing extends plugin {
       panel: {
         key: `fast-fishing-${getNowTimestamp()}`,
         title: '钓鱼极速版结果',
-        subtitle: `一次结算 ${summary.casts} 竿 | 上鱼 ${summary.catches} 条`,
+        subtitle: `${summary.mapName || '初始鱼塘'} | 一次结算 ${summary.casts} 竿 | 上鱼 ${summary.catches} 条`,
         sections,
         footer: `当前鱼蛋：${userData.coins} | 当前鱼缸：${userData.fishTank.length}/${userData.tankCapacity}`
       },
@@ -3577,6 +3796,7 @@ export class fishing extends plugin {
       const baitData = loadBaitData();
       const lostItems = loadLostItems();
       const userData = this.getOrCreateUser(data, userId);
+      const mapContext = this.getUserMapContext(userData);
       let rod = getEquippedRod(userData);
       const usageOptions = getFastFishingUsageOptions(this.config);
 
@@ -3595,7 +3815,8 @@ export class fishing extends plugin {
       }
 
       const summary = this.createFastFishingSummary(rod);
-      const signal = this.getDailySignal();
+      summary.mapName = mapContext.name;
+      const signal = this.getDailySignalForUser(userData);
 
       while (canFishToday(this.config, userData, rod, usageOptions)) {
         const coinsBeforeCast = Number(userData.coins || 0);
@@ -3620,6 +3841,8 @@ export class fishing extends plugin {
 
         const easterEggEffect = getEasterEggEffects(userData);
         const releaseEchoEffect = getReleaseEchoEffect(userData);
+        const castMapContext = this.getUserMapContext(userData);
+        const mapEventBonus = castMapContext.isAlternate ? consumeMapEventBonus(userData, getNowTimestamp()) : 0;
         let hiddenPityBonus = 0;
         if (Number(userData?.stats?.consecutiveEmpty || 0) >= 9) {
           hiddenPityBonus = HIDDEN_PITY_CATCH_BONUS;
@@ -3630,6 +3853,7 @@ export class fishing extends plugin {
         const mergedBias = mergeRarityBias(
           rod.rarityBias,
           shopBait.rarityBias,
+          scaleExternalRarityBias(rod, castMapContext.influence.rarityBias),
           scaleExternalRarityBias(rod, easterEggEffect.rarityBias),
           scaleExternalRarityBias(rod, releaseEchoEffect.rarityBias),
           scaleExternalRarityBias(rod, harborEffect.rarityBias)
@@ -3638,11 +3862,11 @@ export class fishing extends plugin {
         const rodTarget = resolveRodTarget(userData, rod);
         const targetCatchRateBonus = getGoldHumbleCatchRateBonus(rod, rodTarget);
         const rodCatchRateBonus = Number(rod.catchRateBonus || 0) + targetCatchRateBonus;
-        const externalCatchBonus = scaleExternalFishingValue(rod, manualBait.bonus) + shopBait.bonus + scaleExternalFishingValue(rod, harborEffect.catchRateBonus);
+        const externalCatchBonus = scaleExternalFishingValue(rod, manualBait.bonus) + shopBait.bonus + scaleExternalFishingValue(rod, castMapContext.influence.catchRateBonus + mapEventBonus) + scaleExternalFishingValue(rod, harborEffect.catchRateBonus);
         const catchRate = Math.max(0.05, getCatchRate(userData, externalCatchBonus + hiddenPityBonus, rodCatchRateBonus, { externalEffectMultiplier }) - FAST_FISHING_CATCH_RATE_PENALTY);
         const failRescueChance = Math.max(0, Math.min(0.45, Number(rod.failProtection || 0) + scaleExternalFishingValue(rod, easterEggEffect.failProtection)));
         const missedCatch = Math.random() >= catchRate;
-        const duanwuEvent = missedCatch && shouldTriggerDuanwuQuyuanEvent(shopBait)
+        const duanwuEvent = !castMapContext.isAlternate && missedCatch && shouldTriggerDuanwuQuyuanEvent(shopBait)
           ? applyDuanwuQuyuanEvent(userData)
           : null;
         if (duanwuEvent) {
@@ -3671,13 +3895,15 @@ export class fishing extends plugin {
           continue;
         }
 
-        const failResult = missedCatch ? await this.getRandomFailResult(userId, e.group_id, e, null, { lostItemsData: lostItems, autoSaveLostItems: false, userData }) : null;
+        const failResult = missedCatch ? await this.getRandomFailResult(userId, e.group_id, e, null, { lostItemsData: lostItems, autoSaveLostItems: false, userData, mapContext: castMapContext }) : null;
         const rescuedCatch = failResult?.type === 'empty_hook' && Math.random() < failRescueChance;
 
         if (rescuedCatch) summary.rescued += 1;
 
         if (missedCatch && !rescuedCatch) {
           this.applyXianyuFailRecycleMessage(data, failResult, userId, e);
+          const mapEventText = this.getMapEventSettlement(userData, failResult, castMapContext);
+          if (mapEventText) summary.specialEffects.push(mapEventText.trim());
           summary.misses += 1;
           summary.failTypes[failResult.type] = (summary.failTypes[failResult.type] || 0) + 1;
           recordEmptyCast(userData);
@@ -3691,7 +3917,7 @@ export class fishing extends plugin {
         }
 
         summary.catches += 1;
-        const fish = this.catchFish(userData, mergedBias, bodyModifiers);
+        const fish = this.catchFish(userData, mergedBias, bodyModifiers, castMapContext);
         const specialRodEffect = this.applySpecialRodCatchEffect(userData, fish, { compact: true });
         const { fishWithTimestamp, tankResult, seasonalResult } = this.addCaughtFishToUser(userData, fish);
         this.recordFastFish(summary, fishWithTimestamp);
@@ -3758,6 +3984,7 @@ export class fishing extends plugin {
     try {
       const data = this.loadData();
       const userData = this.getOrCreateUser(data, userId);
+      const initialMapContext = this.getUserMapContext(userData);
       const rod = getEquippedRod(userData);
       const usageOptions = getFishingUsageOptions(this.config);
 
@@ -3778,7 +4005,8 @@ export class fishing extends plugin {
 
       const easterEggEffect = getEasterEggEffects(userData);
       const preCastText = [duanwuGift?.text, delivery?.text].filter(Boolean).map(text => `${text}\n`).join('');
-      await this.reply(`${userDisplay}\n${preCastText}已抛竿，当前鱼竿：${rod.name}\n当前鱼饵：${getBaitDisplayName(bait)}\n请稍等片刻...`);
+      const mapIntroText = initialMapContext.isAlternate ? `\n${initialMapContext.castIntro}` : '';
+      await this.reply(`${userDisplay}\n${preCastText}已抛竿，当前航线：${initialMapContext.name}\n当前鱼竿：${rod.name}\n当前鱼饵：${getBaitDisplayName(bait)}${mapIntroText}\n请稍等片刻...`);
 
       const minDelay = 1000;
       const maxDelay = 15000;
@@ -3788,6 +4016,7 @@ export class fishing extends plugin {
 
       const settleData = this.loadData();
       const settleUser = this.getOrCreateUser(settleData, userId);
+      const settleMapContext = this.getUserMapContext(settleUser);
       const releaseEchoEffect = getReleaseEchoEffect(settleUser);
       const baitData = loadBaitData();
       const manualBait = this.consumeManualBait(userId, baitData);
@@ -3799,9 +4028,11 @@ export class fishing extends plugin {
 
       const harborEffect = this.getFishingHarborEffect(e.group_id);
       const externalEffectMultiplier = getExternalFishingModifierMultiplier(rod);
+      const mapEventBonus = settleMapContext.isAlternate ? consumeMapEventBonus(settleUser, getNowTimestamp()) : 0;
       const mergedBias = mergeRarityBias(
         rod.rarityBias,
         shopBait.rarityBias,
+        scaleExternalRarityBias(rod, settleMapContext.influence.rarityBias),
         scaleExternalRarityBias(rod, easterEggEffect.rarityBias),
         scaleExternalRarityBias(rod, releaseEchoEffect.rarityBias),
         scaleExternalRarityBias(rod, harborEffect.rarityBias)
@@ -3811,13 +4042,13 @@ export class fishing extends plugin {
       const settleRod = getEquippedRod(settleUser);
       const settleRodTarget = resolveRodTarget(settleUser, settleRod);
       const settleRodCatchRateBonus = Number(settleRod.catchRateBonus || 0) + getGoldHumbleCatchRateBonus(settleRod, settleRodTarget);
-      const externalCatchBonus = scaleExternalFishingValue(rod, manualBait.bonus) + shopBait.bonus + scaleExternalFishingValue(rod, harborEffect.catchRateBonus);
+      const externalCatchBonus = scaleExternalFishingValue(rod, manualBait.bonus) + shopBait.bonus + scaleExternalFishingValue(rod, settleMapContext.influence.catchRateBonus + mapEventBonus) + scaleExternalFishingValue(rod, harborEffect.catchRateBonus);
       const catchRate = getCatchRate(settleUser, externalCatchBonus + hiddenPityBonus, settleRodCatchRateBonus, { externalEffectMultiplier });
       const externalReductionText = externalEffectMultiplier < 1 ? '\n[金谦限制] 鱼饵、彩蛋、渔港等外部钓鱼加成仅生效一半。' : '';
       const easterEggMsg = easterEggEffect.descriptions.length ? `\n[彩蛋加成] ${easterEggEffect.descriptions.join('；')}${externalReductionText}` : externalReductionText;
       const failRescueChance = Math.max(0, Math.min(0.45, Number(rod.failProtection || 0) + scaleExternalFishingValue(rod, easterEggEffect.failProtection)));
       const missedCatch = Math.random() >= catchRate;
-      const duanwuEvent = missedCatch && shouldTriggerDuanwuQuyuanEvent(shopBait)
+      const duanwuEvent = !settleMapContext.isAlternate && missedCatch && shouldTriggerDuanwuQuyuanEvent(shopBait)
         ? applyDuanwuQuyuanEvent(settleUser)
         : null;
       if (duanwuEvent) {
@@ -3837,7 +4068,7 @@ export class fishing extends plugin {
         return;
       }
 
-      const failResult = missedCatch ? await this.getRandomFailResult(userId, e.group_id, e, null, { userData: settleUser }) : null;
+      const failResult = missedCatch ? await this.getRandomFailResult(userId, e.group_id, e, null, { userData: settleUser, mapContext: settleMapContext }) : null;
       const rescuedCatch = failResult?.type === 'empty_hook' && Math.random() < failRescueChance;
       const rescuedCatchFakeFailMessage = rescuedCatch
         ? failProtectionFakeFailMessages[Math.floor(Math.random() * failProtectionFakeFailMessages.length)]
@@ -3847,17 +4078,18 @@ export class fishing extends plugin {
       }
       if (missedCatch && !rescuedCatch) {
         this.applyXianyuFailRecycleMessage(settleData, failResult, userId, e);
+        const mapEventText = this.getMapEventSettlement(settleUser, failResult, settleMapContext);
         recordEmptyCast(settleUser);
         const unlocked = scanAchievements(settleUser, this.fishTypes);
         settleUser.achievementCatchRateBonus = getAchievementCatchRateBonus(settleUser);
         settleUser.achievementDailyCastBonus = getAchievementDailyCastBonus(settleUser);
         saveFishData(settleData);
-        await this.reply(`${userDisplay}\n${failResult.message}\n今日钓鱼次数：${getFishingLimitText(this.config, settleUser, getEquippedRod(settleUser), usageOptions)}${manualBait.message}${shopBait.message}${easterEggMsg}${this.formatAchievementUnlocks(unlocked)}`);
+        await this.reply(`${userDisplay}\n${failResult.message}${mapEventText}\n今日钓鱼次数：${getFishingLimitText(this.config, settleUser, getEquippedRod(settleUser), usageOptions)}${manualBait.message}${shopBait.message}${easterEggMsg}${this.formatAchievementUnlocks(unlocked)}`);
         return;
       }
 
-      const signal = this.getDailySignal();
-      const fish = this.catchFish(settleUser, mergedBias, bodyModifiers);
+      const signal = this.getDailySignalForUser(settleUser);
+      const fish = this.catchFish(settleUser, mergedBias, bodyModifiers, settleMapContext);
       const specialRodEffect = this.applySpecialRodCatchEffect(settleUser, fish);
       const suppressExtraCoinBonuses = specialRodEffect.suppressExtraCoinBonuses;
       const { fishWithTimestamp, tankUpdateMsg, seasonalResult } = this.addCaughtFishToUser(settleUser, fish);
@@ -3907,7 +4139,7 @@ export class fishing extends plugin {
       settleUser.achievementCatchRateBonus = getAchievementCatchRateBonus(settleUser);
       settleUser.achievementDailyCastBonus = getAchievementDailyCastBonus(settleUser);
       saveFishData(settleData);
-      await this.handleSpecialFishEvent(fish);
+      await this.handleSpecialFishEvent(fish, settleMapContext);
       await this.reply(
         `${userDisplay}\n` +
         resultIntroMsg +
@@ -6394,9 +6626,13 @@ async checkEasterEggCollection(e) {
     await this.reply(`${userDisplay}\n已换上 ${getBaitDisplayName(bait)}。\n手感：${getBaitDisplayDescription(bait)}`);
   }
 
-  async showDailySignal() {
-    const signal = this.getDailySignal();
+  async showDailySignal(e) {
+    const data = this.loadData();
+    const userData = this.getOrCreateUser(data, String(e.user_id));
+    const mapContext = this.getUserMapContext(userData);
+    const signal = this.getDailySignalForUser(userData);
     const lines = [
+      `当前航线：${mapContext.name}`,
       `刷新日期：${signal.date}`,
       `今日高活跃鱼：${signal.targets.map(item => `${item.name}(${item.rarity})`).join('、')}`,
       `命中奖励：每条额外 +${signal.bonusCoins} 鱼蛋`

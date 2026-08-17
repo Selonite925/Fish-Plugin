@@ -36,6 +36,10 @@ assertRoute('#渔港建设 2000', 'donateHarborCoins');
 assertRoute('#渔港捐蛋 2000', 'donateHarborCoins');
 assertRoute('#渔港捐鱼 1', 'donateHarborFish');
 assertRoute('#渔港捐鱼 虹鳟2', 'donateHarborFish');
+assertRoute('#地图', 'handleMapCommand');
+assertRoute('#地图 深海裂谷', 'handleMapCommand');
+assertRoute('#前往深海', 'goToDeepSea');
+assertRoute('#返回鱼塘', 'returnToPond');
 
 assert.deepEqual(getMatches('#鱼市场'), []);
 assert.deepEqual(getMatches('#打窝棚'), []);
