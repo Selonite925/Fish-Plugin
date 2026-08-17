@@ -108,14 +108,16 @@ import {
   ensureMapState,
   ensurePlayerHealth,
   applyHealthDamage,
-  DEEP_SEA_FISHBALL_RATE,
-  DEEP_SEA_SPECIAL_ROD_FISHBALL_RATE,
+  applyHealthRecovery,
+  DEEP_SEA_CAST_HEALTH_COST,
   DEEP_SEA_TRAVEL_COST,
   getCurrentMapId,
   getMapContext,
   getMapFishTemplateByName,
   getMapInfluence,
   getMapProfile,
+  getDeepSeaCastHealthCost,
+  getDeepSeaRodAttributes,
   getDeepSeaSpecialRodProfile,
   getPlayerMaxHealth,
   rollDeepSeaEventDamage,
@@ -1220,6 +1222,12 @@ function buildRodTraitEntries(rod, options = {}) {
   }
   if (Number(effectiveRod?.catchCoinBonus || 0) > 0) entries.push({ text: '每次成功上鱼会顺带多捞一点鱼蛋', tone: 'positive' });
   if (Number(effectiveRod?.signalBonusCoins || 0) > 0) entries.push({ text: '命中鱼讯时收成会更亮眼', tone: 'positive' });
+  if (rod?.sourceLegendary) {
+    entries.push({ text: '深海专属：承受生存压力，换来更丰厚的鱼丸回响', tone: 'mixed' });
+    if (Number(rod.deepSeaHealthCostReduction || 0) > 0) entries.push({ text: '深海航程压力有所缓和', tone: 'positive' });
+    if (Number(rod.deepSeaHealthCostBonus || 0) > 0) entries.push({ text: '深海航程压力加深，换取更强的深海回响', tone: 'negative' });
+    if (Number(rod.deepSeaHealthRecovery || 0) > 0) entries.push({ text: '深海成功起鱼后会回补一小段生存线', tone: 'positive' });
+  }
   if (Number(effectiveRod?.permanentDailyCasts || 0) > 0) entries.push({ text: '装备后每日可抛竿次数会增加', tone: 'positive' });
   if (Number(effectiveRod?.ownedPermanentDailyCasts || 0) > 0) entries.push({ text: '只要拥有这根竿，每日可抛竿次数就会增加', tone: 'positive' });
   if (effectiveRod?.seasonalSurvey) entries.push({ text: '当前赛季未收集鱼会在同稀有度中被优先观测，命中时记录体型更佳', tone: 'positive' });
@@ -2393,7 +2401,10 @@ export class fishing extends plugin {
     const result = applyMapEvent(userData, failResult.event, getNowTimestamp());
     recordMapEvent(userData, mapContext.id);
     if (!result) return '';
-    const eventDamage = rollDeepSeaEventDamage(failResult.event);
+    const easterEggEffect = getEasterEggEffects(userData);
+    const eventDamage = rollDeepSeaEventDamage(failResult.event, {
+      damageMultiplier: 1 - Math.max(0, Math.min(0.8, Number(easterEggEffect.deepSeaDamageReduction || 0)))
+    });
     let damageText = '';
     if (eventDamage.triggered) {
       const state = this.getUserHealthState(userData, groupId);
@@ -2440,17 +2451,29 @@ export class fishing extends plugin {
       return { healthDamage: 0, health: this.getUserHealthState(userData, groupId, harborEffect), message: '' };
     }
     const state = this.getUserHealthState(userData, groupId, harborEffect);
+    const easterEggEffect = getEasterEggEffects(userData);
     const rodProfile = getDeepSeaSpecialRodProfile(rod);
-    if (!rodProfile.enabled) return { healthDamage: 0, rodProfile, health: state, message: '' };
-    const damage = applyHealthDamage(userData, rodProfile.healthCost, {
+    const castHealthCost = getDeepSeaCastHealthCost(rodProfile, easterEggEffect);
+    const totalCost = castHealthCost + rodProfile.healthCost;
+    const damage = applyHealthDamage(userData, totalCost, {
       dayKey: state.date,
       maxHealth: state.max
     });
+    const messages = [];
+    if (castHealthCost !== DEEP_SEA_CAST_HEALTH_COST) {
+      messages.push(castHealthCost < DEEP_SEA_CAST_HEALTH_COST
+        ? '[深海生存] 特殊效果缓和了本次下潜压力。'
+        : '[深海生存] 特殊效果加深了本次下潜压力。');
+    }
+    if (rodProfile.enabled) messages.push(`[深海竿] ${rodProfile.label}牵引深潮，生存线出现一道缺口。`);
+    if (damage.depleted) messages.push('生命值已经耗尽，今天不能继续在深海抛竿。');
     return {
       healthDamage: damage.amount,
       rodProfile,
+      castHealthCost,
+      rodHealthCost: rodProfile.healthCost,
       health: { current: damage.after, max: damage.max, date: state.date },
-      message: `\n[深海竿] ${rodProfile.label}牵引深潮，生存线出现一道缺口。${damage.depleted ? '\n生命值已经耗尽，今天不能继续在深海抛竿。' : ''}`
+      message: messages.length ? `\n${messages.join('\n')}` : ''
     };
   }
 
@@ -2464,28 +2487,41 @@ export class fishing extends plugin {
     const fishDamage = rollDeepSeaFishDamage(fish, {
       damageMultiplier: 1 - Math.max(0, Math.min(0.8, Number(easterEggEffect.deepSeaDamageReduction || 0)))
     });
-    const totalDamage = fishDamage.damage + rodProfile.healthCost;
+    const castHealthCost = getDeepSeaCastHealthCost(rodProfile, easterEggEffect);
+    const totalDamage = castHealthCost + fishDamage.damage + rodProfile.healthCost;
     const damage = applyHealthDamage(userData, totalDamage, {
+      dayKey: state.date,
+      maxHealth: state.max
+    });
+    const recovery = applyHealthRecovery(userData, rodProfile.healthRecovery + easterEggEffect.deepSeaHealthRecovery, {
       dayKey: state.date,
       maxHealth: state.max
     });
     const fishballRate = Math.min(
       0.65,
-      (rodProfile.enabled ? DEEP_SEA_SPECIAL_ROD_FISHBALL_RATE : DEEP_SEA_FISHBALL_RATE) + Number(easterEggEffect.deepSeaFishballRateBonus || 0)
+      rodProfile.fishballRate + Number(easterEggEffect.deepSeaFishballRateBonus || 0)
     );
     const fishballReward = Math.max(0, Math.floor(getFishValue(fish) * fishballRate));
     userData.coins = Number(userData.coins || 0) + fishballReward;
     const messages = [];
+    if (castHealthCost !== DEEP_SEA_CAST_HEALTH_COST) {
+      messages.push(castHealthCost < DEEP_SEA_CAST_HEALTH_COST
+        ? '[深海生存] 特殊效果缓和了本次下潜压力。'
+        : '[深海生存] 特殊效果加深了本次下潜压力。');
+    }
     if (fishDamage.triggered) messages.push(`[深海伤害] ${fishDamage.scene} 生存线出现一道缺口。`);
     if (rodProfile.enabled) messages.push(`[深海竿] ${rodProfile.label}换来更丰厚的鱼丸回响，生存线出现一道缺口。`);
+    if (recovery.amount > 0) messages.push('[深海恢复] 潮息回补了一小段生存线。');
     if (fishballReward > 0) messages.push(`[深海鱼丸] ${fish.name}的深海回响额外带回一份鱼丸。`);
     if (damage.depleted) messages.push('生命值已经耗尽，今天不能继续在深海抛竿。');
     return {
       healthDamage: damage.amount,
       fishDamage: fishDamage.damage,
+      castHealthCost,
       rodHealthCost: rodProfile.healthCost,
+      healthRecovery: recovery.amount,
       fishballReward,
-      health: { current: damage.after, max: damage.max, date: state.date },
+      health: { current: recovery.after, max: recovery.max, date: state.date },
       rodProfile,
       message: messages.length ? `\n${messages.join('\n')}` : ''
     };
@@ -2542,11 +2578,11 @@ export class fishing extends plugin {
     return Math.max(band.min, Math.min(band.max, Number(score.toFixed(2))));
   }
 
-  catchFish(userData = null, extraBias = {}, bodyModifiers = {}, mapContext = null) {
+  catchFish(userData = null, extraBias = {}, bodyModifiers = {}, mapContext = null, rodOverride = null) {
     const context = mapContext || this.getUserMapContext(userData);
     const fishTypesForMap = context.fishTypes || this.fishTypes;
     const rarityWeightsForMap = context.rarityWeights || rarityWeights;
-    const rod = getEquippedRod(userData);
+    const rod = rodOverride || getEquippedRod(userData);
     const rodTarget = resolveRodTarget(userData, rod);
     const baitId = bodyModifiers?.id || '';
     const targetEffect = rod?.targetFishEffect && rodTarget ? {
@@ -2657,13 +2693,13 @@ export class fishing extends plugin {
 
   // 当前鱼饵是“已装备且有库存”的持续装备，不再是买完立刻生效的临时效果。
   // 这样用户就可以通过 #换饵 在不同鱼饵之间切换，学习成本更低，也更容易做后续扩展。
-  consumeShopBait(userData, lockedBait = null) {
+  consumeShopBait(userData, lockedBait = null, rodOverride = null) {
     const rawBait = lockedBait || getEquippedBait(userData);
     const easterEggEffect = getEasterEggEffects(userData);
     const releaseEchoEffect = getReleaseEchoEffect(userData);
     const randomizedBait = applyBaitRandomEffectForCast(rawBait);
     const bait = amplifyBaitModifiers(randomizedBait, easterEggEffect.baitEffectAmplifier);
-    const rod = getEquippedRod(userData);
+    const rod = rodOverride || getEquippedRod(userData);
     if (!bait || bait.id === 'plain') {
       return { bonus: 0, message: '', rarityBias: {}, bodyModifiers: {} };
     }
@@ -3958,7 +3994,7 @@ export class fishing extends plugin {
       const lostItems = loadLostItems();
       const userData = this.getOrCreateUser(data, userId);
       const mapContext = this.getUserMapContext(userData);
-      let rod = getEquippedRod(userData);
+      let rod = getDeepSeaRodAttributes(getEquippedRod(userData), mapContext);
       const usageOptions = getFastFishingUsageOptions(this.config);
       const harborEffect = this.getFishingHarborEffect(e.group_id);
       const startingHealth = this.getUserHealthState(userData, e.group_id, harborEffect);
@@ -3998,8 +4034,10 @@ export class fishing extends plugin {
         if (usage.usedTicket) summary.ticketCasts += 1;
 
         const currentCount = userData.today.count;
+        const castMapContext = this.getUserMapContext(userData);
+        rod = getDeepSeaRodAttributes(getEquippedRod(userData), castMapContext);
         const bait = getEquippedBait(userData);
-        const shopBait = this.consumeShopBait(userData, bait);
+        const shopBait = this.consumeShopBait(userData, bait, rod);
         const shopBaitActive = bait.id !== 'plain' && (shopBait.bonus !== 0 || Object.keys(shopBait.rarityBias || {}).length > 0 || Object.keys(shopBait.bodyModifiers || {}).length > 0);
         if (shopBaitActive) {
           const baitName = getBaitDisplayName(bait);
@@ -4011,7 +4049,6 @@ export class fishing extends plugin {
 
         const easterEggEffect = getEasterEggEffects(userData);
         const releaseEchoEffect = getReleaseEchoEffect(userData);
-        const castMapContext = this.getUserMapContext(userData);
         const mapEventBonus = castMapContext.isAlternate ? consumeMapEventBonus(userData, getNowTimestamp()) : 0;
         let hiddenPityBonus = 0;
         if (Number(userData?.stats?.consecutiveEmpty || 0) >= 9) {
@@ -4060,7 +4097,7 @@ export class fishing extends plugin {
           userData.achievementCatchRateBonus = getAchievementCatchRateBonus(userData);
           userData.achievementDailyCastBonus = getAchievementDailyCastBonus(userData);
           summary.coinGain += Number(userData.coins || 0) - coinsBeforeCast;
-          rod = getEquippedRod(userData);
+          rod = getDeepSeaRodAttributes(getEquippedRod(userData), castMapContext);
           continue;
         }
 
@@ -4086,13 +4123,13 @@ export class fishing extends plugin {
           userData.achievementCatchRateBonus = getAchievementCatchRateBonus(userData);
           userData.achievementDailyCastBonus = getAchievementDailyCastBonus(userData);
           summary.coinGain += Number(userData.coins || 0) - coinsBeforeCast;
-          rod = getEquippedRod(userData);
+          rod = getDeepSeaRodAttributes(getEquippedRod(userData), castMapContext);
           if (shouldStopDeepSeaFishing(castMapContext, deepRodCost.health)) break;
           continue;
         }
 
         summary.catches += 1;
-        const fish = this.catchFish(userData, mergedBias, bodyModifiers, castMapContext);
+        const fish = this.catchFish(userData, mergedBias, bodyModifiers, castMapContext, rod);
         const specialRodEffect = this.applySpecialRodCatchEffect(userData, fish, { compact: true });
         const { fishWithTimestamp, tankResult, seasonalResult } = this.addCaughtFishToUser(userData, fish);
         const deepSettlement = this.applyDeepSeaCatchSettlement(userData, fishWithTimestamp, castMapContext, rod, e.group_id, harborEffect);
@@ -4120,16 +4157,16 @@ export class fishing extends plugin {
         const suppressExtraCoinBonuses = specialRodEffect.suppressExtraCoinBonuses;
         const signalHit = signal.targets.some(item => item.name === fishWithTimestamp.name);
         if (signalHit) {
-          const equippedRod = getEquippedRod(userData);
+          const equippedRod = rod;
           const signalCoins = signal.bonusCoins + getSignalRodBonusCoins(equippedRod, fishWithTimestamp) + scaleExternalCoinReward(equippedRod, harborEffect.signalBonusCoins) + scaleExternalCoinReward(equippedRod, releaseEchoEffect.signalBonusCoins);
           if (!suppressExtraCoinBonuses) userData.coins += signalCoins;
           userData.stats.signalFishCaught += 1;
           summary.signalHits += 1;
         }
-        const rodCoinBonus = Number(getEquippedRod(userData)?.catchCoinBonus || 0);
+        const rodCoinBonus = Number(rod?.catchCoinBonus || 0);
         if (!suppressExtraCoinBonuses && rodCoinBonus > 0) userData.coins += rodCoinBonus;
-        const easterEggCoinBonus = scaleExternalCoinReward(getEquippedRod(userData), easterEggEffect.catchCoinBonus);
-        const easterEggCoinBonusRate = scaleExternalFishingValue(getEquippedRod(userData), easterEggEffect.catchCoinBonusRate);
+        const easterEggCoinBonus = scaleExternalCoinReward(rod, easterEggEffect.catchCoinBonus);
+        const easterEggCoinBonusRate = scaleExternalFishingValue(rod, easterEggEffect.catchCoinBonusRate);
         if (!suppressExtraCoinBonuses && easterEggCoinBonus > 0) userData.coins += easterEggCoinBonus;
         if (!suppressExtraCoinBonuses && easterEggCoinBonusRate > 0) {
           userData.coins += Math.floor(getFishSellValue(fishWithTimestamp) * easterEggCoinBonusRate);
@@ -4140,7 +4177,7 @@ export class fishing extends plugin {
         userData.achievementCatchRateBonus = getAchievementCatchRateBonus(userData);
         userData.achievementDailyCastBonus = getAchievementDailyCastBonus(userData);
         summary.coinGain += Number(userData.coins || 0) - coinsBeforeCast;
-        rod = getEquippedRod(userData);
+        rod = getDeepSeaRodAttributes(getEquippedRod(userData), castMapContext);
         if (shouldStopDeepSeaFishing(castMapContext, deepSettlement.health)) break;
       }
 
@@ -4167,7 +4204,8 @@ export class fishing extends plugin {
       const data = this.loadData();
       const userData = this.getOrCreateUser(data, userId);
       const initialMapContext = this.getUserMapContext(userData);
-      const rod = getEquippedRod(userData);
+      const equippedRod = getEquippedRod(userData);
+      const rod = getDeepSeaRodAttributes(equippedRod, initialMapContext);
       const usageOptions = getFishingUsageOptions(this.config);
       const initialHarborEffect = this.getFishingHarborEffect(e.group_id);
       const initialHealth = this.getUserHealthState(userData, e.group_id, initialHarborEffect);
@@ -4177,8 +4215,8 @@ export class fishing extends plugin {
         return;
       }
 
-      if (!canFishToday(this.config, userData, rod, usageOptions)) {
-        await this.reply(`${userDisplay}\n${getFishingLimitExhaustedText(this.config, userData, rod, usageOptions)}`);
+      if (!canFishToday(this.config, userData, equippedRod, usageOptions)) {
+        await this.reply(`${userDisplay}\n${getFishingLimitExhaustedText(this.config, userData, equippedRod, usageOptions)}`);
         return;
       }
 
@@ -4186,10 +4224,10 @@ export class fishing extends plugin {
       const duanwuGift = claimDailyDuanwuZongziGift(userData);
       const delivery = claimDailyBaitDelivery(userData, todayKey);
       userData.total += 1;
-      registerCastUsage(this.config, userData, rod, usageOptions);
+      registerCastUsage(this.config, userData, equippedRod, usageOptions);
       const currentCount = userData.today.count;
       const bait = getEquippedBait(userData);
-      const shopBait = this.consumeShopBait(userData, bait);
+      const shopBait = this.consumeShopBait(userData, bait, rod);
       saveFishData(data);
 
       const easterEggEffect = getEasterEggEffects(userData);
@@ -4209,6 +4247,7 @@ export class fishing extends plugin {
       const releaseEchoEffect = getReleaseEchoEffect(settleUser);
       const baitData = loadBaitData();
       const manualBait = this.consumeManualBait(userId, baitData);
+      const settleRod = getDeepSeaRodAttributes(getEquippedRod(settleUser), settleMapContext);
 
       let hiddenPityBonus = 0;
       if (Number(settleUser?.stats?.consecutiveEmpty || 0) >= 9) {
@@ -4216,26 +4255,25 @@ export class fishing extends plugin {
       }
 
       const harborEffect = this.getFishingHarborEffect(e.group_id);
-      const externalEffectMultiplier = getExternalFishingModifierMultiplier(rod);
+      const externalEffectMultiplier = getExternalFishingModifierMultiplier(settleRod);
       const mapEventBonus = settleMapContext.isAlternate ? consumeMapEventBonus(settleUser, getNowTimestamp()) : 0;
       const mergedBias = mergeRarityBias(
-        rod.rarityBias,
+        settleRod.rarityBias,
         shopBait.rarityBias,
-        scaleExternalRarityBias(rod, settleMapContext.influence.rarityBias),
-        scaleExternalRarityBias(rod, easterEggEffect.rarityBias),
-        scaleExternalRarityBias(rod, releaseEchoEffect.rarityBias),
-        scaleExternalRarityBias(rod, harborEffect.rarityBias)
+        scaleExternalRarityBias(settleRod, settleMapContext.influence.rarityBias),
+        scaleExternalRarityBias(settleRod, easterEggEffect.rarityBias),
+        scaleExternalRarityBias(settleRod, releaseEchoEffect.rarityBias),
+        scaleExternalRarityBias(settleRod, harborEffect.rarityBias)
       );
-      const bodyModifiers = mergeFishBodyModifiers(rod, shopBait.bodyModifiers);
+      const bodyModifiers = mergeFishBodyModifiers(settleRod, shopBait.bodyModifiers);
 
-      const settleRod = getEquippedRod(settleUser);
       const settleRodTarget = resolveRodTarget(settleUser, settleRod);
       const settleRodCatchRateBonus = Number(settleRod.catchRateBonus || 0) + getGoldHumbleCatchRateBonus(settleRod, settleRodTarget);
-      const externalCatchBonus = scaleExternalFishingValue(rod, manualBait.bonus) + shopBait.bonus + scaleExternalFishingValue(rod, settleMapContext.influence.catchRateBonus + mapEventBonus) + scaleExternalFishingValue(rod, harborEffect.catchRateBonus);
+      const externalCatchBonus = scaleExternalFishingValue(settleRod, manualBait.bonus) + shopBait.bonus + scaleExternalFishingValue(settleRod, settleMapContext.influence.catchRateBonus + mapEventBonus) + scaleExternalFishingValue(settleRod, harborEffect.catchRateBonus);
       const catchRate = getCatchRate(settleUser, externalCatchBonus + hiddenPityBonus, settleRodCatchRateBonus, { externalEffectMultiplier });
       const externalReductionText = externalEffectMultiplier < 1 ? '\n[金谦限制] 鱼饵、彩蛋、渔港等外部钓鱼加成仅生效一半。' : '';
       const easterEggMsg = easterEggEffect.descriptions.length ? `\n[彩蛋加成] ${easterEggEffect.descriptions.join('；')}${externalReductionText}` : externalReductionText;
-      const failRescueChance = Math.max(0, Math.min(0.45, Number(rod.failProtection || 0) + scaleExternalFishingValue(rod, easterEggEffect.failProtection)));
+      const failRescueChance = Math.max(0, Math.min(0.45, Number(settleRod.failProtection || 0) + scaleExternalFishingValue(settleRod, easterEggEffect.failProtection)));
       const missedCatch = Math.random() >= catchRate;
       const duanwuEvent = !settleMapContext.isAlternate && missedCatch && shouldTriggerDuanwuQuyuanEvent(shopBait)
         ? applyDuanwuQuyuanEvent(settleUser)
@@ -4279,7 +4317,7 @@ export class fishing extends plugin {
       }
 
       const signal = this.getDailySignalForUser(settleUser);
-      const fish = this.catchFish(settleUser, mergedBias, bodyModifiers, settleMapContext);
+      const fish = this.catchFish(settleUser, mergedBias, bodyModifiers, settleMapContext, settleRod);
       const specialRodEffect = this.applySpecialRodCatchEffect(settleUser, fish);
       const suppressExtraCoinBonuses = specialRodEffect.suppressExtraCoinBonuses;
       const { fishWithTimestamp, tankUpdateMsg, seasonalResult } = this.addCaughtFishToUser(settleUser, fish);
@@ -4299,21 +4337,20 @@ export class fishing extends plugin {
       }
       const signalHit = signal.targets.some(item => item.name === fishWithTimestamp.name);
       if (signalHit) {
-        const equippedRod = getEquippedRod(settleUser);
-        const signalCoins = signal.bonusCoins + getSignalRodBonusCoins(equippedRod, fishWithTimestamp) + scaleExternalCoinReward(equippedRod, harborEffect.signalBonusCoins) + scaleExternalCoinReward(equippedRod, releaseEchoEffect.signalBonusCoins);
+        const signalCoins = signal.bonusCoins + getSignalRodBonusCoins(settleRod, fishWithTimestamp) + scaleExternalCoinReward(settleRod, harborEffect.signalBonusCoins) + scaleExternalCoinReward(settleRod, releaseEchoEffect.signalBonusCoins);
         if (!suppressExtraCoinBonuses) settleUser.coins += signalCoins;
         settleUser.stats.signalFishCaught += 1;
         signalMsg += suppressExtraCoinBonuses
           ? '\n[限时鱼讯] 命中今日目标鱼，但本次金谦限制压制了额外鱼蛋。'
           : `\n[限时鱼讯] 命中今日目标鱼，额外获得 ${signalCoins} 鱼蛋。`;
       }
-      const rodCoinBonus = Number(getEquippedRod(settleUser)?.catchCoinBonus || 0);
+      const rodCoinBonus = Number(settleRod?.catchCoinBonus || 0);
       if (!suppressExtraCoinBonuses && rodCoinBonus > 0) {
         settleUser.coins += rodCoinBonus;
         signalMsg += `\n[鱼竿效果] 本次额外收获 ${rodCoinBonus} 鱼蛋。`;
       }
-      const easterEggCoinBonus = scaleExternalCoinReward(getEquippedRod(settleUser), easterEggEffect.catchCoinBonus);
-      const easterEggCoinBonusRate = scaleExternalFishingValue(getEquippedRod(settleUser), easterEggEffect.catchCoinBonusRate);
+      const easterEggCoinBonus = scaleExternalCoinReward(settleRod, easterEggEffect.catchCoinBonus);
+      const easterEggCoinBonusRate = scaleExternalFishingValue(settleRod, easterEggEffect.catchCoinBonusRate);
       if (!suppressExtraCoinBonuses && easterEggCoinBonus > 0) {
         settleUser.coins += easterEggCoinBonus;
         signalMsg += '\n[彩蛋加成] 本次收获被悄悄抬高了一截。';
