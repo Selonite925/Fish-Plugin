@@ -92,7 +92,7 @@ import {
   getTankUpgradeRequiredPoints,
   parseTankIndexes
 } from './lib/tank.js';
-import { buildSellPreview, canSellFish, findShopItem, getFishSellValue, parseSellTarget } from './lib/economy.js';
+import { buildSellPreview, canSellFish, findShopItem, getFishSellValue, getFishValue, parseSellTarget } from './lib/economy.js';
 import { scaleCoinReward } from './lib/currency.js';
 import {
   applyReleaseEcho,
@@ -106,11 +106,21 @@ import {
   canAccessMap,
   consumeMapEventBonus,
   ensureMapState,
+  ensurePlayerHealth,
+  applyHealthDamage,
+  DEEP_SEA_FISHBALL_RATE,
+  DEEP_SEA_SPECIAL_ROD_FISHBALL_RATE,
+  DEEP_SEA_TRAVEL_COST,
   getCurrentMapId,
   getMapContext,
   getMapFishTemplateByName,
   getMapInfluence,
   getMapProfile,
+  getDeepSeaSpecialRodProfile,
+  getPlayerMaxHealth,
+  rollDeepSeaEventDamage,
+  rollDeepSeaFishDamage,
+  shouldStopDeepSeaFishing,
   getVeteranProgress,
   normalizeMapId,
   recordMapCatch,
@@ -242,6 +252,7 @@ import {
 // - lib/seasonal-fish.js：赛季目录、限定鱼收集和赛季进度
 // - lib/harbor.js：群共享渔港、捐赠和公共加成
 // - lib/harbor-transactions.js：渔港跨文件捐赠事务与断电恢复
+// - lib/maps.js：地图鱼池、航线影响和深海生命值规则
 // - lib/release-echo.js：放生回响阶段、生态效果和里程碑礼物
 // - lib/user.js：玩家数据归一化、每日次数、彩蛋与持有物状态
 // - lib/panel.js：图片面板渲染入口
@@ -280,7 +291,7 @@ const HELP_GROUPS = [
       { title: '#钓鱼极速版', desc: '一口气钓完当前能用次数，优先发图汇总结果。' },
       { title: '#今日鱼获 / #查看鱼获 @某人', desc: '查看自己或别人的当日鱼获记录。' },
       { title: '#钓鱼图鉴 / #钓鱼排行 / #每周钓鱼榜 / #每月钓鱼榜', desc: '看收藏、总排行、本周排行和本月排行。' },
-      { title: '#地图 / #地图 深海裂谷 / #地图 鱼塘', desc: '查看并切换钓鱼航线；深海裂谷只开放给已经熟悉初始鱼塘的钓友。' },
+      { title: '#地图 / #地图 深海裂谷 / #地图 鱼塘', desc: '查看并切换钓鱼航线；深海裂谷会消耗鱼丸并使用生命值，生命耗尽前可返航休整。' },
       { title: '#赛季鱼 / #历史赛季鱼', desc: '查看当前赛季或历史赛季限定鱼图鉴面板；不提前展示后续赛季。' },
       { title: '#鱼王榜 / #空军榜', desc: '看鱼缸综合质量和今日空军情况。' }
     ]
@@ -1497,9 +1508,9 @@ function fillMessageTemplate(template = '', data = {}) {
   return String(template || '').replace(/\{(\w+)\}/g, (_, key) => String(data?.[key] ?? ''));
 }
 
-function applyFishBodyBuffs(fish, modifiers = {}) {
+function applyFishBodyBuffs(fish, modifiers = {}, mapContext = null) {
   if (!fish || typeof fish !== 'object') return fish;
-  const fishPool = fishTypes[fish.rarity] || [];
+  const fishPool = (mapContext?.fishTypes || fishTypes)[fish.rarity] || [];
   const template = fishPool.find(item => item.name === fish.name);
   if (!template) return fish;
 
@@ -1656,6 +1667,7 @@ export class fishing extends plugin {
       userData.today = { count: 0, catches: 0, fish: [] };
       userData.todayExtraUsed = 0;
       userData.todayTicketsBought = 0;
+      userData.healthDate = '';
     }
     saveFishData(data);
 
@@ -2376,11 +2388,107 @@ export class fishing extends plugin {
     return signal;
   }
 
-  getMapEventSettlement(userData, failResult, mapContext = null) {
+  getMapEventSettlement(userData, failResult, mapContext = null, groupId = '') {
     if (!failResult || failResult.type !== 'map_event' || !mapContext?.isAlternate) return '';
     const result = applyMapEvent(userData, failResult.event, getNowTimestamp());
     recordMapEvent(userData, mapContext.id);
-    return result ? `\n${mapContext.eventPrefix} ${result.label}，${result.nextCastHint}` : '';
+    if (!result) return '';
+    const eventDamage = rollDeepSeaEventDamage(failResult.event);
+    let damageText = '';
+    if (eventDamage.triggered) {
+      const state = this.getUserHealthState(userData, groupId);
+      const damage = applyHealthDamage(userData, eventDamage.damage, {
+        dayKey: state.date,
+        maxHealth: state.max
+      });
+      damageText = `\n[深海事件] ${eventDamage.scene} 生存线出现一道缺口。`;
+      if (damage.depleted) damageText += '\n生命值已经耗尽，今天不能继续在深海抛竿。';
+    }
+    return `\n${mapContext.eventPrefix} ${result.label}，${result.nextCastHint}${damageText}`;
+  }
+
+  getUserHealthState(userData, groupId = '', harborEffect = null) {
+    const effect = harborEffect || this.getFishingHarborEffect(groupId);
+    const maxHealth = getPlayerMaxHealth(userData, effect.level || 0);
+    return ensurePlayerHealth(userData, {
+      dayKey: getFishingDayKey(this.config),
+      maxHealth,
+      harborLevel: effect.level || 0
+    });
+  }
+
+  formatHealthText(state, prefix = '生命值') {
+    if (!state) return '';
+    const max = Number(state.max);
+    const current = Number(state.current);
+    if (!Number.isFinite(max) || max <= 0 || !Number.isFinite(current)) return `${prefix}：状态未知`;
+    const ratio = Math.max(0, Math.min(1, current / max));
+    const condition = ratio <= 0
+      ? '今日已耗尽'
+      : ratio < 0.3
+        ? '接近返航'
+        : ratio < 0.55
+          ? '需要留意'
+          : ratio < 0.8
+            ? '状态尚可'
+            : '状态稳健';
+    return `${prefix}：${condition}`;
+  }
+
+  applyDeepSeaRodCost(userData, mapContext, rod, groupId = '', harborEffect = null) {
+    if (!mapContext?.isAlternate) {
+      return { healthDamage: 0, health: this.getUserHealthState(userData, groupId, harborEffect), message: '' };
+    }
+    const state = this.getUserHealthState(userData, groupId, harborEffect);
+    const rodProfile = getDeepSeaSpecialRodProfile(rod);
+    if (!rodProfile.enabled) return { healthDamage: 0, rodProfile, health: state, message: '' };
+    const damage = applyHealthDamage(userData, rodProfile.healthCost, {
+      dayKey: state.date,
+      maxHealth: state.max
+    });
+    return {
+      healthDamage: damage.amount,
+      rodProfile,
+      health: { current: damage.after, max: damage.max, date: state.date },
+      message: `\n[深海竿] ${rodProfile.label}牵引深潮，生存线出现一道缺口。${damage.depleted ? '\n生命值已经耗尽，今天不能继续在深海抛竿。' : ''}`
+    };
+  }
+
+  applyDeepSeaCatchSettlement(userData, fish, mapContext, rod, groupId = '', harborEffect = null) {
+    if (!mapContext?.isAlternate || !fish) {
+      return { healthDamage: 0, fishballReward: 0, health: this.getUserHealthState(userData, groupId, harborEffect), message: '' };
+    }
+    const state = this.getUserHealthState(userData, groupId, harborEffect);
+    const easterEggEffect = getEasterEggEffects(userData);
+    const rodProfile = getDeepSeaSpecialRodProfile(rod);
+    const fishDamage = rollDeepSeaFishDamage(fish, {
+      damageMultiplier: 1 - Math.max(0, Math.min(0.8, Number(easterEggEffect.deepSeaDamageReduction || 0)))
+    });
+    const totalDamage = fishDamage.damage + rodProfile.healthCost;
+    const damage = applyHealthDamage(userData, totalDamage, {
+      dayKey: state.date,
+      maxHealth: state.max
+    });
+    const fishballRate = Math.min(
+      0.65,
+      (rodProfile.enabled ? DEEP_SEA_SPECIAL_ROD_FISHBALL_RATE : DEEP_SEA_FISHBALL_RATE) + Number(easterEggEffect.deepSeaFishballRateBonus || 0)
+    );
+    const fishballReward = Math.max(0, Math.floor(getFishValue(fish) * fishballRate));
+    userData.coins = Number(userData.coins || 0) + fishballReward;
+    const messages = [];
+    if (fishDamage.triggered) messages.push(`[深海伤害] ${fishDamage.scene} 生存线出现一道缺口。`);
+    if (rodProfile.enabled) messages.push(`[深海竿] ${rodProfile.label}换来更丰厚的鱼丸回响，生存线出现一道缺口。`);
+    if (fishballReward > 0) messages.push(`[深海鱼丸] ${fish.name}的深海回响额外带回一份鱼丸。`);
+    if (damage.depleted) messages.push('生命值已经耗尽，今天不能继续在深海抛竿。');
+    return {
+      healthDamage: damage.amount,
+      fishDamage: fishDamage.damage,
+      rodHealthCost: rodProfile.healthCost,
+      fishballReward,
+      health: { current: damage.after, max: damage.max, date: state.date },
+      rodProfile,
+      message: messages.length ? `\n${messages.join('\n')}` : ''
+    };
   }
 
   getHarborEffect(groupId) {
@@ -2392,7 +2500,9 @@ export class fishing extends plugin {
   }
 
   getFishingHarborEffect(groupId) {
-    return groupId ? this.getHarborEffect(groupId) : { catchRateBonus: 0, signalBonusCoins: 0, rarityBias: {} };
+    return groupId
+      ? this.getHarborEffect(groupId)
+      : { level: 0, catchRateBonus: 0, signalBonusCoins: 0, rarityBias: {} };
   }
 
   applyRarityBias(baseWeights, bias = {}) {
@@ -2495,9 +2605,9 @@ export class fishing extends plugin {
       const template = tideObserverSurvey?.template || realPool[Math.floor(Math.random() * realPool.length)];
       fish = template ? createFishFromTemplate(template, rarity) : generateFish(rarity);
     }
-    fish = applyFishBodyBuffs(fish, bodyModifiers);
+    fish = applyFishBodyBuffs(fish, bodyModifiers, context);
     if (tideObserverSurvey && fish) {
-      fish = applyFishBodyBuffs(fish, rod.seasonalSurvey);
+      fish = applyFishBodyBuffs(fish, rod.seasonalSurvey, context);
       fish.tideObserverEffect = {
         seasonName: tideObserverSurvey.season.name,
         missingCount: tideObserverSurvey.missingCount
@@ -2629,6 +2739,8 @@ export class fishing extends plugin {
     const { userId, text: userDisplay } = getUserDisplay(e);
     const userData = this.getOrCreateUser(data, userId);
     const current = this.getUserMapContext(userData);
+    const harborEffect = this.getFishingHarborEffect(e.group_id);
+    const health = this.getUserHealthState(userData, e.group_id, harborEffect);
     const veteran = getVeteranProgress(userData);
     const deepAvailable = canAccessMap(userData, 'abyss');
     const deepInfluence = getMapInfluence(userData, 'abyss');
@@ -2641,6 +2753,17 @@ export class fishing extends plugin {
           desc: current.description,
           meta: current.isAlternate ? `旧鱼塘的水声：${deepInfluence.label}` : '熟悉的鱼塘仍然保留原有鱼池。',
           tone: 'active',
+          fullWidth: true
+        }]
+      },
+      {
+        group: '深海生存线',
+        list: [{
+          badge: '命',
+          title: this.formatHealthText(health),
+          desc: '生命值每日刷新；鱼缸与渔港的成长会扩大可承受的深海风险。',
+          meta: current.isAlternate && health.current <= 0 ? '今日已不能继续下潜' : '生命值耗尽前可返回鱼塘休整',
+          tone: health.current <= 0 ? 'warning' : 'positive',
           fullWidth: true
         }]
       },
@@ -2678,13 +2801,14 @@ export class fishing extends plugin {
           fullWidth: true
         }]
       }
-    ], ['lake', 'abyss', 'sky']), { badgePrefix: '图' });
+    ], ['lake', 'health', 'abyss', 'sky']), { badgePrefix: '图' });
     const fallback = [
       `${userDisplay}的钓鱼地图`,
       `当前航线：${current.name}`,
       '',
       `初始鱼塘：${current.id === 'pond' ? '当前' : '可返回'}`,
       `深海裂谷：${deepAvailable ? current.id === 'abyss' ? '当前' : '已开放' : '尚未开放'}`,
+      this.formatHealthText(health),
       `旧航线回声：${deepInfluence.label}`,
       '',
       '切换：#地图 深海裂谷 / #地图 鱼塘'
@@ -2718,6 +2842,21 @@ export class fishing extends plugin {
       return;
     }
     const previous = getCurrentMapId(userData);
+    const harborEffect = this.getFishingHarborEffect(e.group_id);
+    const health = this.getUserHealthState(userData, e.group_id, harborEffect);
+    let travelText = '';
+    if (mapId === 'abyss' && previous !== 'abyss') {
+      if (health.current <= 0) {
+        await this.reply(`${userDisplay}\n你的生命值已经耗尽，今天无法再次下潜，请等每日刷新后再出航。`);
+        return;
+      }
+      if (Number(userData.coins || 0) < DEEP_SEA_TRAVEL_COST) {
+        await this.reply(`${userDisplay}\n下潜需要一笔鱼丸航费来雇佣水手并准备生存物资，你的鱼丸还不够。`);
+        return;
+      }
+      userData.coins -= DEEP_SEA_TRAVEL_COST;
+      travelText = '\n花鱼丸雇佣了水手并且准备了必备的生存物资，航费已经结清。';
+    }
     ensureMapState(userData).current = normalizeMapId(mapId);
     const visitCount = recordMapVisit(userData, mapId);
     saveFishData(data);
@@ -2726,7 +2865,8 @@ export class fishing extends plugin {
       ? '\n远处的裂谷灯已经为你亮起，第一道潮声正在等你。'
       : '';
     const previousText = previous === context.id ? '你已经在这条航线上了。' : `已切换到${context.name}。`;
-    await this.reply(`${userDisplay}\n${previousText}${firstVisitText}\n${context.description}`);
+    const nextHealth = this.getUserHealthState(userData, e.group_id, harborEffect);
+    await this.reply(`${userDisplay}\n${previousText}${firstVisitText}${travelText}\n${context.description}\n${this.formatHealthText(nextHealth)}`);
   }
 
   async goToDeepSea(e) {
@@ -3207,6 +3347,10 @@ export class fishing extends plugin {
       rescued: 0,
       ticketCasts: 0,
       coinGain: 0,
+      fishballReward: 0,
+      healthDamage: 0,
+      healthCurrent: 0,
+      healthMax: 0,
       signalHits: 0,
       duanwuEvents: 0,
       duanwuCoins: 0,
@@ -3655,6 +3799,8 @@ export class fishing extends plugin {
       summary.rescued > 0 ? `失败保护补救：${summary.rescued}次` : null,
       summary.signalHits > 0 ? `命中限时鱼讯：${summary.signalHits}条` : null,
       summary.duanwuEvents > 0 ? `端午奇遇：${summary.duanwuEvents}次，+${summary.duanwuCoins}鱼蛋` : null,
+      summary.fishballReward > 0 ? '深海鱼丸：额外回响已到账' : null,
+      summary.mapName === '深海裂谷' && summary.healthMax > 0 ? this.formatHealthText({ current: summary.healthCurrent, max: summary.healthMax }, '深海生命') : null,
       summary.tankAdded > 0 || summary.tankReplaced > 0 ? `鱼缸更新：新增${summary.tankAdded}条，替换${summary.tankReplaced}条` : null,
       summary.autoSellCoins > 0 ? `鱼缸替换自动售出：+${summary.autoSellCoins}鱼蛋` : null
     ].filter(Boolean);
@@ -3681,6 +3827,17 @@ export class fishing extends plugin {
           }
         ]
       },
+      ...(summary.mapName === '深海裂谷' ? [{
+        group: '深海生存',
+        list: [{
+          badge: '命',
+          title: this.formatHealthText({ current: summary.healthCurrent, max: summary.healthMax }),
+          desc: '深海鱼影会带来不可预知的冲击；生命值耗尽后本日不能继续下潜。',
+          meta: summary.healthCurrent <= 0 ? '今日深海航程已结束' : '本次深海冲击已记录',
+          tone: summary.healthCurrent <= 0 ? 'warning' : 'positive',
+          fullWidth: true
+        }]
+      }] : []),
       {
         group: '稀有度统计',
         list: rarityLines.length
@@ -3750,7 +3907,7 @@ export class fishing extends plugin {
           tone: 'positive'
         }))
       }] : [])
-    ], ['lake', 'gold', 'sky', 'coral', 'amber', 'plum']);
+    ], ['lake', 'health', 'gold', 'sky', 'coral', 'amber', 'plum']);
     const sections = buildCardGridSections(groups, { badgePrefix: '结' });
 
     const fallback = [
@@ -3761,6 +3918,7 @@ export class fishing extends plugin {
       `总抛竿：${summary.casts}竿，上鱼${summary.catches}条，空军${summary.misses}竿`,
       `今日次数：${getFishingLimitText(this.config, userData, getEquippedRod(userData), usageOptions)}`,
       `鱼蛋变化：${summary.coinGain >= 0 ? '+' : ''}${summary.coinGain}，当前${userData.coins}`,
+      ...(summary.mapName === '深海裂谷' ? [this.formatHealthText({ current: summary.healthCurrent, max: summary.healthMax }, '深海生命'), '深海冲击：已记录'] : []),
       ...extraLines,
       '',
       '稀有度统计',
@@ -3799,6 +3957,13 @@ export class fishing extends plugin {
       const mapContext = this.getUserMapContext(userData);
       let rod = getEquippedRod(userData);
       const usageOptions = getFastFishingUsageOptions(this.config);
+      const harborEffect = this.getFishingHarborEffect(e.group_id);
+      const startingHealth = this.getUserHealthState(userData, e.group_id, harborEffect);
+
+      if (shouldStopDeepSeaFishing(mapContext, startingHealth)) {
+        await this.reply(`${userDisplay}\n你的生命值已经耗尽，今天不能继续在深海钓鱼，请等每日刷新后再出航。`);
+        return;
+      }
 
       if (!canFishToday(this.config, userData, rod, usageOptions)) {
         await this.reply(`${userDisplay}\n${getFishingLimitExhaustedText(this.config, userData, rod, usageOptions)}`);
@@ -3816,6 +3981,8 @@ export class fishing extends plugin {
 
       const summary = this.createFastFishingSummary(rod);
       summary.mapName = mapContext.name;
+      summary.healthCurrent = startingHealth.current;
+      summary.healthMax = startingHealth.max;
       const signal = this.getDailySignalForUser(userData);
 
       while (canFishToday(this.config, userData, rod, usageOptions)) {
@@ -3848,7 +4015,6 @@ export class fishing extends plugin {
           hiddenPityBonus = HIDDEN_PITY_CATCH_BONUS;
         }
 
-        const harborEffect = this.getFishingHarborEffect(e.group_id);
         const externalEffectMultiplier = getExternalFishingModifierMultiplier(rod);
         const mergedBias = mergeRarityBias(
           rod.rarityBias,
@@ -3902,7 +4068,12 @@ export class fishing extends plugin {
 
         if (missedCatch && !rescuedCatch) {
           this.applyXianyuFailRecycleMessage(data, failResult, userId, e);
-          const mapEventText = this.getMapEventSettlement(userData, failResult, castMapContext);
+          const mapEventText = this.getMapEventSettlement(userData, failResult, castMapContext, e.group_id);
+          const deepRodCost = this.applyDeepSeaRodCost(userData, castMapContext, rod, e.group_id, harborEffect);
+          if (deepRodCost.message) summary.specialEffects.push(deepRodCost.message.trim());
+          summary.healthDamage = (summary.healthDamage || 0) + deepRodCost.healthDamage;
+          summary.healthCurrent = deepRodCost.health.current;
+          summary.healthMax = deepRodCost.health.max;
           if (mapEventText) summary.specialEffects.push(mapEventText.trim());
           summary.misses += 1;
           summary.failTypes[failResult.type] = (summary.failTypes[failResult.type] || 0) + 1;
@@ -3913,6 +4084,7 @@ export class fishing extends plugin {
           userData.achievementDailyCastBonus = getAchievementDailyCastBonus(userData);
           summary.coinGain += Number(userData.coins || 0) - coinsBeforeCast;
           rod = getEquippedRod(userData);
+          if (shouldStopDeepSeaFishing(castMapContext, deepRodCost.health)) break;
           continue;
         }
 
@@ -3920,6 +4092,12 @@ export class fishing extends plugin {
         const fish = this.catchFish(userData, mergedBias, bodyModifiers, castMapContext);
         const specialRodEffect = this.applySpecialRodCatchEffect(userData, fish, { compact: true });
         const { fishWithTimestamp, tankResult, seasonalResult } = this.addCaughtFishToUser(userData, fish);
+        const deepSettlement = this.applyDeepSeaCatchSettlement(userData, fishWithTimestamp, castMapContext, rod, e.group_id, harborEffect);
+        if (deepSettlement.message) summary.specialEffects.push(deepSettlement.message.trim());
+        summary.healthDamage = (summary.healthDamage || 0) + deepSettlement.healthDamage;
+        summary.healthCurrent = deepSettlement.health.current;
+        summary.healthMax = deepSettlement.health.max;
+        summary.fishballReward = (summary.fishballReward || 0) + deepSettlement.fishballReward;
         this.recordFastFish(summary, fishWithTimestamp);
         resetEmptyCastStreak(userData);
         userData.stats.lastCatchRarity = fishWithTimestamp.rarity;
@@ -3960,6 +4138,7 @@ export class fishing extends plugin {
         userData.achievementDailyCastBonus = getAchievementDailyCastBonus(userData);
         summary.coinGain += Number(userData.coins || 0) - coinsBeforeCast;
         rod = getEquippedRod(userData);
+        if (shouldStopDeepSeaFishing(castMapContext, deepSettlement.health)) break;
       }
 
       const result = this.buildFastFishingResultPanel(userDisplay, summary, userData, rod, usageOptions);
@@ -3987,6 +4166,13 @@ export class fishing extends plugin {
       const initialMapContext = this.getUserMapContext(userData);
       const rod = getEquippedRod(userData);
       const usageOptions = getFishingUsageOptions(this.config);
+      const initialHarborEffect = this.getFishingHarborEffect(e.group_id);
+      const initialHealth = this.getUserHealthState(userData, e.group_id, initialHarborEffect);
+
+      if (shouldStopDeepSeaFishing(initialMapContext, initialHealth)) {
+        await this.reply(`${userDisplay}\n你的生命值已经耗尽，今天不能继续在深海钓鱼，请等每日刷新后再出航。`);
+        return;
+      }
 
       if (!canFishToday(this.config, userData, rod, usageOptions)) {
         await this.reply(`${userDisplay}\n${getFishingLimitExhaustedText(this.config, userData, rod, usageOptions)}`);
@@ -4006,7 +4192,7 @@ export class fishing extends plugin {
       const easterEggEffect = getEasterEggEffects(userData);
       const preCastText = [duanwuGift?.text, delivery?.text].filter(Boolean).map(text => `${text}\n`).join('');
       const mapIntroText = initialMapContext.isAlternate ? `\n${initialMapContext.castIntro}` : '';
-      await this.reply(`${userDisplay}\n${preCastText}已抛竿，当前航线：${initialMapContext.name}\n当前鱼竿：${rod.name}\n当前鱼饵：${getBaitDisplayName(bait)}${mapIntroText}\n请稍等片刻...`);
+      await this.reply(`${userDisplay}\n${preCastText}已抛竿，当前航线：${initialMapContext.name}\n当前鱼竿：${rod.name}\n当前鱼饵：${getBaitDisplayName(bait)}${mapIntroText}\n${this.formatHealthText(initialHealth)}\n请稍等片刻...`);
 
       const minDelay = 1000;
       const maxDelay = 15000;
@@ -4078,13 +4264,14 @@ export class fishing extends plugin {
       }
       if (missedCatch && !rescuedCatch) {
         this.applyXianyuFailRecycleMessage(settleData, failResult, userId, e);
-        const mapEventText = this.getMapEventSettlement(settleUser, failResult, settleMapContext);
+        const mapEventText = this.getMapEventSettlement(settleUser, failResult, settleMapContext, e.group_id);
+        const deepRodCost = this.applyDeepSeaRodCost(settleUser, settleMapContext, settleRod, e.group_id, harborEffect);
         recordEmptyCast(settleUser);
         const unlocked = scanAchievements(settleUser, this.fishTypes);
         settleUser.achievementCatchRateBonus = getAchievementCatchRateBonus(settleUser);
         settleUser.achievementDailyCastBonus = getAchievementDailyCastBonus(settleUser);
         saveFishData(settleData);
-        await this.reply(`${userDisplay}\n${failResult.message}${mapEventText}\n今日钓鱼次数：${getFishingLimitText(this.config, settleUser, getEquippedRod(settleUser), usageOptions)}${manualBait.message}${shopBait.message}${easterEggMsg}${this.formatAchievementUnlocks(unlocked)}`);
+        await this.reply(`${userDisplay}\n${failResult.message}${mapEventText}${deepRodCost.message}\n${this.formatHealthText(deepRodCost.health)}\n今日钓鱼次数：${getFishingLimitText(this.config, settleUser, getEquippedRod(settleUser), usageOptions)}${manualBait.message}${shopBait.message}${easterEggMsg}${this.formatAchievementUnlocks(unlocked)}`);
         return;
       }
 
@@ -4093,6 +4280,7 @@ export class fishing extends plugin {
       const specialRodEffect = this.applySpecialRodCatchEffect(settleUser, fish);
       const suppressExtraCoinBonuses = specialRodEffect.suppressExtraCoinBonuses;
       const { fishWithTimestamp, tankUpdateMsg, seasonalResult } = this.addCaughtFishToUser(settleUser, fish);
+      const deepSettlement = this.applyDeepSeaCatchSettlement(settleUser, fishWithTimestamp, settleMapContext, settleRod, e.group_id, harborEffect);
       resetEmptyCastStreak(settleUser);
       settleUser.stats.lastCatchRarity = fishWithTimestamp.rarity;
 
@@ -4145,7 +4333,7 @@ export class fishing extends plugin {
         resultIntroMsg +
         `恭喜！你钓到了一条 ${fishWithTimestamp.rarity} 鱼：${fishWithTimestamp.name}\n` +
         `长度：${fishWithTimestamp.length}cm，重量：${fishWithTimestamp.weight}kg${tankUpdateMsg}\n` +
-        `今日钓鱼次数：${getFishingLimitText(this.config, settleUser, getEquippedRod(settleUser), usageOptions)}${manualBait.message}${shopBait.message}${easterEggMsg}${signalMsg}${this.formatAchievementUnlocks(unlocked)}`
+        `${deepSettlement.message}\n${this.formatHealthText(deepSettlement.health)}\n今日钓鱼次数：${getFishingLimitText(this.config, settleUser, getEquippedRod(settleUser), usageOptions)}${manualBait.message}${shopBait.message}${easterEggMsg}${signalMsg}${this.formatAchievementUnlocks(unlocked)}`
       );
     } finally {
       this.releaseFishingLock(userId);
@@ -4845,6 +5033,8 @@ async checkEasterEggCollection(e) {
     const { text: userDisplay } = getUserDisplay(e);
     const userData = this.getOrCreateUser(data, String(e.user_id));
     normalizeUserData(userData);
+    // 读取收藏时顺手持久化旧存档迁移，深海彩蛋不会只在本次面板里短暂出现。
+    saveFishData(data);
     const status = getEasterEggStatusSummary(userData);
     const ownedText = status.owned.length
       ? status.owned.map((name, index) => `彩蛋${index + 1}：${name}`).join('、')
@@ -4861,11 +5051,12 @@ async checkEasterEggCollection(e) {
         isActive ? '当前生效' : null,
         isPending ? '待切换' : null
       ].filter(Boolean).join(' | ');
+      const sourceText = effect.sourceMap ? `来源：${effect.sourceMap}` : '';
       return {
         badge: `彩${index + 1}`,
         title: name,
         desc: effect.description || '效果已记录',
-        meta: badges,
+        meta: [badges, sourceText].filter(Boolean).join(' | '),
         tone: isActive ? 'active' : isPending ? 'warning' : 'positive'
       };
     });
@@ -5128,6 +5319,8 @@ async checkEasterEggCollection(e) {
     const sortedEntries = getSortedTankEntries(userData);
     const sortedFish = sortedEntries.map(item => annotateFishLock(userData, item.fish));
     const rod = getEquippedRod(userData);
+    const harborEffect = this.getFishingHarborEffect(e.group_id);
+    const health = this.getUserHealthState(userData, e.group_id, harborEffect);
     const progressText = this.getTankUpgradeProgressText(userData);
     const easterEggStatus = getEasterEggStatusSummary(userData);
     const releaseEchoStatus = getReleaseEchoStatus(userData);
@@ -5139,6 +5332,14 @@ async checkEasterEggCollection(e) {
       {
         group: '鱼缸状态',
         list: [
+          {
+            badge: '生命',
+            title: this.formatHealthText(health),
+            desc: '深海专属生存状态，每日刷新；鱼缸和渔港等级会扩大上限。',
+            meta: health.current <= 0 ? '今日无法继续深海钓鱼' : '可用 #地图 深海裂谷 下潜',
+            tone: health.current <= 0 ? 'warning' : 'positive',
+            fullWidth: true
+          },
           {
             badge: '容量',
             title: `${userData.fishTank.length}/${userData.tankCapacity}`,
@@ -5230,13 +5431,14 @@ async checkEasterEggCollection(e) {
             fullWidth: true
           }]
       }
-    ], ['lake', 'plum', 'amber', 'sky', 'sky']), { badgePrefix: '缸' });
+    ], ['health', 'plum', 'amber', 'sky', 'sky']), { badgePrefix: '缸' });
 
     const fallbackText = [
       ownerTitle,
       `当前收藏 ${sortedFish.length} 条鱼`,
       ...sortedFish.map((fish, index) => formatFishLine(fish, index)),
       `鱼缸容量：${userData.fishTank.length}/${userData.tankCapacity}`,
+      this.formatHealthText(health),
       `鱼缸等级：${userData.tankLevel || 0}/${MAX_TANK_LEVEL}`,
       `升级进度：${progressText}`,
       `今日钓鱼次数：${getFishingLimitText(this.config, userData, rod, getFishingUsageOptions(this.config))}`,
