@@ -11,6 +11,7 @@ import {
   getVeteranProgress,
   recordMapCatch
 } from '../lib/maps.js';
+import { EASTER_EGG_RARITY, LEGENDARY_ROD_RECIPES, ROD_CATALOG } from '../lib/constants.js';
 import { createDefaultUserData, normalizeUserData } from '../lib/user.js';
 
 const newcomer = createDefaultUserData();
@@ -34,6 +35,22 @@ assert.equal(context.fishTypes.legendary.length, 10);
 assert.equal(Object.values(context.fishTypes).flat().length, 61);
 assert.ok(context.fishTypes.common.every(fish => !['鲫鱼', '鲤鱼', '草鱼'].includes(fish.name)));
 assert.ok(getMapFishTemplateByName('abyss', '灯笼乌贼'));
+
+for (const rarity of ['epic', 'legendary', EASTER_EGG_RARITY]) {
+  const fishNames = context.fishTypes[rarity].map(fish => fish.name).sort();
+  const performances = context.specialMessagesByFish?.[rarity] || {};
+  assert.deepEqual(Object.keys(performances).sort(), fishNames);
+  for (const fishName of fishNames) {
+    assert.ok(performances[fishName].intro);
+    assert.ok(performances[fishName].reveal);
+  }
+}
+
+for (const fish of context.fishTypes.legendary) {
+  const recipe = Object.values(LEGENDARY_ROD_RECIPES).find(item => item.sourceLegendary === fish.name);
+  assert.ok(recipe, `${fish.name} should have a legendary rod recipe`);
+  assert.equal(ROD_CATALOG[recipe.id]?.sourceLegendary, fish.name);
+}
 
 const baselineInfluence = getMapInfluence(createDefaultUserData(), 'abyss');
 const veteranInfluence = getMapInfluence(veteran, 'abyss');

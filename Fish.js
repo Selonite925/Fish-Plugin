@@ -3087,9 +3087,12 @@ export class fishing extends plugin {
 
     const context = mapContext || this.getUserMapContext(null, fish.mapId);
     const mapMessages = context.specialMessages?.[rarity];
-    const introMessages = context.isAlternate && Array.isArray(mapMessages) && mapMessages.length
-      ? mapMessages
-      : epicMessages;
+    const fishMessages = context.specialMessagesByFish?.[rarity]?.[fish.name];
+    const introMessages = fishMessages?.intro
+      ? [fishMessages.intro]
+      : context.isAlternate && Array.isArray(mapMessages) && mapMessages.length
+        ? mapMessages
+        : epicMessages;
 
     await this.reply(introMessages[Math.floor(Math.random() * introMessages.length)]);
     await new Promise(resolve => setTimeout(resolve, Math.floor(Math.random() * 3000) + 1200));
@@ -3097,17 +3100,17 @@ export class fishing extends plugin {
     if (rarity === 'legendary' || rarity === EASTER_EGG_RARITY) {
       const legendaryMessage = rarity === EASTER_EGG_RARITY
         ? context.isAlternate
-          ? '深海的光没有散去，像有一整片海沟在替这条鱼屏住呼吸。'
+          ? fishMessages?.reveal || '深海的光没有散去，像有一整片海沟在替这条鱼屏住呼吸。'
           : defaultLegendaryMessage
         : context.isAlternate
-          ? (mapMessages?.[Math.min(1, Math.max(0, mapMessages.length - 1))] || defaultLegendaryMessage)
+          ? fishMessages?.reveal || mapMessages?.[Math.min(1, Math.max(0, mapMessages.length - 1))] || defaultLegendaryMessage
           : (legendaryMessages[fish.name] || defaultLegendaryMessage);
       await this.reply(legendaryMessage);
       await new Promise(resolve => setTimeout(resolve, Math.floor(Math.random() * 2000) + 1500));
     }
     if (rarity === EASTER_EGG_RARITY) {
       await this.reply(context.isAlternate
-        ? `海图上凭空多出了一颗新星，${fish.name}已经把自己的航迹留在裂谷里。`
+        ? fishMessages?.collection || `海图上凭空多出了一颗新星，${fish.name}已经把自己的航迹留在裂谷里。`
         : (mysteryMessages[fish.name] || defaultMysteryMessage));
       await new Promise(resolve => setTimeout(resolve, Math.floor(Math.random() * 1500) + 1000));
     }
