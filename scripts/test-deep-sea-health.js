@@ -61,7 +61,7 @@ assert.ok(getDeepSeaDamageProfile('common').max > 5);
 assert.ok(getDeepSeaDamageProfile('legendary').chance > 0.38);
 assert.ok(getDeepSeaDamageProfile('legendary').min > 14);
 assert.ok(getDeepSeaDamageProfile('？').chance > 0.46);
-assert.equal(DEEP_SEA_NIGHT_RETURN_HOUR, 23);
+assert.equal(DEEP_SEA_NIGHT_RETURN_HOUR, 0);
 const guaranteedDamage = rollDeepSeaFishDamage({ rarity: 'legendary' }, { random: () => 0 });
 assert.equal(guaranteedDamage.triggered, true);
 assert.ok(guaranteedDamage.damage >= getDeepSeaDamageProfile('legendary').min);

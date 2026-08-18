@@ -110,7 +110,6 @@ import {
   applyHealthDamage,
   applyHealthRecovery,
   DEEP_SEA_CAST_HEALTH_COST,
-  DEEP_SEA_NIGHT_RETURN_HOUR,
   DEEP_SEA_TRAVEL_COST,
   getCurrentMapId,
   getMapContext,
@@ -2468,8 +2467,9 @@ export class fishing extends plugin {
   }
 
   async processDeepSeaNightReturn(now = new Date()) {
-    if (getLocalHour(now) !== DEEP_SEA_NIGHT_RETURN_HOUR) return { returned: [], sent: 0, groups: 0 };
-    const dateKey = getTodayKey(now);
+    const resetHour = getDailyResetHour(this.config);
+    if (getLocalHour(now) !== resetHour) return { returned: [], sent: 0, groups: 0 };
+    const dateKey = getFishingDayKey(this.config, now);
     const world = loadWorldState();
     if (String(world.lastDeepSeaNightReturnDate || '').trim() === dateKey) {
       return { returned: [], sent: 0, groups: 0 };
