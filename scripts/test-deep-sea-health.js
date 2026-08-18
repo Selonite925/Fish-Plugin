@@ -6,15 +6,18 @@ import {
   applyHealthRecovery,
   DEEP_SEA_CAST_HEALTH_COST,
   DEEP_SEA_FISHBALL_RATE,
+  DEEP_SEA_NIGHT_RETURN_HOUR,
   DEEP_SEA_ROD_ATTRIBUTE_MULTIPLIER,
   DEEP_SEA_SPECIAL_ROD_FISHBALL_RATE,
   DEEP_SEA_TRAVEL_COST,
   ensurePlayerHealth,
   getDeepSeaCastHealthCost,
   getDeepSeaDamageProfile,
+  getDeepSeaEscapePerformance,
   getDeepSeaRodAttributes,
   getDeepSeaSpecialRodProfile,
   getPlayerMaxHealth,
+  getMapProfile,
   rollDeepSeaFishDamage,
   rollDeepSeaEventDamage,
   shouldStopDeepSeaFishing
@@ -53,6 +56,12 @@ assert.equal(shouldStopDeepSeaFishing({ isAlternate: false }, { current: 0 }), f
 
 assert.ok(getDeepSeaDamageProfile('legendary').chance > getDeepSeaDamageProfile('common').chance);
 assert.ok(getDeepSeaDamageProfile('legendary').max > getDeepSeaDamageProfile('common').max);
+assert.ok(getDeepSeaDamageProfile('common').chance > 0.04);
+assert.ok(getDeepSeaDamageProfile('common').max > 5);
+assert.ok(getDeepSeaDamageProfile('legendary').chance > 0.38);
+assert.ok(getDeepSeaDamageProfile('legendary').min > 14);
+assert.ok(getDeepSeaDamageProfile('？').chance > 0.46);
+assert.equal(DEEP_SEA_NIGHT_RETURN_HOUR, 23);
 const guaranteedDamage = rollDeepSeaFishDamage({ rarity: 'legendary' }, { random: () => 0 });
 assert.equal(guaranteedDamage.triggered, true);
 assert.ok(guaranteedDamage.damage >= getDeepSeaDamageProfile('legendary').min);
@@ -99,6 +108,26 @@ assert.strictEqual(getDeepSeaRodAttributes(specialAttributes, { isAlternate: tru
 
 const eventDamage = rollDeepSeaEventDamage({ healthDamage: { chance: 1, min: 10, max: 10 } }, { random: () => 0, damageMultiplier: 0.5 });
 assert.equal(eventDamage.damage, 5);
+const genericEscape = getDeepSeaEscapePerformance({ name: '未知深海鱼', rarity: 'rare' }, { random: () => 0 });
+assert.equal(genericEscape.specific, false);
+assert.ok(genericEscape.intro && genericEscape.reveal);
+const lighthouseEscape = getDeepSeaEscapePerformance({ name: '深海灯塔鲸', rarity: 'legendary' });
+assert.equal(lighthouseEscape.specific, true);
+assert.match(lighthouseEscape.reveal, /灯鲸/);
+const dreamJellyEscape = getDeepSeaEscapePerformance({ name: '潜梦水母鱼', rarity: '？' });
+assert.equal(dreamJellyEscape.specific, true);
+assert.match(dreamJellyEscape.reveal, /潜梦水母鱼/);
+for (const rarity of ['legendary', '？']) {
+  for (const fish of getMapProfile('abyss').fishTypes[rarity]) {
+    assert.equal(
+      getDeepSeaEscapePerformance({ ...fish, rarity }).specific,
+      true,
+      `${rarity} fish ${fish.name} should have a dedicated escape performance`
+    );
+  }
+}
+const edgeEscape = getDeepSeaEscapePerformance({ name: '未知深海鱼', rarity: 'rare' }, { random: () => 1 });
+assert.ok(edgeEscape.intro && edgeEscape.reveal);
 
 const deepEggUser = createDefaultUserData();
 deepEggUser.easterEggCollection = ['潜梦水母鱼'];
@@ -146,6 +175,30 @@ try {
   assert.equal(deepCatch.healthDamage, DEEP_SEA_CAST_HEALTH_COST);
   assert.equal(deepCatch.health.current, 200 - DEEP_SEA_CAST_HEALTH_COST);
   assert.ok(deepCatch.fishballReward > 0);
+
+  const escapeUser = createDefaultUserData();
+  normalizeUserData(escapeUser);
+  ensurePlayerHealth(escapeUser, { dayKey: 'harness-day', maxHealth: 200 });
+  escapeUser.health = 5;
+  const escapePreview = healthHarness.getDeepSeaCatchSettlementPreview(
+    escapeUser,
+    { name: '深潮银鱼', rarity: 'common', mapId: 'abyss', length: 20, weight: 0.1 },
+    { isAlternate: true },
+    ordinaryDeepRod
+  );
+  assert.equal(escapePreview.insufficientHealth, true);
+  const escapedSettlement = healthHarness.applyDeepSeaCatchSettlement(
+    escapeUser,
+    { name: '深潮银鱼', rarity: 'common', mapId: 'abyss', length: 20, weight: 0.1 },
+    { isAlternate: true },
+    ordinaryDeepRod,
+    '',
+    null,
+    escapePreview
+  );
+  assert.equal(escapedSettlement.escaped, true);
+  assert.equal(escapedSettlement.fishballReward, 0);
+  assert.equal(escapeUser.health, 0);
 
   const pondSpecialUser = createDefaultUserData();
   normalizeUserData(pondSpecialUser);
