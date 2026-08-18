@@ -199,7 +199,11 @@ import {
   isGoldHumbleRarityTarget,
   pickGoldHumbleDistractors,
   resolveGoldHumbleCandidateNames,
-  resolveRodTarget
+  clearRodTargetForMap,
+  getRodTargetChangeDateForMap,
+  resolveRodTarget,
+  setRodTargetChangeDateForMap,
+  setRodTargetForMap
 } from './lib/gold-humble.js';
 import {
   extractAutoRenewBaitKeyword,
@@ -339,7 +343,7 @@ const HELP_GROUPS = [
       { title: '#切换彩蛋 1 / #装备彩蛋 1', desc: '按彩蛋收藏列表序号或名称安排切换；每天只能安排一次，次日生效。' },
       { title: '#钓鱼祈愿 / #钓鱼祈愿10 / #钓鱼十连 / #钓鱼祈愿清单', desc: '100鱼蛋祈愿1次，可获得限定鱼竿、限定鱼饵和免费祈愿。' },
       { title: '#钓鱼祈愿大奖 大奖名', desc: '切换当前想抽的祈愿大奖，已有保底进度会继续累计。' },
-      { title: '#金谦指定 虹鳟 / #金谦目标 rare', desc: '拥有金满而谦虚之竿后，每天可指定1次目标鱼或整个稀有度；清除目标需发送 #金谦指定 确认清除。' },
+      { title: '#金谦指定 虹鳟 / #金谦目标 rare', desc: '按当前航线分别保存目标；每天可指定1次目标鱼或整个稀有度，深海传说和彩蛋也可指定。清除目标需发送 #金谦指定 确认清除。' },
       { title: '#钓鱼成就', desc: '查看成就进度和永久加成。' },
       { title: '#打窝 文本 / #打窝 @某人', desc: '投放临时窝料，效果持续2竿。' },
       { title: '#炼竿 1 / #炼竿预览 1', desc: '按鱼缸展示序号先预览 legendary 会炼成什么鱼竿，再决定是否正式炼制。' },
@@ -1495,12 +1499,16 @@ function normalizeFishTemplateName(name = '') {
   return legacyFishAliases?.[text] || text;
 }
 
-function findFishTemplatesByName(name = '') {
+function findFishTemplatesByName(name = '', fishTypesMap = fishTypes) {
   const normalized = normalizeFishTemplateName(name);
   if (!normalized) return [];
-  return Object.entries(fishTypes)
-    .filter(([, list]) => Array.isArray(list) && list.some(item => item.name === normalized))
-    .map(([rarity]) => ({ rarity, template: fishTemplateByName?.[normalized] || null }))
+  return Object.entries(fishTypesMap || {})
+    .map(([rarity, list]) => ({
+      rarity,
+      template: Array.isArray(list)
+        ? list.find(item => item?.name === normalized) || null
+        : null
+    }))
     .filter(item => item.template);
 }
 
@@ -2731,7 +2739,10 @@ export class fishing extends plugin {
     const fishTypesForMap = context.fishTypes || this.fishTypes;
     const rarityWeightsForMap = context.rarityWeights || rarityWeights;
     const rod = rodOverride || getEquippedRod(userData);
-    const rodTarget = resolveRodTarget(userData, rod);
+    const rodTarget = resolveRodTarget(userData, rod, {
+      mapId: context.id,
+      fishTypes: fishTypesForMap
+    });
     const baitId = bodyModifiers?.id || '';
     const targetEffect = rod?.targetFishEffect && rodTarget ? {
       ...rod.targetFishEffect,
@@ -4230,7 +4241,10 @@ export class fishing extends plugin {
           scaleExternalRarityBias(rod, harborEffect.rarityBias)
         );
         const bodyModifiers = mergeFishBodyModifiers(rod, shopBait.bodyModifiers);
-        const rodTarget = resolveRodTarget(userData, rod);
+        const rodTarget = resolveRodTarget(userData, rod, {
+          mapId: castMapContext.id,
+          fishTypes: castMapContext.fishTypes
+        });
         const targetCatchRateBonus = getGoldHumbleCatchRateBonus(rod, rodTarget);
         const rodCatchRateBonus = Number(rod.catchRateBonus || 0) + targetCatchRateBonus;
         const externalCatchBonus = scaleExternalFishingValue(rod, manualBait.bonus) + shopBait.bonus + scaleExternalFishingValue(rod, castMapContext.influence.catchRateBonus + mapEventBonus) + scaleExternalFishingValue(rod, harborEffect.catchRateBonus);
@@ -4462,7 +4476,10 @@ export class fishing extends plugin {
       );
       const bodyModifiers = mergeFishBodyModifiers(settleRod, shopBait.bodyModifiers);
 
-      const settleRodTarget = resolveRodTarget(settleUser, settleRod);
+      const settleRodTarget = resolveRodTarget(settleUser, settleRod, {
+        mapId: settleMapContext.id,
+        fishTypes: settleMapContext.fishTypes
+      });
       const settleRodCatchRateBonus = Number(settleRod.catchRateBonus || 0) + getGoldHumbleCatchRateBonus(settleRod, settleRodTarget);
       const externalCatchBonus = scaleExternalFishingValue(settleRod, manualBait.bonus) + shopBait.bonus + scaleExternalFishingValue(settleRod, settleMapContext.influence.catchRateBonus + mapEventBonus) + scaleExternalFishingValue(settleRod, harborEffect.catchRateBonus);
       const catchRate = getCatchRate(settleUser, externalCatchBonus + hiddenPityBonus, settleRodCatchRateBonus, { externalEffectMultiplier });
@@ -5407,7 +5424,7 @@ async checkEasterEggCollection(e) {
     await this.reply(`${userDisplay}\n已安排明天切换为 ${resolvedName}。\n当前生效：${currentText}\n明日生效后将改为：${nextText}`);
   }
 
-  parseGoldHumbleTargetCommand(msg = '') {
+  parseGoldHumbleTargetCommand(msg = '', fishTypesMap = this.fishTypes) {
     const body = String(msg || '').replace(/^#(?:金谦指定|金谦目标)\s*/i, '').trim();
     if (!body) {
       return { empty: true };
@@ -5433,7 +5450,7 @@ async checkEasterEggCollection(e) {
       }
     }
     fishName = normalizeFishTemplateName(fishName);
-    const candidates = findFishTemplatesByName(fishName);
+    const candidates = findFishTemplatesByName(fishName, fishTypesMap);
     if (!candidates.length) {
       return { error: `鱼池里没有找到 ${fishName || body}。示例：#金谦指定 虹鳟 / #金谦目标 rare 金龙鱼 / #金谦指定 rare` };
     }
@@ -5444,9 +5461,9 @@ async checkEasterEggCollection(e) {
         return { error: `${fishName} 有多个稀有度版本，请补充 common / rare 等稀有度。` };
       }
     }
-    const template = getActiveFishPool(this.fishTypes, rarity).find(item => item.name === fishName);
+    const template = getActiveFishPool(fishTypesMap, rarity).find(item => item.name === fishName);
     if (!template) {
-      const inactiveTemplate = (this.fishTypes[rarity] || []).find(item => item.name === fishName);
+      const inactiveTemplate = (fishTypesMap?.[rarity] || []).find(item => item.name === fishName);
       if (inactiveTemplate?.seasonal) return { error: `${fishName} 是限时鱼，当前活动期外暂时不能指定。` };
       return { error: `${fishName} 不属于 ${rarity}，可用稀有度：${candidates.map(item => item.rarity).join(' / ')}` };
     }
@@ -5457,13 +5474,16 @@ async checkEasterEggCollection(e) {
     const data = this.loadData();
     const { userId, text: userDisplay } = getUserDisplay(e);
     const userData = this.getOrCreateUser(data, userId);
+    const mapContext = this.getUserMapContext(userData);
+    const targetMapId = mapContext.id;
+    const targetFishTypes = mapContext.fishTypes || this.fishTypes;
     const rod = Object.values(ROD_CATALOG).find(item => item.targetFishEffect?.type === 'gold_humble');
     if (!rod || !userData.rodsOwned?.includes(rod.id)) {
       await this.reply(`${userDisplay}\n你还没有金满而谦虚之竿，无法指定目标鱼。`);
       return;
     }
 
-    const parsed = this.parseGoldHumbleTargetCommand(e.msg);
+    const parsed = this.parseGoldHumbleTargetCommand(e.msg, targetFishTypes);
     if (parsed.error) {
       await this.reply(`${userDisplay}\n${parsed.error}`);
       return;
@@ -5471,8 +5491,11 @@ async checkEasterEggCollection(e) {
     if (!userData.rodTargets || typeof userData.rodTargets !== 'object') userData.rodTargets = {};
     if (!userData.rodTargetChangeDates || typeof userData.rodTargetChangeDates !== 'object') userData.rodTargetChangeDates = {};
     const todayKey = getFishingDayKey(this.config);
-    const lastChangeDate = String(userData.rodTargetChangeDates[rod.id] || '').trim();
-    const currentTarget = resolveRodTarget(userData, rod);
+    const lastChangeDate = getRodTargetChangeDateForMap(userData, rod.id, targetMapId);
+    const currentTarget = resolveRodTarget(userData, rod, {
+      mapId: targetMapId,
+      fishTypes: targetFishTypes
+    });
     if (parsed.empty || parsed.clearPrompt) {
       const currentText = getGoldHumbleTargetDisplayName(currentTarget);
       const actionText = parsed.clearPrompt ? '已收到清除请求，但还没有修改目标。' : '没有填写指定鱼，本次不会修改目标。';
@@ -5494,15 +5517,15 @@ async checkEasterEggCollection(e) {
       return;
     }
     if (parsed.clear) {
-      delete userData.rodTargets[rod.id];
-      if (!isNoopClear) userData.rodTargetChangeDates[rod.id] = todayKey;
+      clearRodTargetForMap(userData, rod.id, targetMapId);
+      if (!isNoopClear) setRodTargetChangeDateForMap(userData, rod.id, targetMapId, todayKey);
       saveFishData(data);
-      await this.reply(`${userDisplay}\n已清除 ${rod.name} 的指定目标。`);
+      await this.reply(`${userDisplay}\n已清除${mapContext.name}中 ${rod.name} 的指定目标。`);
       return;
     }
 
     if (parsed.targetType === 'rarity') {
-      const rawPool = getActiveFishPool(this.fishTypes, parsed.rarity);
+      const rawPool = getActiveFishPool(targetFishTypes, parsed.rarity);
       if (!rawPool.length) {
         await this.reply(`${userDisplay}\n鱼池里还没有 ${rarityLabel(parsed.rarity)} 鱼，暂时不能指定这个稀有度。`);
         return;
@@ -5516,16 +5539,16 @@ async checkEasterEggCollection(e) {
         }
       }
       const profile = getGoldHumbleTargetProfile(rod.targetFishEffect, parsed.rarity, parsed);
-      userData.rodTargets[rod.id] = {
+      setRodTargetForMap(userData, rod.id, targetMapId, {
         type: 'rarity',
         rarity: parsed.rarity,
         updatedAt: getNowTimestamp(),
         updatedDate: todayKey
-      };
-      userData.rodTargetChangeDates[rod.id] = todayKey;
+      });
+      setRodTargetChangeDateForMap(userData, rod.id, targetMapId, todayKey);
       saveFishData(data);
       await this.reply(
-        `${userDisplay}\n${rod.name} 已指定目标：${rarityLabel(parsed.rarity)} 稀有度。\n` +
+        `${userDisplay}\n${rod.name} 已在${mapContext.name}指定目标：${rarityLabel(parsed.rarity)} 稀有度。\n` +
         `金线会追踪这一整档鱼影；钓到 ${rarityLabel(parsed.rarity)} 鱼时都会判定命中目标。\n` +
         `整稀有度目标范围更宽，命中奖励降低为 +${profile.rewardCoins} 鱼蛋；今天的目标调整次数已用完。`
       );
@@ -5538,21 +5561,21 @@ async checkEasterEggCollection(e) {
     }
 
     const ownedEggs = new Set(getOwnedEasterEggCollection(userData));
-    const rawPool = getActiveFishPool(this.fishTypes, parsed.rarity);
+    const rawPool = getActiveFishPool(targetFishTypes, parsed.rarity);
     const distractorPool = parsed.rarity === EASTER_EGG_RARITY
       ? rawPool.filter(item => item.name === parsed.name || !ownedEggs.has(item.name))
       : rawPool;
     const profile = getGoldHumbleTargetProfile(rod.targetFishEffect, parsed.rarity, parsed, distractorPool.length);
     const distractors = pickGoldHumbleDistractors(distractorPool, parsed.name, profile.distractorCount);
-    userData.rodTargets[rod.id] = {
+    setRodTargetForMap(userData, rod.id, targetMapId, {
       type: 'fish',
       name: parsed.name,
       rarity: parsed.rarity,
       distractors,
       updatedAt: getNowTimestamp(),
       updatedDate: todayKey
-    };
-    userData.rodTargetChangeDates[rod.id] = todayKey;
+    });
+    setRodTargetChangeDateForMap(userData, rod.id, targetMapId, todayKey);
     saveFishData(data);
     const intruderText = distractors.length > 1
       ? '几道同稀有度的鱼影也趁乱闯了进去'
@@ -5560,7 +5583,7 @@ async checkEasterEggCollection(e) {
         ? '一道同稀有度的鱼影也不小心闯了进去'
         : '这次倒是没有别的鱼影挤进来';
     await this.reply(
-      `${userDisplay}\n${rod.name} 已指定目标：${parsed.name}（${parsed.rarity}）。\n` +
+      `${userDisplay}\n${rod.name} 已在${mapContext.name}指定目标：${parsed.name}（${parsed.rarity}）。\n` +
       `金线已经记住了它的水纹，${intruderText}，水面一下子热闹了些。\n` +
       `接下来钓到 ${parsed.rarity} 鱼时，${parsed.name} 在同稀有度里的出现感会大大增加；命中真正目标奖励 +${profile.rewardCoins} 鱼蛋；今天的目标调整次数已用完。`
     );
@@ -6674,7 +6697,11 @@ async checkEasterEggCollection(e) {
     }
 
     const owned = userData.rodsOwned.includes(rod.id);
-    const rodTarget = resolveRodTarget(userData, rod);
+    const mapContext = this.getUserMapContext(userData);
+    const rodTarget = resolveRodTarget(userData, rod, {
+      mapId: mapContext.id,
+      fishTypes: mapContext.fishTypes
+    });
     const traitLines = buildRodTraitLines(rod, { rodTarget });
     const sourceLine = rod.sourceLottery
       ? `来源：祈愿限定`
@@ -6723,6 +6750,7 @@ async checkEasterEggCollection(e) {
     const { userId, text: userDisplay } = getUserDisplay(e);
     const userData = this.getOrCreateUser(data, userId);
     const equipped = getEquippedRod(userData);
+    const mapContext = this.getUserMapContext(userData);
     const rods = getOwnedRodDetailsList(userData);
     const switchableRods = getSwitchableRodList(userData);
 
@@ -6732,7 +6760,10 @@ async checkEasterEggCollection(e) {
     }
 
     const list = rods.map((rod, index) => {
-      const rodTarget = resolveRodTarget(userData, rod);
+      const rodTarget = resolveRodTarget(userData, rod, {
+        mapId: mapContext.id,
+        fishTypes: mapContext.fishTypes
+      });
       const detailIndex = switchableRods.findIndex(item => item.id === rod.id);
       const indexText = rod.id === DEFAULT_ROD_ID
         ? '默认鱼竿'
@@ -6768,7 +6799,10 @@ async checkEasterEggCollection(e) {
       '鱼竿详情总览',
       `当前鱼竿：${equipped.name}`,
       ...rods.map((rod, index) => {
-        const rodTarget = resolveRodTarget(userData, rod);
+        const rodTarget = resolveRodTarget(userData, rod, {
+          mapId: mapContext.id,
+          fishTypes: mapContext.fishTypes
+        });
         const detailIndex = switchableRods.findIndex(item => item.id === rod.id);
         const indexText = rod.id === DEFAULT_ROD_ID ? '默认鱼竿' : detailIndex >= 0 ? `鱼竿${detailIndex + 1}` : `鱼竿${index + 1}`;
         return `${indexText} | ${rod.name}${rod.id === equipped.id ? ' | 当前装备' : ''} | ${buildTraitSummary(buildRodTraitLines(rod, { rodTarget }), rod.description)}`;
