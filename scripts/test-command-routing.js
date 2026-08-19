@@ -40,6 +40,8 @@ assertRoute('#地图', 'handleMapCommand');
 assertRoute('#地图 深海裂谷', 'handleMapCommand');
 assertRoute('#前往深海', 'goToDeepSea');
 assertRoute('#返回鱼塘', 'returnToPond');
+assertRoute('#深海返航推送 开启', 'toggleDeepSeaReturnPush');
+assertRoute('#深海推送 关闭', 'toggleDeepSeaReturnPush');
 
 assert.deepEqual(getMatches('#鱼市场'), []);
 assert.deepEqual(getMatches('#打窝棚'), []);

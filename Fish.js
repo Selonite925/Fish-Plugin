@@ -360,6 +360,7 @@ const MANAGEMENT_HELP_GROUPS = [
       { title: '#设置钓鱼刷新时间 6', desc: '设置每日钓鱼日刷新时间，24小时制，只能填0-23点。' },
       { title: '#钓鱼分段返还 开启 / 关闭', desc: '开启后基础次数按刷新点、+6小时、+12小时分三段返还，+16小时后可用钓鱼券。' },
       { title: '#钓鱼券使用限制 开启 / 关闭', desc: '默认每人每天最多使用10张钓鱼券；关闭后不限制每日用券数。' },
+      { title: '#深海返航推送 开启 / 关闭', desc: '仅向开启本群推送的群聊发送每日深海返航名单；默认关闭。' },
       { title: '#鱼蛋补偿 @某人 *100', desc: '给单人补发鱼蛋。' },
       { title: '#鱼蛋补偿 全体 *100', desc: '给已有数据的全部玩家统一补发鱼蛋。' },
       { title: '#补鱼 @某人 鳗鱼 / #补鱼 rare 鳗鱼 @某人 80 3.5', desc: '直接补发指定鱼，目标、稀有度、鱼名顺序更自由，长度和重量可省略。' },
@@ -2407,6 +2408,39 @@ export class fishing extends plugin {
     ].join('\n');
   }
 
+  getDeepSeaReturnPushGroups(worldState = null) {
+    const state = worldState || loadWorldState();
+    const rawGroups = state?.deepSeaReturnPushGroups;
+    if (Array.isArray(rawGroups)) {
+      return new Set(rawGroups.map(groupId => String(groupId || '').trim()).filter(Boolean));
+    }
+    if (rawGroups && typeof rawGroups === 'object') {
+      return new Set(
+        Object.entries(rawGroups)
+          .filter(([, enabled]) => Boolean(enabled))
+          .map(([groupId]) => String(groupId || '').trim())
+          .filter(Boolean)
+      );
+    }
+    return new Set();
+  }
+
+  setDeepSeaReturnPushEnabled(worldState, groupId, enabled) {
+    if (!worldState || !groupId) return false;
+    const normalizedGroupId = String(groupId).trim();
+    if (!normalizedGroupId) return false;
+    const groups = this.getDeepSeaReturnPushGroups(worldState);
+    if (enabled) groups.add(normalizedGroupId);
+    else groups.delete(normalizedGroupId);
+    worldState.deepSeaReturnPushGroups = [...groups].sort();
+    return true;
+  }
+
+  isDeepSeaReturnPushEnabled(groupId, worldState = null) {
+    const normalizedGroupId = String(groupId || '').trim();
+    return Boolean(normalizedGroupId && this.getDeepSeaReturnPushGroups(worldState).has(normalizedGroupId));
+  }
+
   returnDeepSeaPlayers() {
     const data = loadFishData();
     const returned = [];
@@ -2426,9 +2460,15 @@ export class fishing extends plugin {
     return returned;
   }
 
-  async announceDeepSeaNightReturn(returned = []) {
+  async announceDeepSeaNightReturn(returned = [], worldState = null) {
     if (!returned.length) return { sent: 0, groups: 0 };
     const bot = globalThis.Bot;
+    const world = worldState || loadWorldState();
+    const pushGroups = this.getDeepSeaReturnPushGroups(world);
+    if (!pushGroups.size) {
+      globalThis.logger?.mark?.('[Fish-plugin] 深海夜间返航已完成，但没有开启推送的群聊。');
+      return { sent: 0, groups: 0 };
+    }
     const grouped = new Map();
     const addGroup = (groupId, entry) => {
       const normalizedGroupId = String(groupId || '').trim();
@@ -2439,15 +2479,22 @@ export class fishing extends plugin {
 
     const unassigned = [];
     for (const entry of returned) {
-      if (entry.groupId) addGroup(entry.groupId, entry);
-      else unassigned.push(entry);
+      const entryGroupId = String(entry.groupId || '').trim();
+      if (entryGroupId) {
+        if (pushGroups.has(entryGroupId)) addGroup(entryGroupId, entry);
+      } else {
+        unassigned.push(entry);
+      }
     }
 
     const availableGroups = typeof bot?.getGroupList === 'function'
       ? bot.getGroupList().map(groupId => String(groupId || '').trim()).filter(Boolean)
       : [];
     if (unassigned.length) {
-      for (const groupId of availableGroups) {
+      const targetGroups = availableGroups.length
+        ? availableGroups.filter(groupId => pushGroups.has(groupId))
+        : [...pushGroups];
+      for (const groupId of targetGroups) {
         for (const entry of unassigned) addGroup(groupId, entry);
       }
     }
@@ -2474,6 +2521,36 @@ export class fishing extends plugin {
     return { sent, groups: grouped.size };
   }
 
+  async toggleDeepSeaReturnPush(e) {
+    if (!e.group_id) {
+      await this.reply('深海返航推送只能在群聊中设置。');
+      return;
+    }
+    if (!this.hasManagePermission(e)) {
+      await this.reply('只有主人或群管理员才能设置深海返航推送。');
+      return;
+    }
+
+    const groupId = String(e.group_id).trim();
+    const raw = String(e.msg || '').replace(/^#深海(?:返航)?推送\s*/u, '').trim();
+    const world = loadWorldState();
+    const current = this.isDeepSeaReturnPushEnabled(groupId, world);
+    const nextValue = raw ? parseOnOffToggle(raw) : null;
+    if (nextValue === null) {
+      await this.reply(
+        `本群深海返航推送：${current ? '开启' : '关闭'}。\n` +
+        '格式：#深海返航推送 开启 / #深海返航推送 关闭'
+      );
+      return;
+    }
+
+    this.setDeepSeaReturnPushEnabled(world, groupId, nextValue);
+    saveWorldState(world);
+    await this.reply(nextValue
+      ? '本群已开启深海返航推送；每日刷新时会收到深海返航名单。'
+      : '本群已关闭深海返航推送，不再接收每日深海返航名单。');
+  }
+
   async processDeepSeaNightReturn(now = new Date()) {
     const resetHour = getDailyResetHour(this.config);
     if (getLocalHour(now) !== resetHour) return { returned: [], sent: 0, groups: 0 };
@@ -2485,7 +2562,7 @@ export class fishing extends plugin {
     const returned = this.returnDeepSeaPlayers();
     world.lastDeepSeaNightReturnDate = dateKey;
     saveWorldState(world);
-    const announcement = await this.announceDeepSeaNightReturn(returned);
+    const announcement = await this.announceDeepSeaNightReturn(returned, world);
     return { returned, ...announcement };
   }
 
