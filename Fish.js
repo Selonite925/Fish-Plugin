@@ -145,6 +145,21 @@ import {
   performLotteryDraws,
   resolveLotteryGrandPrizePlugin
 } from './lib/lottery.js';
+import {
+  consumeHealthPotion,
+  getHealthPotionEffectText,
+  getHealthPotionList,
+  getHealthPotionRecovery,
+  resolveHealthPotionId
+} from './lib/health-potions.js';
+import {
+  getAvailableDeepSeaRescueFish,
+  getDeepSeaRescueCost,
+  hasDeepSeaRescueGuarantee,
+  pruneExpiredDeepSeaRescueFish,
+  recordDeepSeaEscapedFish,
+  removeDeepSeaRescueFish
+} from './lib/deep-sea-rescue.js';
 import { findCustomBaitBySource, generateCustomBaitFromText } from './lib/custom-bait.js';
 import { getLocalHour, getNowTimestamp, getTodayKey, getTimeRuntimeInfo } from './lib/time.js';
 import {
@@ -299,6 +314,7 @@ const HELP_GROUPS = [
       { title: '#今日鱼获 / #查看鱼获 @某人', desc: '查看自己或别人的当日鱼获记录。' },
       { title: '#钓鱼图鉴 / #钓鱼排行 / #每周钓鱼榜 / #每月钓鱼榜', desc: '看收藏、总排行、本周排行和本月排行。' },
       { title: '#地图 / #地图 深海裂谷 / #地图 鱼塘', desc: '查看并切换钓鱼航线；深海裂谷会消耗鱼蛋并使用生命值，生命耗尽前可返航休整。' },
+      { title: '#深海保底 / #深海保底 1 / #深海保底 放生 1', desc: '拥有血条保底时，次日查看逃脱鱼影；按鱼蛋价值的1.5倍收回，或选择放生。' },
       { title: '#赛季鱼 / #历史赛季鱼', desc: '查看当前赛季或历史赛季限定鱼图鉴面板；不提前展示后续赛季。' },
       { title: '#鱼王榜 / #空军榜', desc: '看鱼缸综合质量和今日空军情况。' }
     ]
@@ -325,6 +341,7 @@ const HELP_GROUPS = [
     group: '鱼市与装备',
     list: [
       { title: '#鱼市 / #售鱼 1 / #售鱼 common / #售鱼 全部', desc: '卖鱼、看鱼市，也可以按今日鱼获编号、稀有度或批量处理。' },
+      { title: '#血瓶 / #使用血瓶 1', desc: '查看祈愿获得的生命药剂，按库存编号使用并恢复当前生命值。' },
       { title: '#售鱼 鱼缸3 / #售鱼 鱼缸 2 3 4 5 / #售鱼 鱼缸虹鳟 / #售鱼 鱼缸 uncommon', desc: '支持按鱼缸序号、同名鱼顺序、鱼缸稀有度或全部出售。' },
       { title: '#鱼市购买 鱼饵1*5 / #鱼市 自定义鱼饵 仙桃', desc: '批量购买普通鱼饵，或用鱼市购买简写定制鱼饵。' },
       { title: '#鱼市购买 鱼竿1 / #鱼市回收 鱼竿1', desc: '购买普通鱼竿，或按回收列表序号回收已拥有鱼竿；普通竿半价，legendary 竿回收价 750。' },
@@ -1683,6 +1700,7 @@ export class fishing extends plugin {
       }
       if (settlementCoins > 0) userData.coins += settlementCoins;
       applyPendingEasterEggSwitch(userData);
+      pruneExpiredDeepSeaRescueFish(userData, targetDate);
       userData.today = { count: 0, catches: 0, fish: [] };
       userData.todayExtraUsed = 0;
       userData.todayTicketsBought = 0;
@@ -2623,17 +2641,7 @@ export class fishing extends plugin {
     const max = Number(state.max);
     const current = Number(state.current);
     if (!Number.isFinite(max) || max <= 0 || !Number.isFinite(current)) return `${prefix}：状态未知`;
-    const ratio = Math.max(0, Math.min(1, current / max));
-    const condition = ratio <= 0
-      ? '今日已耗尽'
-      : ratio < 0.3
-        ? '接近返航'
-        : ratio < 0.55
-          ? '需要留意'
-          : ratio < 0.8
-            ? '状态尚可'
-            : '状态稳健';
-    return `${prefix}：${condition}`;
+    return `${prefix}：${Math.max(0, Math.min(max, Math.floor(current)))}/${Math.floor(max)}`;
   }
 
   applyDeepSeaRodCost(userData, mapContext, rod, groupId = '', harborEffect = null) {
@@ -2721,6 +2729,8 @@ export class fishing extends plugin {
 
     if (settlement.insufficientHealth) {
       messages.push('[深海逃脱] 生存线不足，鱼影挣脱了鱼线。');
+      const rescueEntry = recordDeepSeaEscapedFish(userData, fish, state.date);
+      if (rescueEntry) messages.push('[血条保底] 这条逃鱼的回声已保存，次日可用 #深海保底 查看收回选择。');
       if (damage.depleted) messages.push('生命值已经耗尽，今天不能继续在深海抛竿。');
       return {
         healthDamage: damage.amount,
@@ -2732,6 +2742,7 @@ export class fishing extends plugin {
         escaped: true,
         health: { current: damage.after, max: damage.max, date: state.date },
         rodProfile,
+        rescueEntry,
         message: `\n${messages.join('\n')}`
       };
     }
@@ -2995,6 +3006,143 @@ export class fishing extends plugin {
       sections: buildHelpGridSections(HELP_GROUPS),
       footer: ''
     }, HELP_TEXT);
+  }
+
+  async handleHealthPotionCommand(e) {
+    const data = this.loadData();
+    const { userId, text: userDisplay } = getUserDisplay(e);
+    const userData = this.getOrCreateUser(data, userId);
+    const raw = String(e.msg || '').replace(/^#(?:使用)?血瓶\s*/u, '').trim();
+    const potionList = getHealthPotionList(userData);
+    const harborEffect = this.getFishingHarborEffect(e.group_id);
+    const health = this.getUserHealthState(userData, e.group_id, harborEffect);
+
+    if (!raw) {
+      if (!potionList.length) {
+        await this.reply(`${userDisplay}\n你还没有血瓶。血瓶可从 #钓鱼祈愿 获得。\n${this.formatHealthText(health)}`);
+        return;
+      }
+      const lines = potionList.map((potion, index) =>
+        `${index + 1}. ${potion.name} x${potion.count}：${getHealthPotionEffectText(potion, health.max)}`
+      );
+      await this.reply(`${userDisplay}\n血瓶库存（${this.formatHealthText(health)}）：\n${lines.join('\n')}\n使用：#使用血瓶 1`);
+      return;
+    }
+
+    const potionId = resolveHealthPotionId(raw, userData);
+    if (!potionId) {
+      await this.reply(`${userDisplay}\n没有找到这瓶血瓶。请先使用 #血瓶 查看库存编号。`);
+      return;
+    }
+    if (health.current >= health.max) {
+      await this.reply(`${userDisplay}\n${this.formatHealthText(health)}，已经是满血，先留着血瓶吧。`);
+      return;
+    }
+    const consumed = consumeHealthPotion(userData, potionId);
+    if (!consumed) {
+      await this.reply(`${userDisplay}\n这瓶血瓶已经用完了，请重新查看 #血瓶。`);
+      return;
+    }
+    const recovery = applyHealthRecovery(userData, getHealthPotionRecovery(consumed.potion, health.max), {
+      dayKey: health.date,
+      maxHealth: health.max,
+      allowRevive: true
+    });
+    saveFishData(data);
+    await this.reply(
+      `${userDisplay}\n使用了 ${consumed.potion.name}，${getHealthPotionEffectText(consumed.potion, health.max)}，实际恢复 ${recovery.amount} 点。\n` +
+      `${this.formatHealthText({ current: recovery.after, max: recovery.max })}，${consumed.remaining > 0 ? `该血瓶剩余 ${consumed.remaining} 个` : '该血瓶已用完'}。`
+    );
+  }
+
+  async handleDeepSeaRescue(e) {
+    const data = this.loadData();
+    const { userId, text: userDisplay } = getUserDisplay(e);
+    const userData = this.getOrCreateUser(data, userId);
+    if (!hasDeepSeaRescueGuarantee(userData)) {
+      await this.reply(`${userDisplay}\n你还没有获得“血条保底”。它会在钓鱼祈愿大奖中出现。`);
+      return;
+    }
+
+    const todayKey = getFishingDayKey(this.config);
+    const available = getAvailableDeepSeaRescueFish(userData, todayKey);
+    const raw = String(e.msg || '').replace(/^#深海保底\s*/u, '').trim();
+    if (!raw) {
+      if (!available.length) {
+        await this.reply(`${userDisplay}\n今天没有等待处理的深海逃鱼。生命值不足时逃走的鱼，会在次日留下回声。`);
+        return;
+      }
+      const lines = available.map((entry, index) => {
+        const fish = entry.fish;
+        return `${index + 1}. ${fish.name}（${rarityLabel(fish.rarity)}，${fish.length}cm/${fish.weight}kg）\n   收回费用：${entry.cost} 鱼蛋`;
+      });
+      await this.reply(
+        `${userDisplay}\n深海逃鱼回声（今日可处理，鱼蛋余额 ${userData.coins}）：\n${lines.join('\n')}\n` +
+        '收回：#深海保底 1 2；放生：#深海保底 放生 1'
+      );
+      return;
+    }
+
+    const releaseMode = /^(?:放生|释放|不要|丢弃)\s*/u.test(raw);
+    const indexes = [...raw.matchAll(/\b(\d{1,3})\b/g)]
+      .map(match => Number(match[1]) - 1)
+      .filter(index => Number.isInteger(index) && index >= 0);
+    const uniqueIndexes = [...new Set(indexes)];
+    if (!uniqueIndexes.length) {
+      await this.reply(`${userDisplay}\n请填写回声列表序号，例如：#深海保底 1，或 #深海保底 放生 1。`);
+      return;
+    }
+    const selected = uniqueIndexes.map(index => available[index]).filter(Boolean);
+    if (selected.length !== uniqueIndexes.length) {
+      await this.reply(`${userDisplay}\n回声列表序号不存在，请先使用 #深海保底 查看当前列表。`);
+      return;
+    }
+
+    if (releaseMode) {
+      const removed = removeDeepSeaRescueFish(userData, selected.map(entry => entry.id));
+      saveFishData(data);
+      await this.reply(`${userDisplay}\n已放生 ${removed.length} 条深海逃鱼回声，它们重新回到裂谷。`);
+      return;
+    }
+
+    const claimed = [];
+    const claimedIds = [];
+    const skipped = [];
+    for (const entry of selected) {
+      const fish = entry.fish;
+      if (Number(userData.coins || 0) < entry.cost) {
+        skipped.push(`${fish.name}（需要 ${entry.cost} 鱼蛋）`);
+        continue;
+      }
+      const fishWithTimestamp = { ...fish, timestamp: getNowTimestamp(), mapId: 'abyss' };
+      ensureFishId(fishWithTimestamp);
+      const tankResult = addFishToTank(userData, fishWithTimestamp, { autoSellReplacedFish: true });
+      const isEasterEgg = fishWithTimestamp.rarity === EASTER_EGG_RARITY;
+      if (!tankResult.changed && !isEasterEgg) {
+        skipped.push(`${fish.name}（鱼缸已满且这条鱼不值得替换）`);
+        continue;
+      }
+      userData.coins -= entry.cost;
+      addFishHistory(userData, fishWithTimestamp);
+      if (fishWithTimestamp.mapId) recordMapCatch(userData, fishWithTimestamp, fishWithTimestamp.mapId);
+      recordSeasonalFishCatch(userData, fishWithTimestamp);
+      if (isEasterEgg) {
+        userData.everCaughtEasterEgg = true;
+        unlockEasterEgg(userData, fishWithTimestamp.name);
+        userData.hasEasterEgg = getOwnedEasterEggCollection(userData).length > 0;
+      }
+      claimed.push(`${fish.name}（-${entry.cost} 鱼蛋）`);
+      claimedIds.push(entry.id);
+    }
+    if (claimedIds.length) removeDeepSeaRescueFish(userData, claimedIds);
+    saveFishData(data);
+    const resultLines = [
+      `${userDisplay}`,
+      claimed.length ? `已收回：${claimed.join('、')}` : '本次没有收回鱼。',
+      skipped.length ? `未处理：${skipped.join('、')}` : '',
+      `当前鱼蛋：${userData.coins} | 鱼缸：${userData.fishTank.length}/${userData.tankCapacity}`
+    ].filter(Boolean);
+    await this.reply(resultLines.join('\n'));
   }
 
   async handleMapCommand(e) {
@@ -5682,6 +5830,9 @@ async checkEasterEggCollection(e) {
     const rod = getEquippedRod(userData);
     const harborEffect = this.getFishingHarborEffect(e.group_id);
     const health = this.getUserHealthState(userData, e.group_id, harborEffect);
+    const rescueAvailable = hasDeepSeaRescueGuarantee(userData)
+      ? getAvailableDeepSeaRescueFish(userData, getFishingDayKey(this.config))
+      : [];
     const progressText = this.getTankUpgradeProgressText(userData);
     const easterEggStatus = getEasterEggStatusSummary(userData);
     const releaseEchoStatus = getReleaseEchoStatus(userData);
@@ -5717,6 +5868,17 @@ async checkEasterEggCollection(e) {
           }
         ]
       },
+      ...(hasDeepSeaRescueGuarantee(userData) ? [{
+        group: '深海逃鱼',
+        list: [{
+          badge: '保底',
+          title: rescueAvailable.length ? `今日有 ${rescueAvailable.length} 条回声待处理` : '今日暂无逃鱼回声',
+          desc: '血条不足而逃走的鱼会在次日短暂留下，可选择付费收回或放生。',
+          meta: rescueAvailable.length ? '使用 #深海保底 查看列表' : '生命值不足时会自动记录',
+          tone: rescueAvailable.length ? 'warning' : 'neutral',
+          fullWidth: true
+        }]
+      }] : []),
       {
         group: '装备与库存',
         list: [
@@ -5800,6 +5962,7 @@ async checkEasterEggCollection(e) {
       ...sortedFish.map((fish, index) => formatFishLine(fish, index)),
       `鱼缸容量：${userData.fishTank.length}/${userData.tankCapacity}`,
       this.formatHealthText(health),
+      ...(hasDeepSeaRescueGuarantee(userData) ? [`深海逃鱼回声：${rescueAvailable.length} 条（使用 #深海保底 查看）`] : []),
       `鱼缸等级：${userData.tankLevel || 0}/${MAX_TANK_LEVEL}`,
       `升级进度：${progressText}`,
       `今日钓鱼次数：${getFishingLimitText(this.config, userData, rod, getFishingUsageOptions(this.config))}`,
@@ -6066,7 +6229,7 @@ async checkEasterEggCollection(e) {
     const regularRewards = pool.regularRewards.map(reward => {
       const probability = getRegularProbability(reward);
       return {
-        badge: reward.type === 'coins' ? '丸' : reward.type === 'bait' ? '饵' : reward.type === 'ticket' ? '券' : reward.type === 'lottery_free_draw' ? '愿' : '品',
+        badge: reward.type === 'coins' ? '丸' : reward.type === 'bait' ? '饵' : reward.type === 'ticket' ? '券' : reward.type === 'lottery_free_draw' ? '愿' : reward.type === 'health_potion' ? '血' : '品',
         title: reward.title || reward.id || reward.type,
         desc: reward.desc || '普通愿品',
         meta: `概率约 ${formatLotteryProbability(probability)} | ${getLotteryRewardPreviewMetaText(reward)}`,
