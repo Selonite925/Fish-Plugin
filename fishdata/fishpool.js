@@ -159,6 +159,7 @@ export const rareFish = [
   { name: '金杯旗鱼', size: { min: 100, max: 260 }, weight: { min: 12, max: 150 }, seasonal: { eventId: 'world_cup_2026', startDate: '2026-07-03', endDateExclusive: '2026-07-20' } },
   { name: '星河鳞鲤', size: { min: 45, max: 120 }, weight: { min: 2, max: 18 }, seasonal: { eventId: 'qixi_2026', startDate: '2026-08-10', endDateExclusive: '2026-09-01' } },
   { name: '桂香月鳊', size: { min: 42, max: 105 }, weight: { min: 1.5, max: 16 }, seasonal: { eventId: 'mid_autumn_2026', startDate: '2026-09-01', endDateExclusive: '2026-10-01' } },
+  { name: '奖牌海鲷', size: { min: 35, max: 92 }, weight: { min: 0.8, max: 9 }, seasonal: { eventId: 'golden_october_2026', startDate: '2026-10-01', endDateExclusive: '2026-11-01' } },
   { name: '尾款巨鲳', size: { min: 70, max: 180 }, weight: { min: 4, max: 36 }, seasonal: { eventId: 'double_eleven_2026', startDate: '2026-11-01', endDateExclusive: '2026-12-01' } }
 ];
 

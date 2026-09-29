@@ -8,6 +8,10 @@ const grandPrize = resolveLotteryGrandPrizePlugin('观测竿');
 assert.equal(grandPrize?.id, 'tide_observer_rod');
 assert.equal(grandPrize?.reward?.id, LOTTERY_ROD_PLUGINS.tide_observer.id);
 
+const guidePrize = resolveLotteryGrandPrizePlugin('领航竿');
+assert.equal(guidePrize?.id, 'tide_guide_rod');
+assert.equal(guidePrize?.reward?.id, LOTTERY_ROD_PLUGINS.tide_guide.id);
+
 const lotteryUser = createDefaultUserData();
 lotteryUser.coins = 100;
 const lotteryResult = performLotteryDraws(lotteryUser, 1, {
@@ -18,6 +22,24 @@ assert.equal(lotteryResult.ok, true);
 assert.equal(lotteryResult.results[0].isGrandPrize, true);
 assert.ok(lotteryUser.rodsOwned.includes(LOTTERY_ROD_PLUGINS.tide_observer.id));
 assert.ok(lotteryUser.lotteryGrandPrizes.includes('tide_observer_rod'));
+
+const guideUser = createDefaultUserData();
+guideUser.coins = 100;
+const guideResult = performLotteryDraws(guideUser, 1, {
+  grandPluginId: 'tide_guide_rod',
+  forceGrandPrize: true
+});
+assert.equal(guideResult.results[0].reward.duplicate, false);
+assert.ok(guideUser.rodsOwned.includes(LOTTERY_ROD_PLUGINS.tide_guide.id));
+assert.ok(guideUser.lotteryGrandPrizes.includes('tide_guide_rod'));
+guideUser.coins = 100;
+const duplicateGuideResult = performLotteryDraws(guideUser, 1, {
+  grandPluginId: 'tide_guide_rod',
+  forceGrandPrize: true
+});
+assert.equal(duplicateGuideResult.results[0].reward.duplicate, true);
+assert.equal(duplicateGuideResult.results[0].reward.compensationCoins, 1500);
+assert.equal(guideUser.coins, 1500);
 
 const maxTankUser = createDefaultUserData();
 maxTankUser.tankLevel = 99;

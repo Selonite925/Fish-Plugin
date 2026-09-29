@@ -31,8 +31,8 @@ assert.equal(context.fishTypes.common.length, 12);
 assert.equal(context.fishTypes.uncommon.length, 12);
 assert.equal(context.fishTypes.rare.length, 12);
 assert.equal(context.fishTypes.epic.length, 12);
-assert.equal(context.fishTypes.legendary.length, 10);
-assert.equal(Object.values(context.fishTypes).flat().length, 61);
+assert.equal(context.fishTypes.legendary.length, 11);
+assert.equal(Object.values(context.fishTypes).flat().length, 63);
 assert.ok(context.fishTypes.common.every(fish => !['鲫鱼', '鲤鱼', '草鱼'].includes(fish.name)));
 assert.ok(getMapFishTemplateByName('abyss', '灯笼乌贼'));
 

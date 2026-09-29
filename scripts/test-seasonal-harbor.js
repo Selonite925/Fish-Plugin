@@ -7,6 +7,7 @@ import {
   getActiveSeason,
   getActiveSeasons,
   getHistoricalSeasons,
+  getSeasonalFishList,
   getSeasonProgress,
   recordSeasonalFishCatch,
   SEASON_CATALOG
@@ -74,6 +75,41 @@ const seasonalResult = recordSeasonalFishCatch(userData, {
 });
 assert.equal(seasonalResult.newlyCollected, true);
 assert.equal(getSeasonProgress(userData, fishTypes, 'summer_tide_2026', '2026-07-10').ownedCount, 1);
+
+const goldenSet = getSeasonalFishList(fishTypes, 'golden_october_2026', '2026-10-02');
+assert.equal(goldenSet.length, 4);
+const seasonRewardUser = createDefaultUserData();
+seasonRewardUser.lotteryFreeDraws = 2;
+for (const fish of goldenSet.slice(0, -1)) {
+  const partial = recordSeasonalFishCatch(seasonRewardUser, fish, {
+    dateKey: '2026-10-02',
+    fishTypesMap: fishTypes
+  });
+  assert.equal(partial.rewardGranted, null);
+}
+const completedSeason = recordSeasonalFishCatch(seasonRewardUser, goldenSet.at(-1), {
+  dateKey: '2026-10-02',
+  fishTypesMap: fishTypes
+});
+assert.deepEqual(completedSeason.rewardGranted, { lotteryFreeDraws: 1 });
+assert.equal(seasonRewardUser.lotteryFreeDraws, 3);
+assert.deepEqual(seasonRewardUser.seasonalRewardsClaimed, ['golden_october_2026']);
+const duplicateSeasonFish = recordSeasonalFishCatch(seasonRewardUser, goldenSet.at(-1), {
+  dateKey: '2026-10-02',
+  fishTypesMap: fishTypes
+});
+assert.equal(duplicateSeasonFish.rewardGranted, null);
+assert.equal(seasonRewardUser.lotteryFreeDraws, 3);
+
+const expiredSeasonUser = createDefaultUserData();
+for (const fish of goldenSet) {
+  recordSeasonalFishCatch(expiredSeasonUser, fish, {
+    dateKey: '2026-11-01',
+    fishTypesMap: fishTypes
+  });
+}
+assert.equal(expiredSeasonUser.lotteryFreeDraws, 0);
+assert.deepEqual(expiredSeasonUser.seasonalRewardsClaimed, []);
 
 const worldState = {};
 ensureHarborState(worldState, 'group-1');

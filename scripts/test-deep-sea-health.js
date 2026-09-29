@@ -134,6 +134,11 @@ deepEggUser.easterEggCollection = ['潜梦水母鱼'];
 deepEggUser.activeEasterEgg = '潜梦水母鱼';
 normalizeUserData(deepEggUser);
 assert.equal(getEasterEggEffects(deepEggUser).deepSeaHealthCostReduction, 3);
+const nightShiftUser = createDefaultUserData();
+nightShiftUser.easterEggCollection = ['夜班灯鱼'];
+nightShiftUser.activeEasterEgg = '夜班灯鱼';
+normalizeUserData(nightShiftUser);
+assert.equal(getEasterEggEffects(nightShiftUser).deepSeaEventRestRecoveryBonus, 8);
 
 const healthHarness = Object.create(fishing.prototype);
 healthHarness.getUserHealthState = userData => ensurePlayerHealth(userData, { dayKey: 'harness-day', maxHealth: 200 });
@@ -200,6 +205,65 @@ try {
   assert.equal(escapedSettlement.fishballReward, 0);
   assert.equal(escapeUser.health, 0);
 
+  const lifelineUser = createDefaultUserData();
+  normalizeUserData(lifelineUser);
+  ensurePlayerHealth(lifelineUser, { dayKey: 'harness-day', maxHealth: 200 });
+  lifelineUser.health = 5;
+  const lifelineRod = {
+    sourceLegendary: '归潮鲸',
+    name: '归潮救生竿',
+    catchRateBonus: -0.014,
+    failProtection: 0.28,
+    deepSeaHealthCostBonus: 2,
+    deepSeaLastBreathCatch: true
+  };
+  assert.equal(getDeepSeaSpecialRodProfile(lifelineRod).lastBreathCatch, true);
+  const lifelinePreview = healthHarness.getDeepSeaCatchSettlementPreview(
+    lifelineUser,
+    { name: '深潮银鱼', rarity: 'common', mapId: 'abyss', length: 20, weight: 0.1 },
+    { isAlternate: true },
+    lifelineRod
+  );
+  assert.equal(lifelinePreview.insufficientHealth, true);
+  assert.equal(lifelinePreview.lastBreathCatchAvailable, true);
+  const savedCatch = healthHarness.applyDeepSeaCatchSettlement(
+    lifelineUser,
+    { name: '深潮银鱼', rarity: 'common', mapId: 'abyss', length: 20, weight: 0.1 },
+    { isAlternate: true },
+    lifelineRod,
+    '',
+    null,
+    lifelinePreview
+  );
+  assert.equal(savedCatch.escaped, false);
+  assert.ok(savedCatch.fishballReward > 0);
+  assert.equal(savedCatch.health.current, 0);
+  assert.equal(lifelineUser.deepSeaLastBreathCatchDate, 'harness-day');
+
+  const spentLifelineUser = createDefaultUserData();
+  normalizeUserData(spentLifelineUser);
+  ensurePlayerHealth(spentLifelineUser, { dayKey: 'harness-day', maxHealth: 200 });
+  spentLifelineUser.health = 5;
+  spentLifelineUser.deepSeaLastBreathCatchDate = 'harness-day';
+  const spentPreview = healthHarness.getDeepSeaCatchSettlementPreview(
+    spentLifelineUser,
+    { name: '深潮银鱼', rarity: 'common', mapId: 'abyss', length: 20, weight: 0.1 },
+    { isAlternate: true },
+    lifelineRod
+  );
+  assert.equal(spentPreview.lastBreathCatchAvailable, false);
+  const spentSettlement = healthHarness.applyDeepSeaCatchSettlement(
+    spentLifelineUser,
+    { name: '深潮银鱼', rarity: 'common', mapId: 'abyss', length: 20, weight: 0.1 },
+    { isAlternate: true },
+    lifelineRod,
+    '',
+    null,
+    spentPreview
+  );
+  assert.equal(spentSettlement.escaped, true);
+  assert.equal(spentSettlement.fishballReward, 0);
+
   const pondSpecialUser = createDefaultUserData();
   normalizeUserData(pondSpecialUser);
   ensurePlayerHealth(pondSpecialUser, { dayKey: 'harness-day', maxHealth: 200 });
@@ -223,10 +287,11 @@ legacyDeepEggUser.easterEggCollection = ['愿望锦鲤'];
 legacyDeepEggUser.allTimeFish = [
   { name: '潜梦水母鱼', rarity: '？', mapId: 'abyss' },
   { name: '无声鳐', rarity: '？', mapId: 'abyss' },
-  { name: '零点灯鱼', rarity: '？', mapId: 'abyss' }
+  { name: '零点灯鱼', rarity: '？', mapId: 'abyss' },
+  { name: '夜班灯鱼', rarity: '？', mapId: 'abyss' }
 ];
 normalizeUserData(legacyDeepEggUser);
-assert.deepEqual(legacyDeepEggUser.easterEggCollection, ['愿望锦鲤', '潜梦水母鱼', '无声鳐', '零点灯鱼']);
+assert.deepEqual(legacyDeepEggUser.easterEggCollection, ['愿望锦鲤', '潜梦水母鱼', '无声鳐', '零点灯鱼', '夜班灯鱼']);
 assert.deepEqual(getEasterEggStatusSummary(legacyDeepEggUser).owned, legacyDeepEggUser.easterEggCollection);
 
 const deepCommon = { name: '深潮银鱼', rarity: 'common', mapId: 'abyss', length: 20, weight: 0.1 };
