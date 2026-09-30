@@ -34,4 +34,4 @@ Health limits are valued at `440` for static percentage-potion lottery estimates
 
 - The six health potions use the same 2.42 rate; their listed lottery values are 85, 182, 315, 106, 266, and 479 eggs at the 440-point reference limit.
 - `零点灯鱼` now costs 1 extra health point per cast and adds 0.09 fishball rate. At the baseline catch rate, the added fishball value is about 2.75 eggs per cast versus 2.42 eggs of health cost, making it a near-even risk/reward effect.
-- Health on the player record is shared across groups. The health limit now retains the highest capacity reached so changing to a lower-level harbor cannot permanently erase current health.
+- Health on the player record is shared across groups for the day. A higher harbor capacity remains available during that fishing day, then the limit is recalculated from the current harbor after the daily refresh so expired group buffs do not grant a permanent cap.

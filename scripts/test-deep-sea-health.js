@@ -46,7 +46,11 @@ assert.deepEqual(ensurePlayerHealth(sharedHealthUser, { dayKey: 'shared-day', ma
   max: 240,
   date: 'shared-day'
 });
-assert.equal(ensurePlayerHealth(sharedHealthUser, { dayKey: 'next-shared-day', maxHealth: 200 }).current, 240);
+assert.deepEqual(ensurePlayerHealth(sharedHealthUser, { dayKey: 'next-shared-day', maxHealth: 200 }), {
+  current: 200,
+  max: 200,
+  date: 'next-shared-day'
+});
 const recoveryUser = createDefaultUserData();
 normalizeUserData(recoveryUser);
 ensurePlayerHealth(recoveryUser, { dayKey: 'recovery-day', maxHealth: 200 });
