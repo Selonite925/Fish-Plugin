@@ -7,7 +7,12 @@ import {
   FISHING_STORY_EVENTS,
   FISHING_STORY_TRIGGER_CHANCE,
   FISHING_STORY_TTL_MS,
+  formatFishingStoryEvent,
+  isFishingStoryReplyFailure,
+  isFishingStoryReplyLikelyDelivered,
+  parseFishingStoryChoice,
   rollFishingStoryOutcome,
+  sendFishingStoryMessage,
 } from '../lib/fishing-interactions.js';
 import { queueFishingStoryInteraction, resolveMapEventInteraction } from '../lib/maps.js';
 
@@ -16,6 +21,9 @@ assert.equal(new Set(FISHING_STORY_EVENTS.map(event => event.id)).size, 10);
 assert.equal(FISHING_STORY_TRIGGER_CHANCE, 0.12);
 assert.match(fishing.prototype.startFishing.toString(), /playRandomFishingStory/);
 assert.doesNotMatch(fishing.prototype.startFastFishing.toString(), /playRandomFishingStory/);
+const manualSource = fishing.prototype.startFishing.toString();
+const duanwuBranch = /if \(duanwuEvent\) \{([\s\S]*?)\n\s{6}\}/u.exec(manualSource)?.[1] || '';
+assert.match(duanwuBranch, /playRandomFishingStory/);
 
 for (const event of FISHING_STORY_EVENTS) {
   assert.ok(event.intro.length > 0);
@@ -38,7 +46,59 @@ for (const event of FISHING_STORY_EVENTS) {
     assert.equal(rollFishingStoryOutcome(event, choice.id, () => 0.8).outcome, choice.outcomes[1]);
     assert.equal(rollFishingStoryOutcome(event, choice.id, () => 0.99).outcome, choice.outcomes[2]);
   }
+  const presentation = formatFishingStoryEvent(event, 9);
+  assert.ok(presentation.length < 500, `${event.id} should fit in one ordinary chat message`);
+  assert.ok(presentation.includes(event.title));
+  assert.ok(presentation.includes(event.intro));
+  assert.ok(presentation.includes(event.scene));
+  for (const [index, choice] of event.actions.entries()) {
+    assert.ok(presentation.includes(`#钓鱼事件 ${index + 1} ${choice.label}`));
+    assert.equal(parseFishingStoryChoice(event, `#钓鱼事件 ${index + 1} ${choice.label}`), choice.id);
+    assert.equal(parseFishingStoryChoice(event, choice.label), choice.id);
+  }
+  assert.equal(parseFishingStoryChoice(event, '#钓鱼事件 4'), '');
 }
+
+assert.equal(isFishingStoryReplyFailure(undefined), true);
+assert.equal(isFishingStoryReplyFailure(false), true);
+assert.equal(isFishingStoryReplyFailure({ error: [new Error('send failed')] }), true);
+assert.equal(isFishingStoryReplyFailure({ error: [] }), false);
+assert.equal(isFishingStoryReplyFailure({ message_id: 'message-1' }), false);
+assert.equal(
+  isFishingStoryReplyLikelyDelivered({
+    error: [new Error('Timeout: NTEvent serviceAndMethod:NodeIKernelMsgService/sendMsg')],
+  }),
+  true,
+);
+assert.equal(isFishingStoryReplyLikelyDelivered({ error: [new Error('send failed')] }), false);
+let sendCalls = 0;
+let fallbackCalls = 0;
+const fallbackDelivery = await sendFishingStoryMessage('story text', {
+  send: async () => {
+    sendCalls += 1;
+    return false;
+  },
+  fallbackSend: async message => {
+    fallbackCalls += 1;
+    assert.equal(message, 'story text');
+    return { message_id: 'fallback-message' };
+  },
+  sleep: async () => {},
+});
+assert.equal(fallbackDelivery.ok, true);
+assert.equal(sendCalls, 2);
+assert.equal(fallbackCalls, 1);
+let timeoutSendCalls = 0;
+const timeoutDelivery = await sendFishingStoryMessage('story text', {
+  send: async () => {
+    timeoutSendCalls += 1;
+    return { error: [new Error('Timeout: NTEvent serviceAndMethod:NodeIKernelMsgService/sendMsg')] };
+  },
+  fallbackSend: async () => assert.fail('a possibly delivered timeout should not send twice'),
+  sleep: async () => {},
+});
+assert.equal(timeoutDelivery.ok, true);
+assert.equal(timeoutSendCalls, 1);
 
 const noEncounter = createDefaultUserData();
 assert.equal(

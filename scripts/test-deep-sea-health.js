@@ -37,6 +37,16 @@ assert.equal(damage.after, 228);
 assert.equal(ensurePlayerHealth(user, { dayKey: 'day-2', harborLevel: 2 }).current, 270);
 assert.equal(applyHealthDamage(user, 999, { dayKey: 'day-2', maxHealth: 270 }).depleted, true);
 assert.equal(ensurePlayerHealth(user, { dayKey: 'day-2', harborLevel: 2 }).current, 0);
+const sharedHealthUser = createDefaultUserData();
+normalizeUserData(sharedHealthUser);
+ensurePlayerHealth(sharedHealthUser, { dayKey: 'shared-day', maxHealth: 240 });
+sharedHealthUser.health = 215;
+assert.deepEqual(ensurePlayerHealth(sharedHealthUser, { dayKey: 'shared-day', maxHealth: 200 }), {
+  current: 215,
+  max: 240,
+  date: 'shared-day'
+});
+assert.equal(ensurePlayerHealth(sharedHealthUser, { dayKey: 'next-shared-day', maxHealth: 200 }).current, 240);
 const recoveryUser = createDefaultUserData();
 normalizeUserData(recoveryUser);
 ensurePlayerHealth(recoveryUser, { dayKey: 'recovery-day', maxHealth: 200 });
@@ -48,7 +58,7 @@ assert.equal(recoveryUser.health, 0);
 const reloadedUser = JSON.parse(JSON.stringify(user));
 normalizeUserData(reloadedUser);
 assert.equal(ensurePlayerHealth(reloadedUser, { dayKey: 'day-2', harborLevel: 2 }).max, 270);
-assert.equal(ensurePlayerHealth(reloadedUser, { dayKey: 'day-2', harborLevel: 0 }).max, 260);
+assert.equal(ensurePlayerHealth(reloadedUser, { dayKey: 'day-2', harborLevel: 0 }).max, 270);
 
 assert.equal(shouldStopDeepSeaFishing({ isAlternate: true }, { current: 1 }), false);
 assert.equal(shouldStopDeepSeaFishing({ isAlternate: true }, { current: 0 }), true);

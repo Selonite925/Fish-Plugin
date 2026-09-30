@@ -134,7 +134,12 @@ import {
   queueMapEventInteraction,
   resolveMapEventInteraction
 } from './lib/maps.js';
-import { getFishingStoryEvent } from './lib/fishing-interactions.js';
+import {
+  formatFishingStoryEvent,
+  getFishingStoryEvent,
+  parseFishingStoryChoice,
+  sendFishingStoryMessage
+} from './lib/fishing-interactions.js';
 import { formatAchievementList, getAchievementCatchRateBonus, getAchievementDailyCastBonus, getCollectionStats, scanAchievements } from './lib/achievements.js';
 import { ensureDailySignal } from './lib/signals.js';
 import { ensureResourceDirs, replyWithPanel } from './lib/panel.js';
@@ -2657,7 +2662,7 @@ export class fishing extends plugin {
       : automaticSettlement;
   }
 
-  async playRandomFishingStory(data, userData, mapContext, groupId, userDisplay) {
+  async playRandomFishingStory(data, userData, mapContext, groupId, userDisplay, userId) {
     const queued = queueFishingStoryInteraction(userData, {
       mapId: mapContext?.id,
       groupId,
@@ -2666,15 +2671,17 @@ export class fishing extends plugin {
     if (!queued.queued) return false;
 
     saveFishData(data);
-    const { event } = queued;
-    await this.reply(`${userDisplay}\n[随机剧情] ${event.title}\n${event.intro}`);
-    await new Promise(resolve => setTimeout(resolve, 750));
-    await this.reply(event.scene);
-    await new Promise(resolve => setTimeout(resolve, 500));
-    await this.reply(
-      `你准备怎么做？\n${event.actions.map((item, index) => `#钓鱼事件 ${index + 1} ${item.label}`).join('\n')}\n` +
-      '剧情将在 15 分钟后淡去。'
-    );
+    const message = `${userDisplay}\n${formatFishingStoryEvent(queued.event)}`;
+    await new Promise(resolve => setTimeout(resolve, 800));
+    const directSend = this.e?.group?.sendMsg?.bind(this.e.group) || this.e?.friend?.sendMsg?.bind(this.e.friend);
+    const delivery = await sendFishingStoryMessage(message, {
+      send: text => this.reply(text),
+      fallbackSend: directSend ? text => directSend(text) : null
+    });
+    if (!delivery.ok) {
+      globalThis.logger?.warn?.(`[Fish-plugin] 手动剧情发送失败（用户 ${userId}），待处理事件仍可用 #钓鱼事件 查看。`);
+      return false;
+    }
     return true;
   }
 
@@ -2702,24 +2709,19 @@ export class fishing extends plugin {
       return;
     }
 
-    const rawChoice = String(e.msg || '').replace(/^#钓鱼事件\s*/u, '').trim();
     const storyEvent = pending.kind === 'story' ? getFishingStoryEvent(pending.storyId) : null;
-    const storyChoiceIndex = storyEvent && /^(\d)(?:\s+.*)?$/u.exec(rawChoice);
-    const choice = storyEvent
-      ? storyEvent.actions[Number(storyChoiceIndex?.[1]) - 1]?.id || ''
-      : /^(?:1(?:\s+追踪回声)?|追踪|跟随|追随回声)$/u.test(rawChoice)
-        ? 'follow'
-        : /^(?:2(?:\s+收竿休整)?|休整|收竿|撤退)$/u.test(rawChoice)
-          ? 'rest'
-          : '';
+    let choice = '';
+    if (storyEvent) {
+      choice = parseFishingStoryChoice(storyEvent, e.msg);
+    } else {
+      const rawChoice = String(e.msg || '').replace(/^#钓鱼事件\s*/u, '').trim();
+      if (/^(?:1(?:\s+追踪回声)?|追踪|跟随|追随回声)$/u.test(rawChoice)) choice = 'follow';
+      else if (/^(?:2(?:\s+收竿休整)?|休整|收竿|撤退)$/u.test(rawChoice)) choice = 'rest';
+    }
     const minutesLeft = Math.max(0, Math.ceil((pending.expiresAt - now) / 60000));
     if (!choice) {
       if (storyEvent) {
-        await this.reply(
-          `${userDisplay}\n[随机剧情] ${storyEvent.title}\n${storyEvent.scene}\n` +
-          `${storyEvent.actions.map((item, index) => `#钓鱼事件 ${index + 1} ${item.label}`).join('\n')}\n` +
-          `剧情将在约 ${minutesLeft} 分钟后淡去。`
-        );
+        await this.reply(`${userDisplay}\n${formatFishingStoryEvent(storyEvent, minutesLeft)}`);
       } else {
         await this.reply(
           `${userDisplay}\n${pending.event.message}\n` +
@@ -2752,10 +2754,8 @@ export class fishing extends plugin {
 
     saveFishData(data);
     if (result.kind === 'story') {
-      await this.reply(`${userDisplay}\n${result.action.stage}`);
-      await new Promise(resolve => setTimeout(resolve, 800));
       await this.reply(
-        `${result.outcome.text}\n${result.effectText}` +
+        `${userDisplay}\n${result.action.stage}\n\n${result.outcome.text}\n${result.effectText}` +
         `${result.health ? `\n${this.formatHealthText(result.health)}` : ''}` +
         `${result.health?.current <= 0 ? '\n生命值已耗尽，今天不能继续在深海抛竿。' : ''}`
       );
@@ -4898,6 +4898,7 @@ export class fishing extends plugin {
         if (duanwuGift) await this.playDuanwuEasterEggGiftPerformance(duanwuGift.fish);
         const giftText = duanwuGift ? `\n${duanwuGift.resultText}` : '';
         await this.reply(`${userDisplay}\n${duanwuEvent.resultText}${giftText}\n今日钓鱼次数：${getFishingLimitText(this.config, settleUser, getEquippedRod(settleUser), usageOptions)}${manualBait.message}${shopBait.message}${easterEggMsg}${this.formatAchievementUnlocks(unlocked)}`);
+        await this.playRandomFishingStory(settleData, settleUser, settleMapContext, e.group_id, userDisplay, userId);
         return;
       }
 
@@ -4919,7 +4920,7 @@ export class fishing extends plugin {
         settleUser.achievementDailyCastBonus = getAchievementDailyCastBonus(settleUser);
         saveFishData(settleData);
         await this.reply(`${userDisplay}\n${failResult.message}${mapEventText}${deepRodCost.message}\n${this.formatHealthText(deepRodCost.health)}\n今日钓鱼次数：${getFishingLimitText(this.config, settleUser, getEquippedRod(settleUser), usageOptions)}${manualBait.message}${shopBait.message}${easterEggMsg}${this.formatAchievementUnlocks(unlocked)}`);
-        await this.playRandomFishingStory(settleData, settleUser, settleMapContext, e.group_id, userDisplay);
+        await this.playRandomFishingStory(settleData, settleUser, settleMapContext, e.group_id, userDisplay, userId);
         return;
       }
 
@@ -4949,7 +4950,7 @@ export class fishing extends plugin {
           `今日钓鱼次数：${getFishingLimitText(this.config, settleUser, getEquippedRod(settleUser), usageOptions)}` +
           `${manualBait.message}${shopBait.message}${easterEggMsg}${this.formatAchievementUnlocks(unlocked)}`
         );
-        await this.playRandomFishingStory(settleData, settleUser, settleMapContext, e.group_id, userDisplay);
+        await this.playRandomFishingStory(settleData, settleUser, settleMapContext, e.group_id, userDisplay, userId);
         return;
       }
       const specialRodEffect = this.applySpecialRodCatchEffect(settleUser, fish);
@@ -5012,7 +5013,7 @@ export class fishing extends plugin {
         `长度：${fishWithTimestamp.length}cm，重量：${fishWithTimestamp.weight}kg${tankUpdateMsg}\n` +
         `${deepSettlement.message}\n${this.formatHealthText(deepSettlement.health)}\n今日钓鱼次数：${getFishingLimitText(this.config, settleUser, getEquippedRod(settleUser), usageOptions)}${manualBait.message}${shopBait.message}${easterEggMsg}${signalMsg}${this.formatAchievementUnlocks(unlocked)}`
       );
-      await this.playRandomFishingStory(settleData, settleUser, settleMapContext, e.group_id, userDisplay);
+      await this.playRandomFishingStory(settleData, settleUser, settleMapContext, e.group_id, userDisplay, userId);
     } finally {
       this.releaseFishingLock(userId);
     }
