@@ -130,9 +130,11 @@ import {
   recordMapCatch,
   recordMapEvent,
   recordMapVisit,
+  queueFishingStoryInteraction,
   queueMapEventInteraction,
   resolveMapEventInteraction
 } from './lib/maps.js';
+import { getFishingStoryEvent } from './lib/fishing-interactions.js';
 import { formatAchievementList, getAchievementCatchRateBonus, getAchievementDailyCastBonus, getCollectionStats, scanAchievements } from './lib/achievements.js';
 import { ensureDailySignal } from './lib/signals.js';
 import { ensureResourceDirs, replyWithPanel } from './lib/panel.js';
@@ -317,7 +319,7 @@ const HELP_GROUPS = [
       { title: '#今日鱼获 / #查看鱼获 @某人', desc: '查看自己或别人的当日鱼获记录。' },
       { title: '#钓鱼图鉴 / #钓鱼排行 / #每周钓鱼榜 / #每月钓鱼榜', desc: '看收藏、总排行、本周排行和本月排行。' },
       { title: '#地图 / #地图 深海裂谷 / #地图 鱼塘', desc: '查看并切换钓鱼航线；深海裂谷会消耗鱼蛋并使用生命值，生命耗尽前可返航休整。' },
-      { title: '#钓鱼事件 1 / #钓鱼事件 2', desc: '深海失手事件出现后，15分钟内选择追踪回声或休整恢复4点生命；夜班灯鱼可强化休整。' },
+      { title: '#钓鱼事件 1 / 2 / 3', desc: '查看待处理剧情并选择行动；手动抛竿会随机触发多段剧情，行动结果也会随机变化。' },
       { title: '#深海保底 / #深海保底 1 / #深海保底 放生 1', desc: '拥有血条保底时，次日查看逃脱鱼影；按鱼蛋价值的1.5倍收回，或选择放生。' },
       { title: '#赛季鱼 / #历史赛季鱼', desc: '查看当前赛季或历史赛季限定鱼图鉴面板；不提前展示后续赛季。' },
       { title: '#鱼王榜 / #空军榜', desc: '看鱼缸综合质量和今日空军情况。' }
@@ -2655,13 +2657,34 @@ export class fishing extends plugin {
       : automaticSettlement;
   }
 
+  async playRandomFishingStory(data, userData, mapContext, groupId, userDisplay) {
+    const queued = queueFishingStoryInteraction(userData, {
+      mapId: mapContext?.id,
+      groupId,
+      dayKey: getFishingDayKey(this.config)
+    });
+    if (!queued.queued) return false;
+
+    saveFishData(data);
+    const { event } = queued;
+    await this.reply(`${userDisplay}\n[随机剧情] ${event.title}\n${event.intro}`);
+    await new Promise(resolve => setTimeout(resolve, 750));
+    await this.reply(event.scene);
+    await new Promise(resolve => setTimeout(resolve, 500));
+    await this.reply(
+      `你准备怎么做？\n${event.actions.map((item, index) => `#钓鱼事件 ${index + 1} ${item.label}`).join('\n')}\n` +
+      '剧情将在 15 分钟后淡去。'
+    );
+    return true;
+  }
+
   async handleFishingEvent(e) {
     const data = this.loadData();
     const { userId, text: userDisplay } = getUserDisplay(e);
     const userData = this.getOrCreateUser(data, userId);
     const pending = ensureMapState(userData).pendingEvent;
     if (!pending) {
-      await this.reply(`${userDisplay}\n当前没有待处理的深海事件。`);
+      await this.reply(`${userDisplay}\n当前没有待处理的钓鱼事件。`);
       return;
     }
 
@@ -2669,38 +2692,53 @@ export class fishing extends plugin {
     if (pending.expiresAt <= now) {
       clearMapEventInteraction(userData);
       saveFishData(data);
-      await this.reply(`${userDisplay}\n这段深海回声已经消散，未获得增益或恢复。`);
+      await this.reply(`${userDisplay}\n这段剧情已经淡去，没有获得奖励或损失。`);
       return;
     }
     if (pending.dayKey && pending.dayKey !== getFishingDayKey(this.config)) {
       clearMapEventInteraction(userData);
       saveFishData(data);
-      await this.reply(`${userDisplay}\n新的一天已经开始，这段旧回声不能再用于恢复或追踪。`);
+      await this.reply(`${userDisplay}\n新的一天已经开始，这段旧事件不能再处理。`);
       return;
     }
 
     const rawChoice = String(e.msg || '').replace(/^#钓鱼事件\s*/u, '').trim();
-    const choice = /^(?:1(?:\s+追踪回声)?|追踪|跟随|追随回声)$/u.test(rawChoice)
-      ? 'follow'
-      : /^(?:2(?:\s+收竿休整)?|休整|收竿|撤退)$/u.test(rawChoice)
-        ? 'rest'
-        : '';
+    const storyEvent = pending.kind === 'story' ? getFishingStoryEvent(pending.storyId) : null;
+    const storyChoiceIndex = storyEvent && /^(\d)(?:\s+.*)?$/u.exec(rawChoice);
+    const choice = storyEvent
+      ? storyEvent.actions[Number(storyChoiceIndex?.[1]) - 1]?.id || ''
+      : /^(?:1(?:\s+追踪回声)?|追踪|跟随|追随回声)$/u.test(rawChoice)
+        ? 'follow'
+        : /^(?:2(?:\s+收竿休整)?|休整|收竿|撤退)$/u.test(rawChoice)
+          ? 'rest'
+          : '';
     const minutesLeft = Math.max(0, Math.ceil((pending.expiresAt - now) / 60000));
     if (!choice) {
-      await this.reply(
-        `${userDisplay}\n${pending.event.message}\n` +
-        `选择：#钓鱼事件 1（追踪回声），或 #钓鱼事件 2（收竿休整；夜班灯鱼可额外恢复8点）。\n` +
-        `事件将在约 ${minutesLeft} 分钟后消散。`
-      );
+      if (storyEvent) {
+        await this.reply(
+          `${userDisplay}\n[随机剧情] ${storyEvent.title}\n${storyEvent.scene}\n` +
+          `${storyEvent.actions.map((item, index) => `#钓鱼事件 ${index + 1} ${item.label}`).join('\n')}\n` +
+          `剧情将在约 ${minutesLeft} 分钟后淡去。`
+        );
+      } else {
+        await this.reply(
+          `${userDisplay}\n${pending.event.message}\n` +
+          `选择：#钓鱼事件 1（追踪回声），或 #钓鱼事件 2（收竿休整；夜班灯鱼可额外恢复8点）。\n` +
+          `事件将在约 ${minutesLeft} 分钟后消散。`
+        );
+      }
       return;
     }
 
-    const health = this.getUserHealthState(userData, pending.groupId || e.group_id);
+    const currentDayKey = getFishingDayKey(this.config);
+    const health = pending.kind !== 'story' || pending.mapId === 'abyss'
+      ? this.getUserHealthState(userData, pending.groupId || e.group_id)
+      : null;
     const easterEggEffect = getEasterEggEffects(userData);
     const rodEventDamageReduction = Math.max(0, Math.min(0.75, Number(getEquippedRod(userData).deepSeaEventDamageReduction || 0)));
     const result = resolveMapEventInteraction(userData, choice, {
-      dayKey: health.date,
-      maxHealth: health.max,
+      dayKey: health?.date || currentDayKey,
+      maxHealth: health?.max,
       now,
       restRecoveryBonus: easterEggEffect.deepSeaEventRestRecoveryBonus,
       damageMultiplier: (1 - Math.max(0, Math.min(0.8, Number(easterEggEffect.deepSeaDamageReduction || 0)))) *
@@ -2708,11 +2746,22 @@ export class fishing extends plugin {
     });
     if (!result.ok) {
       if (result.reason === 'expired' || result.reason === 'stale_day') saveFishData(data);
-      await this.reply(`${userDisplay}\n当前没有可处理的深海事件。`);
+      await this.reply(`${userDisplay}\n当前没有可处理的钓鱼事件，或所选行动无效。`);
       return;
     }
 
     saveFishData(data);
+    if (result.kind === 'story') {
+      await this.reply(`${userDisplay}\n${result.action.stage}`);
+      await new Promise(resolve => setTimeout(resolve, 800));
+      await this.reply(
+        `${result.outcome.text}\n${result.effectText}` +
+        `${result.health ? `\n${this.formatHealthText(result.health)}` : ''}` +
+        `${result.health?.current <= 0 ? '\n生命值已耗尽，今天不能继续在深海抛竿。' : ''}`
+      );
+      return;
+    }
+
     if (choice === 'rest') {
       await this.reply(
         `${userDisplay}\n你收起鱼线，在甲板上短暂休整，恢复 ${result.recovery.amount} 点生命。` +
@@ -4870,6 +4919,7 @@ export class fishing extends plugin {
         settleUser.achievementDailyCastBonus = getAchievementDailyCastBonus(settleUser);
         saveFishData(settleData);
         await this.reply(`${userDisplay}\n${failResult.message}${mapEventText}${deepRodCost.message}\n${this.formatHealthText(deepRodCost.health)}\n今日钓鱼次数：${getFishingLimitText(this.config, settleUser, getEquippedRod(settleUser), usageOptions)}${manualBait.message}${shopBait.message}${easterEggMsg}${this.formatAchievementUnlocks(unlocked)}`);
+        await this.playRandomFishingStory(settleData, settleUser, settleMapContext, e.group_id, userDisplay);
         return;
       }
 
@@ -4899,6 +4949,7 @@ export class fishing extends plugin {
           `今日钓鱼次数：${getFishingLimitText(this.config, settleUser, getEquippedRod(settleUser), usageOptions)}` +
           `${manualBait.message}${shopBait.message}${easterEggMsg}${this.formatAchievementUnlocks(unlocked)}`
         );
+        await this.playRandomFishingStory(settleData, settleUser, settleMapContext, e.group_id, userDisplay);
         return;
       }
       const specialRodEffect = this.applySpecialRodCatchEffect(settleUser, fish);
@@ -4961,6 +5012,7 @@ export class fishing extends plugin {
         `长度：${fishWithTimestamp.length}cm，重量：${fishWithTimestamp.weight}kg${tankUpdateMsg}\n` +
         `${deepSettlement.message}\n${this.formatHealthText(deepSettlement.health)}\n今日钓鱼次数：${getFishingLimitText(this.config, settleUser, getEquippedRod(settleUser), usageOptions)}${manualBait.message}${shopBait.message}${easterEggMsg}${signalMsg}${this.formatAchievementUnlocks(unlocked)}`
       );
+      await this.playRandomFishingStory(settleData, settleUser, settleMapContext, e.group_id, userDisplay);
     } finally {
       this.releaseFishingLock(userId);
     }

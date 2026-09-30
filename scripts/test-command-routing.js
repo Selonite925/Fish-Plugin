@@ -41,6 +41,7 @@ assertRoute('#地图 深海裂谷', 'handleMapCommand');
 assertRoute('#钓鱼事件', 'handleFishingEvent');
 assertRoute('#钓鱼事件 1', 'handleFishingEvent');
 assertRoute('#钓鱼事件 2 收竿休整', 'handleFishingEvent');
+assertRoute('#钓鱼事件 3', 'handleFishingEvent');
 assertRoute('#前往深海', 'goToDeepSea');
 assertRoute('#返回鱼塘', 'returnToPond');
 assertRoute('#深海返航推送 开启', 'toggleDeepSeaReturnPush');
