@@ -111,6 +111,7 @@ import {
   applyHealthDamage,
   applyHealthRecovery,
   DEEP_SEA_CAST_HEALTH_COST,
+  formatMapEventInteraction,
   DEEP_SEA_TRAVEL_COST,
   getCurrentMapId,
   getMapContext,
@@ -132,6 +133,7 @@ import {
   recordMapVisit,
   queueFishingStoryInteraction,
   queueMapEventInteraction,
+  parseMapEventChoice,
   resolveMapEventInteraction
 } from './lib/maps.js';
 import {
@@ -2654,7 +2656,7 @@ export class fishing extends plugin {
       dayKey: getFishingDayKey(this.config)
     });
     if (queued.queued) {
-      return '\n[深海事件] 这段回声还没有消散：\n追踪回声：#钓鱼事件 1（获得下一竿增益，可能受伤）\n收竿休整：#钓鱼事件 2（恢复4点生命；夜班灯鱼可额外恢复8点）';
+      return formatMapEventInteraction(queued.pending.event);
     }
     const automaticSettlement = this.getMapEventSettlement(userData, failResult, mapContext, groupId);
     return queued.reason === 'pending_exists'
@@ -2714,9 +2716,7 @@ export class fishing extends plugin {
     if (storyEvent) {
       choice = parseFishingStoryChoice(storyEvent, e.msg);
     } else {
-      const rawChoice = String(e.msg || '').replace(/^#钓鱼事件\s*/u, '').trim();
-      if (/^(?:1(?:\s+追踪回声)?|追踪|跟随|追随回声)$/u.test(rawChoice)) choice = 'follow';
-      else if (/^(?:2(?:\s+收竿休整)?|休整|收竿|撤退)$/u.test(rawChoice)) choice = 'rest';
+      choice = parseMapEventChoice(e.msg, pending.event);
     }
     const minutesLeft = Math.max(0, Math.ceil((pending.expiresAt - now) / 60000));
     if (!choice) {
@@ -2724,9 +2724,7 @@ export class fishing extends plugin {
         await this.reply(`${userDisplay}\n${formatFishingStoryEvent(storyEvent, minutesLeft)}`);
       } else {
         await this.reply(
-          `${userDisplay}\n${pending.event.message}\n` +
-          `选择：#钓鱼事件 1（追踪回声），或 #钓鱼事件 2（收竿休整；夜班灯鱼可额外恢复8点）。\n` +
-          `事件将在约 ${minutesLeft} 分钟后消散。`
+          `${userDisplay}\n${formatMapEventInteraction(pending.event, minutesLeft, { includeMessage: true })}`
         );
       }
       return;
@@ -2764,7 +2762,8 @@ export class fishing extends plugin {
 
     if (choice === 'rest') {
       await this.reply(
-        `${userDisplay}\n你收起鱼线，在甲板上短暂休整，恢复 ${result.recovery.amount} 点生命。` +
+        `${userDisplay}\n${result.pending.event.holdStage || '你收起鱼线，在甲板上短暂停留。'}\n` +
+        `潮声稍稍缓和，恢复 ${result.recovery.amount} 点生命。` +
         `${easterEggEffect.deepSeaEventRestRecoveryBonus > 0 ? '\n[夜班灯鱼] 值班照护已生效。' : ''}` +
         `\n${this.formatHealthText(result.health)}\n本次没有获得下一竿回声增益。`
       );
@@ -2777,7 +2776,8 @@ export class fishing extends plugin {
     const rodText = rodEventDamageReduction > 0 ? '\n[潮汐领航竿] 已减轻本次事件伤害。' : '';
     const depletedText = result.health.current <= 0 ? '\n生命值已经耗尽，今天不能继续在深海抛竿。' : '';
     await this.reply(
-      `${userDisplay}\n${result.eventResult.label}，${result.eventResult.nextCastHint}` +
+      `${userDisplay}\n${result.pending.event.followStage || '你循着回声向裂谷深处探去。'}\n` +
+      `${result.eventResult.label}，${result.eventResult.nextCastHint}` +
       `${damageText}${rodText}\n${this.formatHealthText(result.health)}${depletedText}`
     );
   }

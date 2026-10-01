@@ -2,7 +2,11 @@ import assert from 'node:assert/strict';
 
 import { createDefaultUserData, normalizeUserData } from '../lib/user.js';
 import {
+  DEEP_SEA_EVENTS,
   MAP_EVENT_INTERACTION_TTL_MS,
+  formatMapEventInteraction,
+  getMapProfile,
+  parseMapEventChoice,
   queueMapEventInteraction,
   resolveMapEventInteraction,
   rollDeepSeaEventDamage
@@ -13,6 +17,32 @@ const event = {
   effect: 'echo',
   healthDamage: { chance: 0.3, min: 5, max: 5 }
 };
+
+assert.equal(DEEP_SEA_EVENTS.length, 12);
+assert.equal(new Set(DEEP_SEA_EVENTS.map(item => item.id)).size, DEEP_SEA_EVENTS.length);
+assert.strictEqual(getMapProfile('abyss').randomEvents, DEEP_SEA_EVENTS);
+for (const deepSeaEvent of DEEP_SEA_EVENTS) {
+  assert.ok(deepSeaEvent.title);
+  assert.ok(deepSeaEvent.message);
+  assert.ok(deepSeaEvent.followChoice);
+  assert.ok(deepSeaEvent.holdChoice);
+  assert.ok(deepSeaEvent.followStage);
+  assert.ok(deepSeaEvent.holdStage);
+  assert.ok(['echo', 'chart', 'heat'].includes(deepSeaEvent.effect));
+  assert.ok(deepSeaEvent.healthDamage.chance >= 0 && deepSeaEvent.healthDamage.chance <= 0.35);
+  assert.ok(deepSeaEvent.healthDamage.max <= 9);
+  const prompt = formatMapEventInteraction(deepSeaEvent, 8);
+  assert.ok(prompt.includes(deepSeaEvent.title));
+  assert.ok(prompt.includes(`#钓鱼事件 1 ${deepSeaEvent.followChoice}`));
+  assert.ok(prompt.includes(`#钓鱼事件 2 ${deepSeaEvent.holdChoice}`));
+  assert.doesNotMatch(prompt, /获得|恢复|损失|受伤|惩罚/u);
+  assert.equal(parseMapEventChoice(`#钓鱼事件 1 ${deepSeaEvent.followChoice}`, deepSeaEvent), 'follow');
+  assert.equal(parseMapEventChoice(`#钓鱼事件 2 ${deepSeaEvent.holdChoice}`, deepSeaEvent), 'rest');
+}
+assert.equal(parseMapEventChoice('#钓鱼事件 追踪回声', event), 'follow');
+assert.equal(parseMapEventChoice('#钓鱼事件 收竿休整', event), 'rest');
+assert.equal(parseMapEventChoice('#钓鱼事件 留在甲板', { holdChoice: '稳住船身' }), 'rest');
+assert.equal(parseMapEventChoice('#钓鱼事件 3'), '');
 
 const tracker = createDefaultUserData();
 const queued = queueMapEventInteraction(tracker, event, {
@@ -33,6 +63,7 @@ const followed = resolveMapEventInteraction(tracker, 'follow', {
 });
 assert.equal(followed.ok, true);
 assert.equal(followed.eventResult.effect, 'echo');
+assert.equal(followed.pending.event.title, '');
 assert.equal(followed.eventDamage.triggered, false);
 assert.equal(tracker.mapState.abyss.echo, 1);
 assert.equal(tracker.mapState.events.abyss, 1);
@@ -117,5 +148,19 @@ const normalized = createDefaultUserData();
 normalized.mapState.pendingEvent = { event: { effect: 'invalid' }, expiresAt: 10, createdAt: 1 };
 normalizeUserData(normalized);
 assert.equal(normalized.mapState.pendingEvent, null);
+
+const legacyPending = createDefaultUserData();
+legacyPending.mapState.pendingEvent = {
+  mapId: 'abyss',
+  dayKey: '2026-09-30',
+  createdAt: 4_000,
+  expiresAt: 4_000 + MAP_EVENT_INTERACTION_TTL_MS,
+  event: { message: '旧版回声还在。', effect: 'echo', healthDamage: { chance: 0.2, min: 2, max: 4 } }
+};
+normalizeUserData(legacyPending);
+assert.equal(legacyPending.mapState.pendingEvent.event.message, '旧版回声还在。');
+assert.equal(legacyPending.mapState.pendingEvent.event.title, '');
+assert.ok(formatMapEventInteraction(legacyPending.mapState.pendingEvent.event, 5, { includeMessage: true }).includes('旧版回声还在。'));
+assert.equal(parseMapEventChoice('#钓鱼事件 追随回声', legacyPending.mapState.pendingEvent.event), 'follow');
 
 console.log('fishing event choices, expiry, and damage scaling ok');
